@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -21,6 +22,7 @@ type fakeController struct {
 	cmdState map[string]engine.CmdState
 	logs     map[string][]string
 	events   chan engine.Event
+	stopping []engine.StoppingCommand
 
 	startedEnvs    []string
 	stoppedEnvs    []string
@@ -87,6 +89,8 @@ func (f *fakeController) StopEnvironment(env string) error {
 }
 
 func (f *fakeController) Events() <-chan engine.Event { return f.events }
+
+func (f *fakeController) StoppingCommands() []engine.StoppingCommand { return f.stopping }
 
 func (f *fakeController) Shutdown(_ context.Context) { f.shutdownCalled = true }
 
@@ -417,6 +421,81 @@ func TestView_whenQuitting_showsShuttingDownMessage(t *testing.T) {
 	// Then
 	if !strings.Contains(view, "shutting down") {
 		t.Errorf("expected view to contain 'shutting down' while quitting, got %q", view)
+	}
+}
+
+func TestRenderShutdown_withStoppingCommands_listsCommandWithEnvsSpinnerAndCountdown(t *testing.T) {
+	// Given — two envs, both referencing "mariadb"; it is currently stopping with
+	// 12 s elapsed out of a 30 s grace.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{
+		{Name: "dev", Description: "first"},
+		{Name: "dev2", Description: "second"},
+	}
+	ctrl.commands = map[string][]string{
+		"dev":  {"mariadb"},
+		"dev2": {"mariadb"},
+	}
+	ctrl.envState = map[string]engine.EnvState{
+		"dev":  engine.EnvStopping,
+		"dev2": engine.EnvStopping,
+	}
+	ctrl.stopping = []engine.StoppingCommand{
+		{Command: "mariadb", Elapsed: 12 * time.Second, Grace: 30 * time.Second},
+	}
+
+	m := seed(New(ctrl))
+	m.quitting = true
+
+	// When
+	view := ansi.Strip(m.View())
+
+	// Then — env group, command name, and countdown must all appear.
+	if !strings.Contains(view, "[dev, dev2]") {
+		t.Errorf("expected env group '[dev, dev2]', got:\n%s", view)
+	}
+	if !strings.Contains(view, "mariadb") {
+		t.Errorf("expected command name 'mariadb', got:\n%s", view)
+	}
+	if !strings.Contains(view, "12s / 30s") {
+		t.Errorf("expected countdown '12s / 30s', got:\n%s", view)
+	}
+}
+
+func TestRenderShutdown_whenStoppingCommandBelongsToSingleEnv_showsSingleEnvGroup(t *testing.T) {
+	// Given — only "dev" references "proxy".
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{
+		{Name: "dev", Description: "first"},
+		{Name: "dev2", Description: "second"},
+	}
+	ctrl.commands = map[string][]string{
+		"dev":  {"proxy"},
+		"dev2": {},
+	}
+	ctrl.envState = map[string]engine.EnvState{
+		"dev":  engine.EnvStopping,
+		"dev2": engine.EnvStopped,
+	}
+	ctrl.stopping = []engine.StoppingCommand{
+		{Command: "proxy", Elapsed: 9 * time.Second, Grace: 30 * time.Second},
+	}
+
+	m := seed(New(ctrl))
+	m.quitting = true
+
+	// When
+	view := ansi.Strip(m.View())
+
+	// Then
+	if !strings.Contains(view, "[dev]") {
+		t.Errorf("expected env group '[dev]', got:\n%s", view)
+	}
+	if !strings.Contains(view, "proxy") {
+		t.Errorf("expected command name 'proxy', got:\n%s", view)
+	}
+	if !strings.Contains(view, "9s / 30s") {
+		t.Errorf("expected countdown '9s / 30s', got:\n%s", view)
 	}
 }
 

@@ -602,41 +602,65 @@ func (m Model) renderFooter() string {
 	return footerStyle.Render(shortcuts)
 }
 
-// renderShutdown shows a full-screen "env shutting down…" notice while the
-// engine tears down running commands. It replaces the normal TUI so the user
-// has clear feedback that the app is intentionally closing.
+// renderShutdown shows a full-screen "Env shutting down" notice while the
+// engine tears down running commands. It lists each stopping command grouped
+// by the environments that reference it, with a braille spinner and an
+// elapsed/grace countdown toward the SIGKILL deadline.
 func (m Model) renderShutdown() string {
-	primary := shutdownStyle.Render("env shutting down…")
-	secondary := ""
-	if n := m.activeCommandCount(); n > 0 {
-		noun := "commands"
-		if n == 1 {
-			noun = "command"
+	title := shutdownStyle.Render("Env shutting down")
+
+	stopping := m.ctrl.StoppingCommands()
+	if len(stopping) == 0 {
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, title)
+	}
+
+	// Inner width for command rows: leave a small margin so lines don't hug the edge.
+	const innerWidth = 40
+
+	var rows []string
+	rows = append(rows, title, "")
+	for _, sc := range stopping {
+		// Env group header.
+		envNames := m.commandEnvs(sc.Command)
+		if len(envNames) > 0 {
+			rows = append(rows, "["+strings.Join(envNames, ", ")+"]")
 		}
-		secondary = fmt.Sprintf("stopping %d %s…", n, noun)
+
+		// Command line: spinner on the left, countdown on the right.
+		elapsed := int(sc.Elapsed.Seconds())
+		grace := int(sc.Grace.Seconds())
+		if elapsed > grace {
+			elapsed = grace
+		}
+		left := fmt.Sprintf("%s %s", sc.Command, spinnerChar(m.spinnerFrame))
+		right := fmt.Sprintf("%ds / %ds", elapsed, grace)
+		gap := innerWidth - len(left) - len(right)
+		if gap < 1 {
+			gap = 1
+		}
+		rows = append(rows, left+strings.Repeat(" ", gap)+right)
 	}
 
-	content := primary
-	if secondary != "" {
-		content = lipgloss.JoinVertical(lipgloss.Center, primary, secondary)
-	}
-
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
-// activeCommandCount returns the number of commands that are currently running
-// or starting (and therefore need to be stopped during shutdown).
-func (m Model) activeCommandCount() int {
-	count := 0
+// commandEnvs returns the names of environments (in Environments() order) that
+// reference cmd in their workflow and are not yet stopped.
+func (m Model) commandEnvs(cmd string) []string {
+	var names []string
 	for _, env := range m.ctrl.Environments() {
-		for _, cmd := range m.ctrl.WorkflowCommands(env.Name) {
-			switch m.ctrl.CmdState(cmd) {
-			case engine.CmdHealthy, engine.CmdStarting, engine.CmdStopping:
-				count++
+		if m.ctrl.EnvState(env.Name) == engine.EnvStopped {
+			continue
+		}
+		for _, c := range m.ctrl.WorkflowCommands(env.Name) {
+			if c == cmd {
+				names = append(names, env.Name)
+				break
 			}
 		}
 	}
-	return count
+	return names
 }
 
 // ── State indicators ──────────────────────────────────────────────────────────

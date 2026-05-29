@@ -55,9 +55,13 @@ func (e *Engine) releaseCommand(name string) {
 	}
 
 	// Signal intent to stop for active commands so the TUI can animate the
-	// transition before the process actually exits.
+	// transition before the process actually exits. Stamp stopStartedAt here
+	// (under the same lock) so the shutdown-screen countdown begins immediately.
 	e.mu.Lock()
 	active := c.state == CmdHealthy || c.state == CmdStarting
+	if active {
+		c.stopStartedAt = time.Now()
+	}
 	e.mu.Unlock()
 	if active {
 		e.setCmdState(name, CmdStopping, nil)
@@ -100,6 +104,12 @@ func (e *Engine) stopCommand(c *command) {
 		}
 		e.setCmdState(c.cfg.Name, CmdStopped, nil)
 	}
+
+	// Clear the stop timer so the command no longer appears in StoppingCommands
+	// once teardown is complete.
+	e.mu.Lock()
+	c.stopStartedAt = time.Time{}
+	e.mu.Unlock()
 }
 
 // terminate sends SIGINT to a service's process group, waits up to GracePeriod
@@ -169,6 +179,9 @@ func (e *Engine) Shutdown(ctx context.Context) {
 		for _, c := range cmds {
 			e.mu.Lock()
 			active := c.state == CmdHealthy || c.state == CmdStarting
+			if active {
+				c.stopStartedAt = time.Now()
+			}
 			e.mu.Unlock()
 			if active {
 				e.setCmdState(c.cfg.Name, CmdStopping, nil)

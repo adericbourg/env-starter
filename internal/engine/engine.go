@@ -73,6 +73,15 @@ const (
 	noProbeGrace = 150 * time.Millisecond
 )
 
+// StoppingCommand describes a command currently being torn down, for the
+// shutdown screen. Elapsed is the time since it began stopping; Grace is the
+// per-process SIGINT→SIGKILL budget.
+type StoppingCommand struct {
+	Command string
+	Elapsed time.Duration
+	Grace   time.Duration
+}
+
 // command is the runtime state of a single (global, reference-counted) command.
 type command struct {
 	cfg config.Command
@@ -81,6 +90,15 @@ type command struct {
 	err   error
 
 	refcount int
+
+	// stopStartedAt is set (to the current time) when the command begins being
+	// torn down and cleared (to zero) when teardown completes. A non-zero value
+	// means the command is currently stopping and drives the shutdown-screen
+	// countdown. It is intentionally independent of CmdState because terminate()
+	// resets the state to CmdStopped before sending SIGINT (to prevent the exit
+	// watcher from misreporting an error), so CmdStopping would vanish from the
+	// screen exactly during the grace window.
+	stopStartedAt time.Time
 
 	// ready is closed when the command becomes healthy or done; readyErr holds
 	// the failure (if any) once startDone is closed.
@@ -217,6 +235,39 @@ func (e *Engine) Logs(command string) []string {
 // LogPath returns the on-disk path where the given command's logs are written.
 func (e *Engine) LogPath(command string) string {
 	return e.logPath(command)
+}
+
+// StoppingCommands returns the commands currently being torn down, in config
+// order. Each entry carries the time elapsed since stopping began and the
+// per-process SIGINT→SIGKILL grace budget. Returns an empty slice when nothing
+// is stopping.
+func (e *Engine) StoppingCommands() []StoppingCommand {
+	grace := e.GracePeriod
+	if grace <= 0 {
+		grace = defaultGracePeriod
+	}
+
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	var out []StoppingCommand
+	for _, cfg := range e.cfg.Commands {
+		c, ok := e.commands[cfg.Name]
+		if !ok || c.stopStartedAt.IsZero() {
+			continue
+		}
+		elapsed := now.Sub(c.stopStartedAt)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		out = append(out, StoppingCommand{
+			Command: cfg.Name,
+			Elapsed: elapsed,
+			Grace:   grace,
+		})
+	}
+	return out
 }
 
 // Events returns the buffered event channel. Sends are non-blocking: if no one

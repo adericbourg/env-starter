@@ -19,6 +19,9 @@ type Controller interface {
 	StartEnvironment(env string) error
 	StopEnvironment(env string) error
 	Events() <-chan engine.Event
+	// StoppingCommands lists the commands currently being torn down, with elapsed
+	// and grace durations, for the shutdown screen.
+	StoppingCommands() []engine.StoppingCommand
 	// Shutdown gracefully stops every running command, respecting ctx as the
 	// overall deadline. It is invoked from the TUI so the "shutting down" screen
 	// stays visible while teardown runs.
