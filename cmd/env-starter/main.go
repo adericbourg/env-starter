@@ -3,12 +3,129 @@
 // healthy before starting its dependents.
 package main
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"github.com/adericbourg/env-starter/internal/config"
+	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/tui"
+)
 
 // version is the build version, overridden at release time via -ldflags
 // "-X main.version=...".
 var version = "dev"
 
 func main() {
-	fmt.Printf("env-starter %s\n", version)
+	var (
+		showVersion   bool
+		configFile    string
+		configOverlay string
+	)
+
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
+	flag.StringVar(&configFile, "config", "", "use `FILE` as the configuration, replacing the default")
+	flag.StringVar(&configOverlay, "config-overlay", "", "load `FILE` as an overlay on top of the base config")
+	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("env-starter %s\n", version)
+		os.Exit(0)
+	}
+
+	cfg, err := resolveConfig(configFile, configOverlay)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	eng, err := engine.New(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: initialising engine: %v\n", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// tuiDone receives the error (or nil) from tui.Run once it returns.
+	tuiDone := make(chan error, 1)
+	go func() {
+		tuiDone <- tui.Run(eng)
+	}()
+
+	// Wait for either the TUI to finish or a signal to arrive.
+	var tuiErr error
+	select {
+	case tuiErr = <-tuiDone:
+		stop() // release signal resources
+	case <-ctx.Done():
+		stop()
+		// Drain: wait for TUI to exit after the signal interrupts it.
+		tuiErr = <-tuiDone
+	}
+
+	fmt.Fprintln(os.Stderr, "shutting down…")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	eng.Shutdown(shutdownCtx)
+
+	if tuiErr != nil {
+		fmt.Fprintf(os.Stderr, "error: tui: %v\n", tuiErr)
+		os.Exit(1)
+	}
+}
+
+// resolveConfig loads the effective *config.Config from the flag values.
+// baseFile is the --config flag; overlayFile is the --config-overlay flag.
+// When neither flag is set, the XDG default path is used as the base.
+func resolveConfig(baseFile, overlayFile string) (*config.Config, error) {
+	basePath := baseFile
+	if basePath == "" {
+		basePath = defaultConfigPath()
+	}
+
+	base, err := config.Load(basePath)
+	if err != nil {
+		if baseFile == "" && errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf(
+				"no configuration file found at %s; "+
+					"create ~/.config/env-starter/config.yaml or pass --config",
+				basePath,
+			)
+		}
+		return nil, fmt.Errorf("loading config %q: %w", basePath, err)
+	}
+
+	if overlayFile == "" {
+		return base, nil
+	}
+
+	overlay, err := config.Load(overlayFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading overlay config %q: %w", overlayFile, err)
+	}
+
+	return config.Merge(base, overlay), nil
+}
+
+// defaultConfigPath returns $XDG_CONFIG_HOME/env-starter/config.yaml if
+// XDG_CONFIG_HOME is set; otherwise ~/.config/env-starter/config.yaml.
+func defaultConfigPath() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "env-starter", "config.yaml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// Fallback when home dir cannot be determined.
+		return filepath.Join(".config", "env-starter", "config.yaml")
+	}
+	return filepath.Join(home, ".config", "env-starter", "config.yaml")
 }
