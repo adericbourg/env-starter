@@ -468,6 +468,66 @@ func TestUpdate_whenEventMsg_healthyCmdAppearsInView(t *testing.T) {
 	}
 }
 
+func TestUpdate_whenTickMsg_advancesSpinnerFrame(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	initial := m.spinnerFrame
+
+	// When
+	updated, _ := m.Update(tickMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.spinnerFrame != initial+1 {
+		t.Errorf("expected spinnerFrame %d, got %d", initial+1, m.spinnerFrame)
+	}
+}
+
+func TestCmdStateIndicator_whenStarting_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := cmdStateIndicator(engine.CmdStarting, 0)
+	frame1 := cmdStateIndicator(engine.CmdStarting, 1)
+
+	// Then
+	if frame0 == frame1 {
+		t.Errorf("expected distinct indicators at frame 0 and 1, both got %q", frame0)
+	}
+}
+
+func TestCmdStateIndicator_whenHealthy_isUnchangedAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := cmdStateIndicator(engine.CmdHealthy, 0)
+	frame1 := cmdStateIndicator(engine.CmdHealthy, 1)
+
+	// Then
+	if frame0 != frame1 {
+		t.Errorf("expected identical indicators across frames, got %q and %q", frame0, frame1)
+	}
+}
+
+func TestEnvStateIndicator_whenStarting_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := envStateIndicator(engine.EnvStarting, 0)
+	frame1 := envStateIndicator(engine.EnvStarting, 1)
+
+	// Then
+	if frame0 == frame1 {
+		t.Errorf("expected distinct indicators at frame 0 and 1, both got %q", frame0)
+	}
+}
+
+func TestEnvStateIndicator_whenRunning_isUnchangedAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := envStateIndicator(engine.EnvRunning, 0)
+	frame1 := envStateIndicator(engine.EnvRunning, 1)
+
+	// Then
+	if frame0 != frame1 {
+		t.Errorf("expected identical indicators across frames, got %q and %q", frame0, frame1)
+	}
+}
+
 func TestView_whenCommandSelected_showsLogLines(t *testing.T) {
 	// Given
 	ctrl := newFakeController()

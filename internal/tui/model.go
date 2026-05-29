@@ -62,6 +62,9 @@ type Model struct {
 	// log viewport
 	logView viewport.Model
 
+	// spinner advances on every tickMsg to animate starting-state indicators
+	spinnerFrame int
+
 	// quit flow
 	confirmingQuit bool // first Ctrl+C seen; awaiting a confirming second press
 	quitting       bool // confirmed: engine teardown in progress, shutdown screen shown
@@ -128,6 +131,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		m.spinnerFrame++
 		m = m.refreshLogView()
 		return m, tickCmd()
 
@@ -415,7 +419,7 @@ func (m Model) renderEnvPane(width, height int) string {
 	var b strings.Builder
 	for i, env := range envs {
 		state := m.ctrl.EnvState(env.Name)
-		indicator := envStateIndicator(state)
+		indicator := envStateIndicator(state, m.spinnerFrame)
 		line := fmt.Sprintf("%s %s", indicator, env.Name)
 		if i == m.envCursor && m.focused == focusEnvs {
 			line = selectedLine.Render("> " + line)
@@ -439,7 +443,7 @@ func (m Model) renderCmdPane(width, height int) string {
 	var b strings.Builder
 	for i, cmd := range cmds {
 		state := m.ctrl.CmdState(cmd)
-		indicator := cmdStateIndicator(state)
+		indicator := cmdStateIndicator(state, m.spinnerFrame)
 		line := fmt.Sprintf("%s %s", indicator, cmd)
 		if i == m.cmdCursor && m.focused == focusCmds {
 			line = selectedLine.Render("> " + line)
@@ -515,12 +519,18 @@ func (m Model) activeCommandCount() int {
 
 // ── State indicators ──────────────────────────────────────────────────────────
 
-func envStateIndicator(s engine.EnvState) string {
+var spinnerChars = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func spinnerChar(frame int) string {
+	return spinnerChars[frame%len(spinnerChars)]
+}
+
+func envStateIndicator(s engine.EnvState, frame int) string {
 	switch s {
 	case engine.EnvRunning:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("●")
 	case engine.EnvStarting:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("◌")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
 	case engine.EnvDegraded:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("◐")
 	case engine.EnvError:
@@ -530,12 +540,12 @@ func envStateIndicator(s engine.EnvState) string {
 	}
 }
 
-func cmdStateIndicator(s engine.CmdState) string {
+func cmdStateIndicator(s engine.CmdState, frame int) string {
 	switch s {
 	case engine.CmdHealthy:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("●")
 	case engine.CmdStarting:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render("◌")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
 	case engine.CmdDone:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("✓")
 	case engine.CmdError:
