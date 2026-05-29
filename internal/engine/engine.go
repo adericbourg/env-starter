@@ -214,6 +214,11 @@ func (e *Engine) Logs(command string) []string {
 	return c.ring.Lines()
 }
 
+// LogPath returns the on-disk path where the given command's logs are written.
+func (e *Engine) LogPath(command string) string {
+	return e.logPath(command)
+}
+
 // Events returns the buffered event channel. Sends are non-blocking: if no one
 // is reading and the buffer is full, events are dropped.
 func (e *Engine) Events() <-chan Event {

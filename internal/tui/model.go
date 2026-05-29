@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/openfile"
 )
 
 // focus tracks which pane currently has keyboard focus.
@@ -37,11 +38,19 @@ type quitResetMsg struct{}
 // has finished, allowing the program to stop.
 type shutdownDoneMsg struct{}
 
+// noticeResetMsg is sent once the notice display window elapses, clearing the
+// transient notice so the normal shortcut bar is shown again.
+type noticeResetMsg struct{}
+
 const tickInterval = 500 * time.Millisecond
 
 // quitConfirmWindow is how long after a first Ctrl+C a second press still counts
 // as confirmation. After it elapses the confirmation is cancelled.
 const quitConfirmWindow = 3 * time.Second
+
+// noticeWindow is how long a transient notice (e.g. "opened …") is shown in the
+// footer before the normal shortcut bar is restored.
+const noticeWindow = 4 * time.Second
 
 // shutdownGrace bounds how long the engine teardown may take before surviving
 // processes are force-killed. Mirrors the deadline used on the signal path in main.
@@ -69,13 +78,21 @@ type Model struct {
 	// quit flow
 	confirmingQuit bool // first Ctrl+C seen; awaiting a confirming second press
 	quitting       bool // confirmed: engine teardown in progress, shutdown screen shown
+
+	// transient footer notice (e.g. "opened …" after ^L); cleared by noticeResetMsg
+	notice string
+
+	// openFile opens the given path in the OS default application. Defaults to
+	// openfile.Open; swapped out in tests.
+	openFile func(string) error
 }
 
 // New creates a TUI model driven by the given controller.
 func New(ctrl Controller) Model {
 	return Model{
-		ctrl:    ctrl,
-		logView: viewport.New(0, 0),
+		ctrl:     ctrl,
+		logView:  viewport.New(0, 0),
+		openFile: openfile.Open,
 	}
 }
 
@@ -109,6 +126,14 @@ func quitResetCmd() tea.Cmd {
 	})
 }
 
+// noticeResetCmd fires noticeResetMsg after noticeWindow, restoring the normal
+// shortcut bar once the transient notice has been shown long enough.
+func noticeResetCmd() tea.Cmd {
+	return tea.Tick(noticeWindow, func(time.Time) tea.Msg {
+		return noticeResetMsg{}
+	})
+}
+
 // shutdownCmd runs the engine teardown and then signals that it has finished.
 // It runs inside the Bubble Tea event loop so the "shutting down" screen stays
 // visible until teardown completes.
@@ -139,6 +164,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case quitResetMsg:
 		m.confirmingQuit = false
+		return m, nil
+
+	case noticeResetMsg:
+		m.notice = ""
 		return m, nil
 
 	case shutdownDoneMsg:
@@ -177,6 +206,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Any key other than Ctrl+C cancels a pending confirmation.
 	m.confirmingQuit = false
 
+	// ^L opens the selected command's log file in the OS default app.
+	if msg.String() == "ctrl+l" {
+		return m.openSelectedLog()
+	}
+
 	switch msg.String() {
 	case "tab", "right":
 		switch m.focused {
@@ -201,7 +235,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "l":
 		m.focused = focusLogs
-		m.refreshLogView()
+		m = m.refreshLogView()
 
 	case "up", "k":
 		m = m.moveCursorUp()
@@ -233,6 +267,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// openSelectedLog opens the currently selected command's log file in the OS
+// default application. It is a no-op when the logs panel is not focused or no
+// command is selected. A transient notice is shown in the footer to confirm the
+// outcome.
+func (m Model) openSelectedLog() (tea.Model, tea.Cmd) {
+	if m.focused != focusLogs {
+		return m, nil
+	}
+	cmd := m.selectedCommand()
+	if cmd == "" {
+		return m, nil
+	}
+	path := m.ctrl.LogPath(cmd)
+	if err := m.openFile(path); err != nil {
+		m.notice = fmt.Sprintf("could not open log: %s", err)
+	} else {
+		m.notice = fmt.Sprintf("opened %s", path)
+	}
+	return m, noticeResetCmd()
 }
 
 func (m Model) moveCursorUp() Model {
@@ -362,7 +417,8 @@ func wrapLogLine(line string, width int) string {
 func (m Model) resizePanes() Model {
 	// Layout: top half split into env+cmd panes, bottom half is logs.
 	topHeight := m.height / 2
-	logHeight := m.height - topHeight - footerHeight - 2 - 1 // 2 for log pane border, 1 for title row
+	// 2 = log pane border (top+bottom); 1 = title row; logPathHeight = path line below viewport
+	logHeight := m.height - topHeight - footerHeight - 2 - 1 - logPathHeight
 	if logHeight < 1 {
 		logHeight = 1
 	}
@@ -377,6 +433,10 @@ func (m Model) resizePanes() Model {
 
 // footerHeight is the number of terminal rows occupied by the footer bar.
 const footerHeight = 1
+
+// logPathHeight is the number of rows reserved inside the logs pane for the
+// on-disk path line shown below the viewport.
+const logPathHeight = 1
 
 // View renders the full TUI.
 func (m Model) View() string {
@@ -510,17 +570,35 @@ func (m Model) renderCmdPane(width, height int) string {
 
 func (m Model) renderLogsPane() string {
 	title := logsTitleStyle.Render(m.logsTitle())
-	content := lipgloss.JoinVertical(lipgloss.Left, title, m.logView.View())
+	pathLine := m.renderLogPath()
+	content := lipgloss.JoinVertical(lipgloss.Left, title, m.logView.View(), pathLine)
 	style := paneStyle(m.focused == focusLogs).
 		Width(m.width - 2)
 	return style.Render(content)
+}
+
+// renderLogPath renders the one-row on-disk path hint shown at the bottom of
+// the logs pane. Returns an empty string when no command is selected.
+func (m Model) renderLogPath() string {
+	cmd := m.selectedCommand()
+	if cmd == "" {
+		return ""
+	}
+	path := m.ctrl.LogPath(cmd)
+	label := path + "  (^L to open)"
+	innerWidth := m.width - 2 // 2 for pane border
+	label = ansi.Truncate(label, innerWidth, "…")
+	return footerStyle.Render(label)
 }
 
 func (m Model) renderFooter() string {
 	if m.confirmingQuit {
 		return quitConfirmStyle.Render("Press Ctrl+C again to quit")
 	}
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh  ^C quit"
+	if m.notice != "" {
+		return footerStyle.Render(m.notice)
+	}
+	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh  ^L open  ^C quit"
 	return footerStyle.Render(shortcuts)
 }
 

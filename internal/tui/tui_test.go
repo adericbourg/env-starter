@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -72,6 +73,8 @@ func (f *fakeController) CmdState(cmd string) engine.CmdState {
 }
 
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
+
+func (f *fakeController) LogPath(cmd string) string { return "/tmp/logs/" + cmd + ".log" }
 
 func (f *fakeController) StartEnvironment(env string) error {
 	f.startedEnvs = append(f.startedEnvs, env)
@@ -642,6 +645,141 @@ func TestWrapLogLine_withAnsiEscapeCodes_preservesEscapes(t *testing.T) {
 	// And must have wrapped into multiple rows
 	if !strings.Contains(result, "\n") {
 		t.Error("expected multiple rows after wrapping, but got a single row")
+	}
+}
+
+// ── openSelectedLog / ^L tests ────────────────────────────────────────────────
+
+// openerSpy records which path was passed to it and returns a configurable error.
+type openerSpy struct {
+	calledWith string
+	err        error
+}
+
+func (s *openerSpy) open(path string) error {
+	s.calledWith = path
+	return s.err
+}
+
+// modelWithSpy builds a seeded model wired to the given opener spy.
+func modelWithSpy(spy *openerSpy) Model {
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.openFile = spy.open
+	return m
+}
+
+func TestUpdate_whenCtrlLOnLogsPane_opensSelectedLog(t *testing.T) {
+	// Given — logs panel focused on svc-a
+	spy := &openerSpy{}
+	m := modelWithSpy(spy)
+	m.focused = focusLogs // svc-a is selected (envCursor=0, cmdCursor=0)
+
+	// When
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	_ = updated
+
+	// Then — opener must have been called with svc-a's log path
+	want := "/tmp/logs/svc-a.log"
+	if spy.calledWith != want {
+		t.Errorf("expected opener called with %q, got %q", want, spy.calledWith)
+	}
+}
+
+func TestUpdate_whenCtrlLNotOnLogsPane_doesNothing(t *testing.T) {
+	// Given — envs panel focused
+	spy := &openerSpy{}
+	m := modelWithSpy(spy)
+	// default focus is focusEnvs
+
+	// When
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	_ = updated
+
+	// Then — opener must NOT have been called
+	if spy.calledWith != "" {
+		t.Errorf("expected opener not called, but got calledWith=%q", spy.calledWith)
+	}
+}
+
+func TestUpdate_whenOpenFails_setsErrorNotice(t *testing.T) {
+	// Given — logs pane focused, opener returns an error
+	spy := &openerSpy{err: fmt.Errorf("no such file")}
+	m := modelWithSpy(spy)
+	m.focused = focusLogs
+
+	// When
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	m = updated.(Model)
+
+	// Then — notice must contain the error text
+	if !strings.Contains(m.notice, "no such file") {
+		t.Errorf("expected notice to contain error, got %q", m.notice)
+	}
+}
+
+func TestUpdate_whenOpenSucceeds_setsSuccessNotice(t *testing.T) {
+	// Given — logs pane focused, opener succeeds
+	spy := &openerSpy{}
+	m := modelWithSpy(spy)
+	m.focused = focusLogs
+
+	// When
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	m = updated.(Model)
+
+	// Then — notice must confirm which path was opened
+	if !strings.Contains(m.notice, "/tmp/logs/svc-a.log") {
+		t.Errorf("expected notice to contain log path, got %q", m.notice)
+	}
+}
+
+func TestUpdate_whenNoticeResetMsg_clearsNotice(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.notice = "some notice"
+
+	// When
+	updated, _ := m.Update(noticeResetMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.notice != "" {
+		t.Errorf("expected notice to be cleared, got %q", m.notice)
+	}
+}
+
+func TestRenderLogsPane_whenCommandSelected_showsLogPath(t *testing.T) {
+	// Given — command selected so logs pane has a path to show
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds, svc-a selected
+
+	// When
+	pane := m.renderLogsPane()
+
+	// Then — the log path must appear in the rendered pane
+	if !strings.Contains(pane, "/tmp/logs/svc-a.log") {
+		t.Errorf("expected pane to contain log path, got:\n%s", pane)
+	}
+}
+
+func TestRenderFooter_whenNotice_showsNoticeInsteadOfShortcuts(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.notice = "opened /tmp/logs/svc-a.log"
+
+	// When
+	footer := m.renderFooter()
+
+	// Then — notice is shown, not the normal shortcuts
+	if !strings.Contains(footer, "opened /tmp/logs/svc-a.log") {
+		t.Errorf("expected footer to show notice, got %q", footer)
+	}
+	if strings.Contains(footer, "↑/↓") {
+		t.Errorf("expected shortcuts to be suppressed while notice is shown, got %q", footer)
 	}
 }
 

@@ -15,6 +15,7 @@ type Controller interface {
 	EnvState(env string) engine.EnvState
 	CmdState(command string) engine.CmdState
 	Logs(command string) []string
+	LogPath(command string) string
 	StartEnvironment(env string) error
 	StopEnvironment(env string) error
 	Events() <-chan engine.Event
