@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
 )
@@ -563,5 +564,83 @@ func TestView_whenCommandSelected_showsLogLines(t *testing.T) {
 	// Then
 	if !strings.Contains(view, "log line 1") {
 		t.Error("expected view to contain log line 'log line 1'")
+	}
+}
+
+// ── wrapLogLine tests ─────────────────────────────────────────────────────────
+
+func TestWrapLogLine_whenLineFitsWidth_returnsUnchanged(t *testing.T) {
+	// Given
+	line := "short line"
+
+	// When
+	result := wrapLogLine(line, 40)
+
+	// Then
+	if result != line {
+		t.Errorf("expected line unchanged, got %q", result)
+	}
+}
+
+func TestWrapLogLine_whenLineExceedsWidth_wrapsWithIndentedContinuations(t *testing.T) {
+	// Given
+	line := "This is a very long line that will certainly exceed the narrow width we set for this test"
+	width := 30
+
+	// When
+	result := wrapLogLine(line, width)
+
+	// Then
+	rows := strings.Split(result, "\n")
+	if len(rows) < 2 {
+		t.Fatalf("expected multiple rows after wrapping, got %d: %q", len(rows), result)
+	}
+	// First row must not be indented.
+	if strings.HasPrefix(rows[0], "  ") {
+		t.Errorf("first row must not start with indent, got %q", rows[0])
+	}
+	// Every continuation row must start with the hanging indent.
+	for i, row := range rows[1:] {
+		if !strings.HasPrefix(row, "  ") {
+			t.Errorf("continuation row %d missing indent, got %q", i+1, row)
+		}
+	}
+	// No row may exceed the requested width (display cells).
+	for i, row := range rows {
+		w := ansi.StringWidth(row)
+		if w > width {
+			t.Errorf("row %d has display width %d > %d: %q", i, w, width, row)
+		}
+	}
+}
+
+func TestWrapLogLine_whenWidthTooSmall_returnsUnchanged(t *testing.T) {
+	// Given — width <= logWrapIndent means there is no usable space to wrap into
+	line := "some log line"
+
+	// When
+	result := wrapLogLine(line, logWrapIndent)
+
+	// Then
+	if result != line {
+		t.Errorf("expected line unchanged for width=%d, got %q", logWrapIndent, result)
+	}
+}
+
+func TestWrapLogLine_withAnsiEscapeCodes_preservesEscapes(t *testing.T) {
+	// Given — a line with an ANSI colour code that wraps
+	line := "\x1b[32mThis green line is intentionally long enough to force wrapping at a narrow width\x1b[0m"
+	width := 30
+
+	// When
+	result := wrapLogLine(line, width)
+
+	// Then — the result must still contain ANSI escape sequences
+	if !strings.Contains(result, "\x1b[") {
+		t.Error("expected ANSI escape sequences to survive wrapping, but none found")
+	}
+	// And must have wrapped into multiple rows
+	if !strings.Contains(result, "\n") {
+		t.Error("expected multiple rows after wrapping, but got a single row")
 	}
 }

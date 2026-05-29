@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
 )
@@ -128,6 +129,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m = m.resizePanes()
+		m = m.refreshLogView()
 		return m, nil
 
 	case tickMsg:
@@ -302,7 +304,8 @@ func (m Model) selectedCommand() string {
 }
 
 // refreshLogView populates the viewport with the latest log lines for the
-// currently selected command.
+// currently selected command. Each line is pre-wrapped to the viewport width so
+// the viewport never truncates them.
 func (m Model) refreshLogView() Model {
 	cmd := m.selectedCommand()
 	if cmd == "" {
@@ -310,9 +313,34 @@ func (m Model) refreshLogView() Model {
 		return m
 	}
 	lines := m.ctrl.Logs(cmd)
-	m.logView.SetContent(strings.Join(lines, "\n"))
+	width := m.logView.Width
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		wrapped = append(wrapped, wrapLogLine(line, width))
+	}
+	m.logView.SetContent(strings.Join(wrapped, "\n"))
 	m.logView.GotoBottom()
 	return m
+}
+
+// logWrapIndent is the number of spaces prepended to continuation rows of a
+// wrapped log line, so wrapped segments are visually distinct from new lines.
+const logWrapIndent = 2
+
+// wrapLogLine wraps a single log line to the given width, applying a hanging
+// indent (logWrapIndent spaces) to every continuation row. ANSI escape codes
+// and wide characters are preserved. Returns the line unchanged when there is
+// not enough width to wrap.
+func wrapLogLine(line string, width int) string {
+	if width <= logWrapIndent {
+		return line
+	}
+	wrapped := ansi.Wrap(line, width-logWrapIndent, "")
+	rows := strings.Split(wrapped, "\n")
+	for i := 1; i < len(rows); i++ {
+		rows[i] = strings.Repeat(" ", logWrapIndent) + rows[i]
+	}
+	return strings.Join(rows, "\n")
 }
 
 // resizePanes recalculates the viewport size to fit the terminal.
