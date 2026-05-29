@@ -1,0 +1,11 @@
+# Build output
+/dist/
+# Compiled binary at repo root (anchored so it doesn't match cmd/env-starter/)
+/env-starter
+
+# Test / coverage artifacts
+*.out
+coverage*
+
+# Editor / OS noise
+.DS_Store
