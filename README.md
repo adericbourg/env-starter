@@ -95,7 +95,7 @@ The TUI launches with the list of environments on the left. Select one and press
 | `x` | Stop the selected environment |
 | `l` | Focus/scroll the logs pane |
 | `r` | Refresh |
-| `q` / `Ctrl+C` | Quit (gracefully stops all running commands) |
+| `Ctrl+C` | First press shows a "Press Ctrl+C again to quit" confirmation in the footer; a second `Ctrl+C` within 3 seconds starts a graceful shutdown (all running commands are stopped before the app closes) |
 
 ---
 

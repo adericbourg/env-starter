@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -19,8 +20,9 @@ type fakeController struct {
 	logs     map[string][]string
 	events   chan engine.Event
 
-	startedEnvs []string
-	stoppedEnvs []string
+	startedEnvs    []string
+	stoppedEnvs    []string
+	shutdownCalled bool
 }
 
 func newFakeController() *fakeController {
@@ -81,6 +83,8 @@ func (f *fakeController) StopEnvironment(env string) error {
 }
 
 func (f *fakeController) Events() <-chan engine.Event { return f.events }
+
+func (f *fakeController) Shutdown(_ context.Context) { f.shutdownCalled = true }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -238,17 +242,124 @@ func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
 	_ = m
 }
 
-func TestUpdate_whenQ_returnsQuitCmd(t *testing.T) {
+func TestUpdate_whenQ_doesNotQuit(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
 
 	// When
-	_, cmd := m.Update(keyMsg("q"))
+	updated, cmd := m.Update(keyMsg("q"))
+	m = updated.(Model)
+
+	// Then: q must not quit — no QuitMsg and quitting flag stays false.
+	if m.quitting {
+		t.Error("expected quitting to remain false after pressing 'q'")
+	}
+	if cmd != nil {
+		msg := cmd()
+		if _, ok := msg.(tea.QuitMsg); ok {
+			t.Error("expected no tea.QuitMsg from 'q'")
+		}
+	}
+}
+
+func TestUpdate_whenFirstCtrlC_armsConfirmationWithoutQuitting(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	// Then: confirmation window armed, quitting flag still false.
+	if !m.confirmingQuit {
+		t.Error("expected confirmingQuit to be true after first Ctrl+C")
+	}
+	if m.quitting {
+		t.Error("expected quitting to remain false after first Ctrl+C")
+	}
+	// The returned command must NOT immediately produce a QuitMsg.
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd (reset tick) from first Ctrl+C")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); ok {
+		t.Error("expected no tea.QuitMsg from first Ctrl+C")
+	}
+}
+
+func TestUpdate_whenFirstCtrlC_doesNotShutDownEnvs(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	// Then: shutdown must NOT have been called — environments keep running.
+	if ctrl.shutdownCalled {
+		t.Error("expected Shutdown not to be called after first Ctrl+C")
+	}
+}
+
+func TestUpdate_whenSecondCtrlC_startsShutdown(t *testing.T) {
+	// Given: model already has confirmingQuit set (simulates first Ctrl+C)
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.confirmingQuit = true
+
+	// When
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(Model)
+
+	// Then: quitting is set; the returned cmd calls Shutdown and yields shutdownDoneMsg.
+	if !m.quitting {
+		t.Error("expected quitting to be true after second Ctrl+C")
+	}
+	if m.confirmingQuit {
+		t.Error("expected confirmingQuit to be cleared after second Ctrl+C")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd from second Ctrl+C")
+	}
+	msg := cmd()
+	if _, ok := msg.(shutdownDoneMsg); !ok {
+		t.Errorf("expected shutdownDoneMsg, got %T", msg)
+	}
+	if !ctrl.shutdownCalled {
+		t.Error("expected Shutdown to be called on confirmed quit")
+	}
+}
+
+func TestUpdate_whenQuitResetMsg_clearsConfirmation(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.confirmingQuit = true
+
+	// When
+	updated, _ := m.Update(quitResetMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.confirmingQuit {
+		t.Error("expected confirmingQuit to be cleared by quitResetMsg")
+	}
+}
+
+func TestUpdate_whenShutdownDoneMsg_returnsQuitCmd(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	_, cmd := m.Update(shutdownDoneMsg{})
 
 	// Then
 	if cmd == nil {
-		t.Fatal("expected a non-nil cmd from 'q'")
+		t.Fatal("expected a non-nil cmd from shutdownDoneMsg")
 	}
 	msg := cmd()
 	if _, ok := msg.(tea.QuitMsg); !ok {
@@ -256,21 +367,52 @@ func TestUpdate_whenQ_returnsQuitCmd(t *testing.T) {
 	}
 }
 
-func TestUpdate_whenCtrlC_returnsQuitCmd(t *testing.T) {
+func TestUpdate_whenOtherKeyDuringConfirmation_cancelsConfirmation(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
+	m.confirmingQuit = true
 
-	// When
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	// When: pressing an unrelated key cancels the pending confirmation.
+	updated, _ := m.Update(keyMsg("r"))
+	m = updated.(Model)
 
 	// Then
-	if cmd == nil {
-		t.Fatal("expected a non-nil cmd from ctrl+c")
+	if m.confirmingQuit {
+		t.Error("expected confirmingQuit to be cancelled by an unrelated key")
 	}
-	msg := cmd()
-	if _, ok := msg.(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", msg)
+}
+
+func TestRenderFooter_whenConfirmingQuit_showsPressAgainMessage(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.confirmingQuit = true
+
+	// When
+	footer := m.renderFooter()
+
+	// Then
+	if !strings.Contains(footer, "Ctrl+C") {
+		t.Errorf("expected footer to contain 'Ctrl+C' during confirmation, got %q", footer)
+	}
+	if !strings.Contains(footer, "again") {
+		t.Errorf("expected footer to contain 'again' during confirmation, got %q", footer)
+	}
+}
+
+func TestView_whenQuitting_showsShuttingDownMessage(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.quitting = true
+
+	// When
+	view := m.View()
+
+	// Then
+	if !strings.Contains(view, "shutting down") {
+		t.Errorf("expected view to contain 'shutting down' while quitting, got %q", view)
 	}
 }
 

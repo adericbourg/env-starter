@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -27,7 +28,23 @@ type eventMsg engine.Event
 // tickMsg is sent by the periodic refresh ticker.
 type tickMsg struct{}
 
+// quitResetMsg is sent once the quit-confirmation window elapses; it clears a
+// pending confirmation so a stale first Ctrl+C no longer counts.
+type quitResetMsg struct{}
+
+// shutdownDoneMsg is sent once the engine teardown triggered by a confirmed quit
+// has finished, allowing the program to stop.
+type shutdownDoneMsg struct{}
+
 const tickInterval = 500 * time.Millisecond
+
+// quitConfirmWindow is how long after a first Ctrl+C a second press still counts
+// as confirmation. After it elapses the confirmation is cancelled.
+const quitConfirmWindow = 3 * time.Second
+
+// shutdownGrace bounds how long the engine teardown may take before surviving
+// processes are force-killed. Mirrors the deadline used on the signal path in main.
+const shutdownGrace = 35 * time.Second
 
 // Model is the root Bubble Tea model for the TUI.
 type Model struct {
@@ -44,6 +61,10 @@ type Model struct {
 
 	// log viewport
 	logView viewport.Model
+
+	// quit flow
+	confirmingQuit bool // first Ctrl+C seen; awaiting a confirming second press
+	quitting       bool // confirmed: engine teardown in progress, shutdown screen shown
 }
 
 // New creates a TUI model driven by the given controller.
@@ -76,6 +97,26 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// quitResetCmd fires quitResetMsg after the confirmation window, cancelling a
+// pending first-Ctrl+C if the user did not follow up.
+func quitResetCmd() tea.Cmd {
+	return tea.Tick(quitConfirmWindow, func(time.Time) tea.Msg {
+		return quitResetMsg{}
+	})
+}
+
+// shutdownCmd runs the engine teardown and then signals that it has finished.
+// It runs inside the Bubble Tea event loop so the "shutting down" screen stays
+// visible until teardown completes.
+func shutdownCmd(ctrl Controller) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		ctrl.Shutdown(ctx)
+		return shutdownDoneMsg{}
+	}
+}
+
 // Update handles all incoming messages.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -90,6 +131,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.refreshLogView()
 		return m, tickCmd()
 
+	case quitResetMsg:
+		m.confirmingQuit = false
+		return m, nil
+
+	case shutdownDoneMsg:
+		return m, tea.Quit
+
 	case eventMsg:
 		// Re-arm so the next engine event is also delivered.
 		m = m.refreshLogView()
@@ -103,10 +151,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c", "q":
-		return m, tea.Quit
+	// While the shutdown screen is shown, all input is ignored.
+	if m.quitting {
+		return m, nil
+	}
 
+	if msg.String() == "ctrl+c" {
+		if m.confirmingQuit {
+			// Second Ctrl+C within the window: start engine teardown.
+			m.confirmingQuit = false
+			m.quitting = true
+			return m, shutdownCmd(m.ctrl)
+		}
+		// First Ctrl+C: arm the confirmation window; do NOT touch any environment.
+		m.confirmingQuit = true
+		return m, quitResetCmd()
+	}
+
+	// Any key other than Ctrl+C cancels a pending confirmation.
+	m.confirmingQuit = false
+
+	switch msg.String() {
 	case "tab", "right":
 		switch m.focused {
 		case focusEnvs:
@@ -272,6 +337,10 @@ func (m Model) View() string {
 		return "initialising…\n"
 	}
 
+	if m.quitting {
+		return m.renderShutdown()
+	}
+
 	top := m.renderTopRow()
 	logs := m.renderLogsPane()
 	footer := m.renderFooter()
@@ -296,6 +365,17 @@ var (
 
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
+
+	// quitConfirmStyle renders the "Press Ctrl+C again to quit" hint in amber so
+	// it stands out clearly from the normal shortcut bar.
+	quitConfirmStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("214"))
+
+	// shutdownStyle is used for the full-screen "env shutting down…" message.
+	shutdownStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("214"))
 )
 
 // ── Render helpers ────────────────────────────────────────────────────────────
@@ -389,8 +469,48 @@ func (m Model) renderLogsPane() string {
 }
 
 func (m Model) renderFooter() string {
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh  q quit"
+	if m.confirmingQuit {
+		return quitConfirmStyle.Render("Press Ctrl+C again to quit")
+	}
+	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh  ^C quit"
 	return footerStyle.Render(shortcuts)
+}
+
+// renderShutdown shows a full-screen "env shutting down…" notice while the
+// engine tears down running commands. It replaces the normal TUI so the user
+// has clear feedback that the app is intentionally closing.
+func (m Model) renderShutdown() string {
+	primary := shutdownStyle.Render("env shutting down…")
+	secondary := ""
+	if n := m.activeCommandCount(); n > 0 {
+		noun := "commands"
+		if n == 1 {
+			noun = "command"
+		}
+		secondary = fmt.Sprintf("stopping %d %s…", n, noun)
+	}
+
+	content := primary
+	if secondary != "" {
+		content = lipgloss.JoinVertical(lipgloss.Center, primary, secondary)
+	}
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+// activeCommandCount returns the number of commands that are currently running
+// or starting (and therefore need to be stopped during shutdown).
+func (m Model) activeCommandCount() int {
+	count := 0
+	for _, env := range m.ctrl.Environments() {
+		for _, cmd := range m.ctrl.WorkflowCommands(env.Name) {
+			switch m.ctrl.CmdState(cmd) {
+			case engine.CmdHealthy, engine.CmdStarting:
+				count++
+			}
+		}
+	}
+	return count
 }
 
 // ── State indicators ──────────────────────────────────────────────────────────
