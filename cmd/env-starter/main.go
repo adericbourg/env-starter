@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
@@ -11,12 +12,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/tui"
+	"github.com/adericbourg/env-starter/internal/update"
 )
 
 // version is the build version, overridden at release time via -ldflags
@@ -24,6 +27,13 @@ import (
 var version = "dev"
 
 func main() {
+	// Subcommand dispatch must happen before flag.Parse because stdlib flag
+	// does not support subcommands natively.
+	if len(os.Args) > 1 && os.Args[1] == "update" {
+		runUpdate()
+		return
+	}
+
 	var (
 		showVersion   bool
 		configFile    string
@@ -39,6 +49,8 @@ func main() {
 		fmt.Printf("env-starter %s\n", version)
 		os.Exit(0)
 	}
+
+	maybeSuggestUpdate()
 
 	cfg, err := resolveConfig(configFile, configOverlay)
 	if err != nil {
@@ -79,6 +91,84 @@ func main() {
 
 	if tuiErr != nil {
 		fmt.Fprintf(os.Stderr, "error: tui: %v\n", tuiErr)
+		os.Exit(1)
+	}
+}
+
+// runUpdate implements the "env-starter update" subcommand. It checks whether
+// a newer release is available and, if so, downloads and installs it, then exits.
+func runUpdate() {
+	if version == "dev" {
+		fmt.Println("running a dev build, updates disabled")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	client := update.New()
+	rel, err := client.Latest(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: checking for updates: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !update.IsNewer(version, rel.TagName) {
+		fmt.Printf("env-starter %s is already up to date\n", version)
+		return
+	}
+
+	fmt.Printf("updating %s → %s…\n", version, rel.TagName)
+	if err := client.Apply(ctx, rel); err != nil {
+		fmt.Fprintf(os.Stderr, "error: applying update: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("updated to %s\n", rel.TagName)
+}
+
+// maybeSuggestUpdate checks for a newer release at startup and, when one
+// exists, prompts the user to apply it. The check is bounded by a short
+// timeout so it never meaningfully delays startup; any error is silently
+// ignored so network issues never block normal use.
+func maybeSuggestUpdate() {
+	if version == "dev" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	client := update.New()
+	rel, err := client.Latest(ctx)
+	if err != nil {
+		return // silent: network issues should not block startup
+	}
+	if !update.IsNewer(version, rel.TagName) {
+		return
+	}
+
+	fmt.Printf("env-starter %s is available (current: %s). Update now? [y/N]: ", rel.TagName, version)
+	sc := bufio.NewScanner(os.Stdin)
+	if !sc.Scan() {
+		return
+	}
+	answer := strings.TrimSpace(strings.ToLower(sc.Text()))
+	if answer != "y" && answer != "yes" {
+		return
+	}
+
+	fmt.Println("Applying update…")
+	applyCtx, applyCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer applyCancel()
+
+	if err := client.Apply(applyCtx, rel); err != nil {
+		fmt.Fprintf(os.Stderr, "update failed: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Updated to %s. Restarting…\n", rel.TagName)
+	if err := update.ReExec(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: re-exec after update: %v\n", err)
 		os.Exit(1)
 	}
 }

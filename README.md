@@ -100,6 +100,37 @@ The TUI launches with the list of environments on the left. Select one and press
 
 ---
 
+## Updating
+
+env-starter can keep itself up to date.
+
+### Startup prompt
+
+When a newer release is available, env-starter prints a prompt before launching
+the TUI:
+
+```
+env-starter v1.3.0 is available (current: 1.2.0). Update now? [y/N]:
+```
+
+- Answering **`y`** (or `yes`) downloads, verifies, and installs the new binary,
+  then re-launches the app automatically.
+- Any other answer (or pressing Enter) continues with the current version.
+- The check is bounded by a 3-second timeout and silently skipped on any network
+  error, so it never delays startup.
+- **Dev builds** (`version = "dev"`) skip the check entirely.
+
+### Manual update
+
+```sh
+env-starter update
+```
+
+Downloads and installs the latest release if a newer version is available;
+prints `env-starter <version> is already up to date` and exits otherwise.
+
+---
+
 ## Configuration example
 
 ```yaml
