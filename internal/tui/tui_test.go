@@ -539,7 +539,6 @@ func TestCmdStateIndicator_whenStopping_producesDistinctOutputAcrossFrames(t *te
 	}
 }
 
-
 func TestEnvStateIndicator_whenStopping_producesDistinctOutputAcrossFrames(t *testing.T) {
 	// Given / When
 	frame0 := envStateIndicator(engine.EnvStopping, 0)
