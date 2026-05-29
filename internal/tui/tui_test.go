@@ -644,3 +644,35 @@ func TestWrapLogLine_withAnsiEscapeCodes_preservesEscapes(t *testing.T) {
 		t.Error("expected multiple rows after wrapping, but got a single row")
 	}
 }
+
+func TestView_rendersLogsTitleForSelectedEnvAndCommand(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	view := ansi.Strip(m.View())
+
+	// Then — default selection is alpha / svc-a
+	if !strings.Contains(view, "alpha > svc-a") {
+		t.Errorf("expected view to contain logs title %q, got:\n%s", "alpha > svc-a", view)
+	}
+}
+
+func TestView_logsTitleTracksEnvCursorWhileEnvPanelFocused(t *testing.T) {
+	// Given — focus starts on the env pane (focusEnvs is the initial state)
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When — move env cursor down to beta (which has command svc-c)
+	m = sendSpecialKey(m, tea.KeyDown)
+	view := ansi.Strip(m.View())
+
+	// Then — title must reflect the new env + its first command
+	if !strings.Contains(view, "beta > svc-c") {
+		t.Errorf("expected view to contain logs title %q after moving env cursor, got:\n%s", "beta > svc-c", view)
+	}
+	if strings.Contains(view, "alpha > svc-a") {
+		t.Errorf("expected stale title %q to be gone after moving env cursor, but found it in:\n%s", "alpha > svc-a", view)
+	}
+}

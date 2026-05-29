@@ -303,6 +303,21 @@ func (m Model) selectedCommand() string {
 	return cmds[m.cmdCursor]
 }
 
+// logsTitle builds the header shown above the logs viewport, identifying which
+// environment and command the logs belong to.
+func (m Model) logsTitle() string {
+	env := m.selectedEnvName()
+	cmd := m.selectedCommand()
+	switch {
+	case env != "" && cmd != "":
+		return fmt.Sprintf("%s > %s", env, cmd)
+	case env != "":
+		return env
+	default:
+		return "logs"
+	}
+}
+
 // refreshLogView populates the viewport with the latest log lines for the
 // currently selected command. Each line is pre-wrapped to the viewport width so
 // the viewport never truncates them.
@@ -347,7 +362,7 @@ func wrapLogLine(line string, width int) string {
 func (m Model) resizePanes() Model {
 	// Layout: top half split into env+cmd panes, bottom half is logs.
 	topHeight := m.height / 2
-	logHeight := m.height - topHeight - footerHeight - 2 // 2 for log pane border
+	logHeight := m.height - topHeight - footerHeight - 2 - 1 // 2 for log pane border, 1 for title row
 	if logHeight < 1 {
 		logHeight = 1
 	}
@@ -408,6 +423,11 @@ var (
 	shutdownStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("214"))
+
+	// logsTitleStyle renders the "Env > Command" header inside the logs pane.
+	logsTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("212"))
 )
 
 // ── Render helpers ────────────────────────────────────────────────────────────
@@ -489,12 +509,8 @@ func (m Model) renderCmdPane(width, height int) string {
 }
 
 func (m Model) renderLogsPane() string {
-	title := "logs"
-	if cmd := m.selectedCommand(); cmd != "" {
-		title = fmt.Sprintf("logs: %s", cmd)
-	}
-	_ = title
-	content := m.logView.View()
+	title := logsTitleStyle.Render(m.logsTitle())
+	content := lipgloss.JoinVertical(lipgloss.Left, title, m.logView.View())
 	style := paneStyle(m.focused == focusLogs).
 		Width(m.width - 2)
 	return style.Render(content)
