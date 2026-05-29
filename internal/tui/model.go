@@ -509,7 +509,7 @@ func (m Model) activeCommandCount() int {
 	for _, env := range m.ctrl.Environments() {
 		for _, cmd := range m.ctrl.WorkflowCommands(env.Name) {
 			switch m.ctrl.CmdState(cmd) {
-			case engine.CmdHealthy, engine.CmdStarting:
+			case engine.CmdHealthy, engine.CmdStarting, engine.CmdStopping:
 				count++
 			}
 		}
@@ -531,6 +531,8 @@ func envStateIndicator(s engine.EnvState, frame int) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("●")
 	case engine.EnvStarting:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
+	case engine.EnvStopping:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(spinnerChar(frame))
 	case engine.EnvDegraded:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("◐")
 	case engine.EnvError:
@@ -546,6 +548,8 @@ func cmdStateIndicator(s engine.CmdState, frame int) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render("●")
 	case engine.CmdStarting:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
+	case engine.CmdStopping:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(spinnerChar(frame))
 	case engine.CmdDone:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("✓")
 	case engine.CmdError:

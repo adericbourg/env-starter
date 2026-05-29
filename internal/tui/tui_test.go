@@ -528,6 +528,29 @@ func TestEnvStateIndicator_whenRunning_isUnchangedAcrossFrames(t *testing.T) {
 	}
 }
 
+func TestCmdStateIndicator_whenStopping_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := cmdStateIndicator(engine.CmdStopping, 0)
+	frame1 := cmdStateIndicator(engine.CmdStopping, 1)
+
+	// Then
+	if frame0 == frame1 {
+		t.Errorf("expected distinct indicators at frame 0 and 1, both got %q", frame0)
+	}
+}
+
+
+func TestEnvStateIndicator_whenStopping_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := envStateIndicator(engine.EnvStopping, 0)
+	frame1 := envStateIndicator(engine.EnvStopping, 1)
+
+	// Then
+	if frame0 == frame1 {
+		t.Errorf("expected distinct indicators at frame 0 and 1, both got %q", frame0)
+	}
+}
+
 func TestView_whenCommandSelected_showsLogLines(t *testing.T) {
 	// Given
 	ctrl := newFakeController()

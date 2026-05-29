@@ -17,11 +17,13 @@ func (e *Engine) StopEnvironment(env string) error {
 		return fmt.Errorf("engine: unknown environment %q", env)
 	}
 
-	for _, step := range envCfg.Workflow {
-		e.releaseCommand(step.Command)
-	}
-
-	e.setEnvState(env, EnvStopped)
+	e.setEnvState(env, EnvStopping)
+	go func() {
+		for _, step := range envCfg.Workflow {
+			e.releaseCommand(step.Command)
+		}
+		e.setEnvState(env, EnvStopped)
+	}()
 	return nil
 }
 
@@ -42,6 +44,15 @@ func (e *Engine) releaseCommand(name string) {
 
 	if !shouldStop {
 		return
+	}
+
+	// Signal intent to stop for active commands so the TUI can animate the
+	// transition before the process actually exits.
+	e.mu.Lock()
+	active := c.state == CmdHealthy || c.state == CmdStarting
+	e.mu.Unlock()
+	if active {
+		e.setCmdState(name, CmdStopping, nil)
 	}
 
 	// Wait until the command has finished starting before stopping it, so we do
@@ -86,7 +97,7 @@ func (e *Engine) terminate(c *command) {
 
 	// Mark stopped first so the exit watcher does not flip the state to error.
 	e.mu.Lock()
-	if c.state == CmdHealthy {
+	if c.state == CmdHealthy || c.state == CmdStopping {
 		c.state = CmdStopped
 	}
 	e.mu.Unlock()
@@ -142,6 +153,12 @@ func (e *Engine) Shutdown(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		for _, c := range cmds {
+			e.mu.Lock()
+			active := c.state == CmdHealthy || c.state == CmdStarting
+			e.mu.Unlock()
+			if active {
+				e.setCmdState(c.cfg.Name, CmdStopping, nil)
+			}
 			<-c.startDone
 			e.stopCommand(c)
 		}

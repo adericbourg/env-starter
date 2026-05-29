@@ -264,7 +264,7 @@ func (e *Engine) watchServiceExit(c *command) {
 
 		e.mu.Lock()
 		// If the command was deliberately stopped, leave it as stopped.
-		stopped := c.state == CmdStopped
+		stopped := c.state == CmdStopped || c.state == CmdStopping
 		e.mu.Unlock()
 		if stopped {
 			return

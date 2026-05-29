@@ -28,6 +28,7 @@ const (
 	EnvStarting EnvState = "starting"
 	EnvRunning  EnvState = "running"
 	EnvDegraded EnvState = "degraded"
+	EnvStopping EnvState = "stopping"
 	EnvError    EnvState = "error"
 )
 
@@ -39,6 +40,7 @@ const (
 	CmdStarting CmdState = "starting"
 	CmdHealthy  CmdState = "healthy"
 	CmdDone     CmdState = "done"
+	CmdStopping CmdState = "stopping"
 	CmdError    CmdState = "error"
 	CmdStopped  CmdState = "stopped"
 )

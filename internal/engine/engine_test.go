@@ -289,9 +289,7 @@ func TestStopEnvironment_stopsRunningService(t *testing.T) {
 	}
 
 	// Then the command becomes stopped and the env stopped.
-	if got := e.CmdState("svc"); got != CmdStopped {
-		t.Fatalf("svc: expected %q, got %q", CmdStopped, got)
-	}
+	waitForCmd(t, e, "svc", CmdStopped, 2*time.Second)
 	waitForEnv(t, e, "dev", EnvStopped, 2*time.Second)
 }
 
@@ -341,9 +339,7 @@ func TestReferenceCounting_sharedCommandStaysUpUntilLastEnvironmentStops(t *test
 	if err := e.StopEnvironment("b"); err != nil {
 		t.Fatalf("StopEnvironment b: %v", err)
 	}
-	if got := e.CmdState("shared"); got != CmdStopped {
-		t.Fatalf("after stopping b, shared expected %q, got %q", CmdStopped, got)
-	}
+	waitForCmd(t, e, "shared", CmdStopped, 2*time.Second)
 }
 
 func TestEvents_emittedForStateTransitions(t *testing.T) {
@@ -394,6 +390,68 @@ func TestEvents_emittedForStateTransitions(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("missing transitions: starting=%v done=%v envRunning=%v", sawStarting, sawDone, sawEnvRunning)
 		}
+	}
+}
+
+func TestStopEnvironment_whenStopping_transitionsThroughStopping(t *testing.T) {
+	// Given a long-running service with a readiness probe.
+	dir := t.TempDir()
+	ready := dir + "/ready"
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "svc",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       "touch " + ready + "; sleep 30",
+				Readiness: &config.Readiness{Shell: "test -f " + ready},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+
+	// Drain any queued events before stopping.
+	for len(e.Events()) > 0 {
+		<-e.Events()
+	}
+
+	// When stopped.
+	if err := e.StopEnvironment("dev"); err != nil {
+		t.Fatalf("StopEnvironment: %v", err)
+	}
+
+	// Then we observe a CmdStopping event before CmdStopped.
+	sawStopping := false
+	sawStopped := false
+	deadline := time.After(5 * time.Second)
+	for !(sawStopping && sawStopped) {
+		select {
+		case ev := <-e.Events():
+			if ev.Kind == "command" && ev.Command == "svc" {
+				switch ev.CmdState {
+				case CmdStopping:
+					sawStopping = true
+				case CmdStopped:
+					sawStopped = true
+				}
+			}
+		case <-deadline:
+			t.Fatalf("missing transitions: stopping=%v stopped=%v", sawStopping, sawStopped)
+		}
+	}
+	if sawStopped && !sawStopping {
+		t.Error("expected CmdStopping before CmdStopped")
 	}
 }
 
