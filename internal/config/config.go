@@ -98,6 +98,7 @@ type Command struct {
 	Name      string            `yaml:"name"`
 	Type      string            `yaml:"type"`
 	Source    Source            `yaml:"source"`
+	Setup     []string          `yaml:"setup,omitempty"`
 	Run       string            `yaml:"run"`
 	Teardown  string            `yaml:"teardown,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty"`

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Validate checks the Config for correctness. It returns a descriptive error on
@@ -39,6 +40,11 @@ func validateCommand(idx int, cmd Command) error {
 	}
 	if cmd.Run == "" {
 		return fmt.Errorf("command %q: run is required", cmd.Name)
+	}
+	for i, step := range cmd.Setup {
+		if strings.TrimSpace(step) == "" {
+			return fmt.Errorf("command %q: setup[%d] must not be empty", cmd.Name, i)
+		}
 	}
 	if err := validateSource(cmd.Name, cmd.Source); err != nil {
 		return err

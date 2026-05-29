@@ -67,6 +67,26 @@ Controls the command's lifecycle:
 type: service
 ```
 
+### `setup`
+
+| | |
+|---|---|
+| Type | list of strings |
+| Required | no |
+
+An ordered list of prep commands to run **before** `run`. Each command is executed sequentially via `sh -c` in the directory resolved from `source`. If any step exits non-zero the command immediately enters the `error` state and `run` is never launched.
+
+Use this to express multi-step startup sequences (e.g. installing dependencies before starting a server) while keeping `run` as the single long-lived monitored process:
+
+```yaml
+setup:
+  - yarn install
+  - yarn build
+run: yarn start
+```
+
+All setup steps share the command's `env` and log stream. Setup steps run while the command is in the `starting` state, so dependents correctly wait for the full sequence (setup + run + readiness probe) to complete before starting.
+
 ### `run`
 
 | | |
@@ -74,7 +94,7 @@ type: service
 | Type | string |
 | Required | yes |
 
-The shell command to execute. Runs inside the directory resolved from `source` (and `source.subdir` if set).
+The shell command to execute. Runs inside the directory resolved from `source` (and `source.subdir` if set). Readiness probes and service health monitoring apply to this command.
 
 ```yaml
 run: docker compose up

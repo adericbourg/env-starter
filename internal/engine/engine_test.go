@@ -435,3 +435,132 @@ func TestNew_whenEnvReferencesUnknownCommand_returnsError(t *testing.T) {
 		t.Fatalf("expected error for unknown command reference")
 	}
 }
+
+// ---- Setup tests ------------------------------------------------------------
+
+func TestStartCommand_whenSetupSucceeds_runsSetupThenRun(t *testing.T) {
+	// Given a service whose setup creates a marker file; run asserts the marker
+	// exists so if setup ran first the service becomes healthy, otherwise it exits 1.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "setup.done")
+	ready := filepath.Join(dir, "run.ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "web",
+				Type:   "service",
+				Source: localSource(dir),
+				Setup:  []string{fmt.Sprintf("touch %q", marker)},
+				Run:    fmt.Sprintf("test -f %q && touch %q && sleep 30", marker, ready),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", ready),
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "web"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the environment is started.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the command reaches healthy (which means setup ran, run found the marker,
+	// and the readiness file was created).
+	waitForCmd(t, e, "web", CmdHealthy, 5*time.Second)
+
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("setup marker not found — setup did not run: %v", err)
+	}
+}
+
+func TestStartCommand_whenSetupFails_commandErrorsAndRunNeverStarts(t *testing.T) {
+	// Given a service whose setup exits non-zero; run would create a witness file
+	// if it ever starts (it should not).
+	dir := t.TempDir()
+	witness := filepath.Join(dir, "run.started")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "web",
+				Type:   "service",
+				Source: localSource(dir),
+				Setup:  []string{"exit 1"},
+				Run:    fmt.Sprintf("touch %q; sleep 30", witness),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "web"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the environment is started.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the command errors and run never started.
+	waitForCmd(t, e, "web", CmdError, 5*time.Second)
+
+	if _, err := os.Stat(witness); err == nil {
+		t.Error("run.started exists — run was unexpectedly executed after failed setup")
+	}
+}
+
+func TestStartCommand_whenMultipleSetupSteps_runInOrder(t *testing.T) {
+	// Given a service with two setup steps each appending a word to a witness file.
+	dir := t.TempDir()
+	witness := filepath.Join(dir, "order.txt")
+	ready := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "web",
+				Type:   "service",
+				Source: localSource(dir),
+				Setup: []string{
+					fmt.Sprintf("printf 'first\\n' >> %q", witness),
+					fmt.Sprintf("printf 'second\\n' >> %q", witness),
+				},
+				Run: fmt.Sprintf("touch %q; sleep 30", ready),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", ready),
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "web"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the environment is started.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	waitForCmd(t, e, "web", CmdHealthy, 5*time.Second)
+
+	// Then the witness file contains both steps in order.
+	got, err := os.ReadFile(witness)
+	if err != nil {
+		t.Fatalf("read witness: %v", err)
+	}
+	want := "first\nsecond\n"
+	if string(got) != want {
+		t.Errorf("setup order wrong: got %q, want %q", string(got), want)
+	}
+}

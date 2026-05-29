@@ -8,6 +8,7 @@
 
 - **Dependency-aware startup** — commands start only after their declared dependencies pass a readiness probe.
 - **Two command types** — long-running **services** (stopped gracefully by signal) and **tasks** (run to completion with an optional `teardown`).
+- **Sequential setup steps** — an optional `setup` list runs prep commands (e.g. `yarn install`) one by one before the main `run` command starts; the first failure aborts the command.
 - **Pluggable readiness probes** — `tcp` (port accepts a connection) and `shell` (command exits 0).
 - **Multiple source types** — pull scripts or binaries from `github`, a `url` (with optional sha256 checksum), or a `local` path.
 - **Config overlays** — `--config-overlay` merges a second file on top of the base config (keyed by name), so you can layer team defaults with personal overrides.
@@ -126,6 +127,17 @@ env-starter:
         local: /home/user/scripts/migrate
       run: ./migrate.sh up
       teardown: ./migrate.sh down
+
+    - name: frontend
+      type: service
+      source:
+        local: /home/user/projects/frontend
+      setup:
+        - yarn install   # runs first, must exit 0
+        - yarn build     # runs second, must exit 0
+      run: yarn start    # the long-running process; readiness probes apply here
+      readiness:
+        tcp: "localhost:3000"
 
     - name: auth-gateway
       type: service

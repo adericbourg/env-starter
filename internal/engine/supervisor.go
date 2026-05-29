@@ -165,6 +165,12 @@ func (e *Engine) startCommand(c *command) {
 	}
 	c.writer = logbuf.NewWriter(c.ring, file)
 
+	if err := e.runSetup(ctx, c, runDir); err != nil {
+		c.writer.Close()
+		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("setup failed: %w", err))
+		return
+	}
+
 	cmd := exec.CommandContext(ctx, "sh", "-c", c.cfg.Run)
 	cmd.Dir = runDir
 	cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
@@ -340,6 +346,23 @@ func (e *Engine) logPath(cmdName string) string {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "logs", cmdName+".log")
+}
+
+// runSetup executes each setup command sequentially in runDir, streaming output
+// to the shared writer. It returns on the first command that exits non-zero.
+func (e *Engine) runSetup(ctx context.Context, c *command, runDir string) error {
+	for _, step := range c.cfg.Setup {
+		cmd := exec.CommandContext(ctx, "sh", "-c", step)
+		cmd.Dir = runDir
+		cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
+		cmd.Stdout = c.writer
+		cmd.Stderr = c.writer
+		setSysProcAttr(cmd)
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("%q: %w", step, err)
+		}
+	}
+	return nil
 }
 
 // envSlice converts an env map to the "KEY=VALUE" slice form exec expects.

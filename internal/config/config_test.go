@@ -717,6 +717,74 @@ func TestMerge_whenBaseOnly_keepsAll(t *testing.T) {
 	}
 }
 
+// ---- Setup field tests ------------------------------------------------------
+
+func TestLoad_ofConfigWithSetup_parsesSetupList(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: web
+      type: service
+      source:
+        local: /tmp/web
+      setup:
+        - yarn install
+        - yarn build
+      run: yarn start
+  environments:
+    - name: dev
+      workflow:
+        - command: web
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	got := cfg.Commands[0].Setup
+	want := []string{"yarn install", "yarn build"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d setup steps, got %d: %v", len(want), len(got), got)
+	}
+	for i, step := range want {
+		if got[i] != step {
+			t.Errorf("setup[%d]: expected %q, got %q", i, step, got[i])
+		}
+	}
+}
+
+func TestValidate_whenSetupStepEmpty_returnsError(t *testing.T) {
+	// Given
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name:   "web",
+				Type:   "service",
+				Source: Source{Local: "/tmp/web"},
+				Setup:  []string{"yarn install", ""},
+				Run:    "yarn start",
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "web"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for empty setup step, got nil")
+	}
+}
+
 func TestMerge_environmentsMergedByName(t *testing.T) {
 	// Given
 	base := &Config{
