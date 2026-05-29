@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/adericbourg/env-starter/internal/config"
 )
 
 // StopEnvironment decrements the reference count of every command in the named
@@ -19,12 +21,18 @@ func (e *Engine) StopEnvironment(env string) error {
 
 	e.setEnvState(env, EnvStopping)
 	go func() {
-		for _, step := range envCfg.Workflow {
-			e.releaseCommand(step.Command)
-		}
+		e.releaseWorkflow(envCfg)
 		e.setEnvState(env, EnvStopped)
 	}()
 	return nil
+}
+
+// releaseWorkflow releases every command in an environment's workflow once,
+// decrementing reference counts and tearing down commands whose count reaches zero.
+func (e *Engine) releaseWorkflow(envCfg config.Environment) {
+	for _, step := range envCfg.Workflow {
+		e.releaseCommand(step.Command)
+	}
 }
 
 // releaseCommand decrements a command's refcount and stops it when it reaches

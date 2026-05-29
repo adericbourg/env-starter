@@ -18,15 +18,29 @@ import (
 // StartEnvironment starts the named environment asynchronously. It returns an
 // error only if the environment is unknown; startup progress is reported via
 // Events() and the state accessors.
+//
+// If the environment is currently in a failed state (EnvError or EnvDegraded),
+// it is first reset: its workflow commands are released so that errored commands
+// — whose refcount was never decremented on failure — are recreated fresh.
+// Commands still shared with other running environments are not torn down.
 func (e *Engine) StartEnvironment(env string) error {
 	envCfg, ok := e.findEnv(env)
 	if !ok {
 		return fmt.Errorf("engine: unknown environment %q", env)
 	}
 
+	prev := e.EnvState(env)
 	e.setEnvState(env, EnvStarting)
 
-	go e.runEnvironment(envCfg)
+	go func() {
+		// A previously failed env holds errored commands whose refcount was never
+		// decremented (only StopEnvironment does that). Release them first so
+		// acquireAndStart can recreate them with a fresh process and log ring.
+		if prev == EnvError || prev == EnvDegraded {
+			e.releaseWorkflow(envCfg)
+		}
+		e.runEnvironment(envCfg)
+	}()
 	return nil
 }
 

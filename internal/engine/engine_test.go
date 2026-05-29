@@ -666,3 +666,54 @@ func TestStartCommand_whenMultipleSetupSteps_runInOrder(t *testing.T) {
 		t.Errorf("setup order wrong: got %q, want %q", string(got), want)
 	}
 }
+
+// ---- Restart-after-failure tests --------------------------------------------
+
+func TestStartEnvironment_whenRestartingFailedEnv_recoversToRunning(t *testing.T) {
+	// Given a service that fails on first start (marker absent → exits 1 before
+	// healthy), but would succeed once the marker is created.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "fixed")
+	ready := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Exits 1 immediately if the marker does not exist yet.
+				Run: fmt.Sprintf("test -f %q && touch %q && sleep 30", marker, ready),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", ready),
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When started before the issue is fixed — env should become error.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (first): %v", err)
+	}
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+
+	// Simulate fixing the issue (create the marker file).
+	if err := os.WriteFile(marker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create marker: %v", err)
+	}
+
+	// When started again after the fix.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (retry): %v", err)
+	}
+
+	// Then the environment recovers to running and the command becomes healthy.
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
