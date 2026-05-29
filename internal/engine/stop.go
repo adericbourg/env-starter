@@ -63,8 +63,10 @@ func (e *Engine) releaseCommand(name string) {
 	e.stopCommand(c)
 }
 
-// stopCommand tears a single command down: services are signalled then killed;
-// tasks run their teardown (if any).
+// stopCommand tears a single command down. For tasks, the teardown script (if
+// any) runs after the task exits. For services, the teardown script (if any)
+// runs first so it can stop the underlying process gracefully (e.g.
+// `docker stop`), then the process is waited on and killed if still alive.
 func (e *Engine) stopCommand(c *command) {
 	switch c.cfg.Type {
 	case "task":
@@ -78,6 +80,10 @@ func (e *Engine) stopCommand(c *command) {
 			e.setCmdState(c.cfg.Name, CmdStopped, nil)
 		}
 	default:
+		// Run teardown before signalling so it can stop a backing resource
+		// (e.g. a named Docker container) before we kill the foreground client.
+		// This also handles orphaned resources if the process already exited.
+		e.runTeardown(c)
 		e.mu.Lock()
 		running := c.cmd != nil && c.state != CmdError
 		e.mu.Unlock()

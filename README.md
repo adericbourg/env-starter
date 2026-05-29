@@ -7,7 +7,7 @@
 ## Features
 
 - **Dependency-aware startup** — commands start only after their declared dependencies pass a readiness probe.
-- **Two command types** — long-running **services** (stopped gracefully by signal) and **tasks** (run to completion with an optional `teardown`).
+- **Two command types** — long-running **services** (optionally run a `teardown` to stop a backing resource, then signalled) and **tasks** (run to completion with an optional `teardown`).
 - **Sequential setup steps** — an optional `setup` list runs prep commands (e.g. `yarn install`) one by one before the main `run` command starts; the first failure aborts the command.
 - **Pluggable readiness probes** — `tcp` (port accepts a connection) and `shell` (command exits 0).
 - **Multiple source types** — pull scripts or binaries from `github`, a `url` (with optional sha256 checksum), or a `local` path.
@@ -145,6 +145,7 @@ env-starter:
           method: ssh       # optional: ssh | https | gh
         subdir: scripts/database
       run: docker compose up
+      teardown: docker compose down   # stops containers gracefully before killing the client
       env:
         PGPORT: "5432"
       readiness:

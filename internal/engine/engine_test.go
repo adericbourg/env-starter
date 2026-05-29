@@ -293,6 +293,50 @@ func TestStopEnvironment_stopsRunningService(t *testing.T) {
 	waitForEnv(t, e, "dev", EnvStopped, 2*time.Second)
 }
 
+func TestStopEnvironment_runsServiceTeardown(t *testing.T) {
+	// Given a service with a teardown marker command.
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	tornFile := filepath.Join(dir, "torn")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "svc",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 30", readyFile),
+				Teardown:  fmt.Sprintf("touch %q", tornFile),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyFile)},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name:     "dev",
+				Workflow: []config.WorkflowStep{{Command: "svc"}},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+
+	// When started then stopped.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+
+	if err := e.StopEnvironment("dev"); err != nil {
+		t.Fatalf("StopEnvironment: %v", err)
+	}
+
+	// Then the teardown ran and the command reaches stopped.
+	waitForCmd(t, e, "svc", CmdStopped, 5*time.Second)
+	if _, err := os.Stat(tornFile); os.IsNotExist(err) {
+		t.Error("teardown was not run for service: torn marker file missing")
+	}
+}
+
 func TestReferenceCounting_sharedCommandStaysUpUntilLastEnvironmentStops(t *testing.T) {
 	// Given two environments that share command "shared".
 	dir := t.TempDir()

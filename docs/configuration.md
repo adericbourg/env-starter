@@ -60,7 +60,7 @@ name: database
 
 Controls the command's lifecycle:
 
-- **`service`** — long-running process (e.g. `docker compose up`, a proxy, a server). Never expected to return on its own. Stopped with a signal: SIGINT → 30 s grace period → SIGKILL. A service with no readiness probe is considered healthy immediately after it starts.
+- **`service`** — long-running process (e.g. `docker run`, a proxy, a server). Never expected to return on its own. When stopped, the `teardown` command (if declared) runs first so it can shut down a backing resource gracefully (e.g. `docker stop`); then the foreground process is waited on and killed if still alive (SIGINT → 30 s grace period → SIGKILL). A service with no readiness probe is considered healthy immediately after it starts.
 - **`task`** — runs to completion. A non-zero exit marks the command `error` and blocks its dependents. Stopped by running its `teardown` command (if declared). A task with no readiness probe is considered healthy when it exits 0.
 
 ```yaml
@@ -107,9 +107,18 @@ run: docker compose up
 | Type | string |
 | Required | no |
 
-A command to run when a **task** is stopped. Ignored for services (which are stopped by signal). Runs in the same working directory as `run`.
+A shell command to run when the command is stopped. Runs in the same working directory as `run`.
+
+- **Service**: runs **before** the foreground process is signalled, allowing it to gracefully shut down a backing resource (e.g. `docker stop` a named container). After teardown completes, the process is waited on and killed if still alive.
+- **Task**: runs after the task exits.
 
 ```yaml
+# gracefully stop a named Docker container before killing the foreground client
+teardown: docker stop mariadb-dev
+```
+
+```yaml
+# or run a cleanup script for a task
 teardown: ./migrate.sh down
 ```
 
@@ -394,7 +403,7 @@ workflow:
 | `healthy` | Readiness probe passed (service) or the command has not yet exited (task awaiting probe). |
 | `done` | Task exited with code 0. |
 | `error` | Process exited non-zero or readiness timed out. |
-| `stopped` | Stopped explicitly (signal for service; teardown run for task). |
+| `stopped` | Stopped explicitly (teardown run if declared, then signal for service; teardown run for task). |
 
 ---
 
