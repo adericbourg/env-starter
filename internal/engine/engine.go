@@ -86,12 +86,12 @@ type restartPolicy struct {
 	checkInterval time.Duration // 0 means no periodic liveness check
 }
 
-// resolveRestart computes a concrete restart policy from the command's config,
-// applying type-aware defaults: services default to auto-restart on; tasks are
-// always off regardless of what the config declares.
+// resolveRestart computes a concrete restart policy from the command's config.
+// Services default to auto-restart on. Tasks opt in by declaring a restart block;
+// without one they are off.
 func resolveRestart(cmd config.Command) restartPolicy {
-	// Tasks cannot be auto-restarted — they run to completion.
-	if cmd.Type == "task" {
+	// Tasks without an explicit restart block are off by default.
+	if cmd.Type == "task" && cmd.Restart == nil {
 		return restartPolicy{}
 	}
 

@@ -764,13 +764,11 @@ func TestResolveRestart_serviceDefaults_enabledThreeRetriesOneSecondBase(t *test
 	}
 }
 
-func TestResolveRestart_taskType_disabledRegardlessOfConfig(t *testing.T) {
-	// Given a task with restart.enabled=true
-	enabled := true
+func TestResolveRestart_taskWithNoBlock_isDisabled(t *testing.T) {
+	// Given a task with no restart block
 	cmd := config.Command{
-		Name:    "migrate",
-		Type:    "task",
-		Restart: &config.Restart{Enabled: &enabled},
+		Name: "migrate",
+		Type: "task",
 	}
 
 	// When
@@ -778,7 +776,32 @@ func TestResolveRestart_taskType_disabledRegardlessOfConfig(t *testing.T) {
 
 	// Then
 	if p.enabled {
-		t.Error("expected enabled=false for task type")
+		t.Error("expected enabled=false for task with no restart block")
+	}
+}
+
+func TestResolveRestart_taskWithBlock_isEnabled(t *testing.T) {
+	// Given a task with an explicit restart block and a readiness probe
+	enabled := true
+	cmd := config.Command{
+		Name:      "tunnel",
+		Type:      "task",
+		Readiness: &config.Readiness{Shell: "check.sh"},
+		Restart:   &config.Restart{Enabled: &enabled},
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if !p.enabled {
+		t.Error("expected enabled=true for task with explicit restart block")
+	}
+	if p.maxRetries != 3 {
+		t.Errorf("expected default maxRetries=3, got %d", p.maxRetries)
+	}
+	if p.checkInterval != 10*time.Second {
+		t.Errorf("expected default checkInterval=10s, got %v", p.checkInterval)
 	}
 }
 
@@ -1087,4 +1110,297 @@ func TestStartEnvironment_whenReadinessTimesOut_marksTimeout(t *testing.T) {
 	// Then the command is marked timeout (not error) and the env is error.
 	waitForCmd(t, e, "svc", CmdTimeout, 5*time.Second)
 	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+// ---- Task with readiness probe tests -----------------------------------------
+
+func TestHandleTask_withNoProbe_reachesDone(t *testing.T) {
+	// Given a task with no readiness probe that exits 0.
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "migrate",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    "exit 0",
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "migrate"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task reaches done (not healthy) — regression guard for no-probe path.
+	waitForCmd(t, e, "migrate", CmdDone, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestHandleTask_withReadinessProbe_reachesHealthy(t *testing.T) {
+	// Given a task that exits 0 and leaves a marker file that the probe checks.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit 0 immediately while creating the marker (simulating a tunnel
+				// that backgrounds itself and returns).
+				Run:       fmt.Sprintf("touch %q", marker),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", marker)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task reaches healthy (not done) and the env is running.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestHandleTask_whenReadinessTimesOut_reachesTimeout(t *testing.T) {
+	// Given a task whose process exits 0 but the readiness probe never passes.
+	dir := t.TempDir()
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit immediately; the probe will never see a marker.
+				Run: "exit 0",
+				Readiness: &config.Readiness{
+					Shell:   "false", // never succeeds
+					Timeout: &config.Duration{Duration: 100 * time.Millisecond},
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task is marked timeout (not done).
+	waitForCmd(t, e, "tunnel", CmdTimeout, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+func TestHandleTask_withReadinessProbe_unblocksDependent(t *testing.T) {
+	// Given a task (tunnel) with a readiness probe, and a dependent service that
+	// records whether the probe had passed before it started.
+	dir := t.TempDir()
+	tunnelMarker := filepath.Join(dir, "tunnel-ready")
+	witness := filepath.Join(dir, "witness")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    fmt.Sprintf("touch %q", tunnelMarker),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", tunnelMarker),
+				},
+			},
+			{
+				Name:   "app",
+				Type:   "service",
+				Source: localSource(dir),
+				// Record whether the tunnel marker existed when the service started.
+				Run: fmt.Sprintf(
+					"if [ -f %q ]; then echo ok > %q; else echo bad > %q; fi; sleep 30",
+					tunnelMarker, witness, witness,
+				),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", witness)},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name: "dev",
+				Workflow: []config.WorkflowStep{
+					{Command: "tunnel"},
+					{Command: "app", DependsOn: []string{"tunnel"}},
+				},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the tunnel is healthy (not just done) and app started only after probe passed.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "app", CmdHealthy, 5*time.Second)
+
+	got, err := os.ReadFile(witness)
+	if err != nil {
+		t.Fatalf("read witness: %v", err)
+	}
+	if string(got) != "ok\n" {
+		t.Fatalf("app started before tunnel probe passed: witness=%q", string(got))
+	}
+}
+
+func TestSuperviseTask_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *testing.T) {
+	// Given a task that exits 0 and passes its probe (marker exists); after the
+	// task is healthy, the marker is removed (liveness fails → restart); then
+	// the marker is recreated so the relaunched task passes the probe again.
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit 0 immediately; the probe checks an external marker file.
+				Run: "exit 0",
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", liveMarker),
+				},
+				Restart: shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+
+	// Simulate liveness failure: remove the marker.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// The liveness probe should fail → restart cycle begins.
+	waitForCmd(t, e, "tunnel", CmdRestarting, 5*time.Second)
+
+	// Recreate the marker so the relaunched task's probe passes.
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("recreate live marker: %v", err)
+	}
+
+	// The task should come back healthy.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	// Retry counter resets to 0 on success.
+	attempts, _ := e.CmdRetries("tunnel")
+	if attempts != 0 {
+		t.Errorf("expected retry counter reset to 0 after success, got %d", attempts)
+	}
+}
+
+func TestSuperviseTask_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
+	// Given a task that passes its initial probe (marker exists) but after the
+	// marker is permanently removed, each restart attempt's probe fails, exhausting
+	// all retries and ending in CmdError.
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	max := 2
+	enabled := true
+	base := config.Duration{Duration: 10 * time.Millisecond}
+	check := config.Duration{Duration: 30 * time.Millisecond}
+	probeTimeout := config.Duration{Duration: 50 * time.Millisecond}
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    "exit 0",
+				Readiness: &config.Readiness{
+					Shell:   fmt.Sprintf("test -f %q", liveMarker),
+					Timeout: &probeTimeout,
+				},
+				Restart: &config.Restart{
+					Enabled:       &enabled,
+					MaxRetries:    &max,
+					BackoffBase:   &base,
+					CheckInterval: &check,
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+
+	// Remove the marker permanently so all restart probes fail.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// All retries exhausted → CmdError.
+	waitForCmd(t, e, "tunnel", CmdError, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+
+	attempts, maxRetries := e.CmdRetries("tunnel")
+	if attempts != max {
+		t.Errorf("expected %d retries recorded, got %d", max, attempts)
+	}
+	if maxRetries != max {
+		t.Errorf("expected max=%d, got %d", max, maxRetries)
+	}
 }

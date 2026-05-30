@@ -245,14 +245,49 @@ func (e *Engine) launchProcess(c *command) error {
 	return nil
 }
 
-// handleTask waits for the process to complete: exit 0 → done, otherwise error.
+// handleTask waits for the process to complete, then optionally runs a readiness
+// probe. Without a probe the task ends in CmdDone on exit 0 (existing behaviour).
+// With a probe the task ends in CmdHealthy when the probe passes, allowing
+// dependents to unblock and, if restart is configured, enabling liveness monitoring.
 func (e *Engine) handleTask(c *command) {
 	<-c.exited
 	if c.exitErr != nil {
 		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("task failed: %w", c.exitErr))
 		return
 	}
-	e.setCmdState(c.cfg.Name, CmdDone, nil)
+
+	p, timeout, interval := e.buildProbe(c.cfg.Readiness)
+	if p == nil {
+		// No probe: task completed successfully.
+		e.setCmdState(c.cfg.Name, CmdDone, nil)
+		return
+	}
+
+	// Task exited 0; run the readiness probe to confirm the side effect is ready
+	// (e.g. a tunnel is accepting connections).
+	readyDone := make(chan error, 1)
+	probeCtx, cancelProbe := context.WithCancel(context.Background())
+	defer cancelProbe()
+	go func() {
+		readyDone <- probe.WaitReady(probeCtx, p, timeout, interval)
+	}()
+
+	rerr := <-readyDone
+	if rerr != nil {
+		if errors.Is(rerr, probe.ErrTimeout) {
+			e.setCmdState(c.cfg.Name, CmdTimeout, fmt.Errorf("readiness: %w", rerr))
+		} else {
+			e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("readiness: %w", rerr))
+		}
+		// The process has already exited; no terminate() needed.
+		return
+	}
+
+	e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+	// Start liveness monitoring only when a periodic check is configured.
+	if c.policy.enabled && c.policy.checkInterval > 0 {
+		e.startMonitor(c)
+	}
 }
 
 // handleService waits for the readiness probe (if any) to pass, racing against
@@ -305,13 +340,19 @@ func (e *Engine) handleService(c *command) {
 
 // startMonitor creates the per-command quit channel (once) and launches the
 // supervise goroutine that owns the command's runtime from healthy onward.
+// Services are supervised by superviseService; tasks (whose process has already
+// exited) are supervised by superviseTask.
 func (e *Engine) startMonitor(c *command) {
 	e.mu.Lock()
 	if c.quit == nil {
 		c.quit = make(chan struct{})
 	}
 	e.mu.Unlock()
-	go e.superviseService(c)
+	if c.cfg.Type == "task" {
+		go e.superviseTask(c)
+	} else {
+		go e.superviseService(c)
+	}
 }
 
 // superviseService is the single owner goroutine for a healthy service. It
@@ -373,6 +414,50 @@ func (e *Engine) superviseService(c *command) {
 		}
 		// Restart succeeded: c.exited and c.quit were refreshed by relaunch;
 		// loop back to re-snapshot and resume monitoring.
+	}
+}
+
+// superviseTask is the single owner goroutine for a healthy task whose process
+// has already exited (e.g. a tunnel that backgrounded itself). It watches only
+// the liveness probe — there is no process-exit signal to watch.
+//
+// On liveness failure it attempts a restart (re-run the task, then re-probe);
+// on cancellation it returns immediately.
+func (e *Engine) superviseTask(c *command) {
+	for {
+		e.mu.Lock()
+		quit := c.quit
+		e.mu.Unlock()
+
+		livenessStop := make(chan struct{})
+		livenessFail := e.runLiveness(c, livenessStop)
+
+		select {
+		case <-quit:
+			close(livenessStop)
+			return // user stop wins
+
+		case err := <-livenessFail:
+			close(livenessStop)
+			e.mu.Lock()
+			stopped := c.userStopped
+			e.mu.Unlock()
+			if stopped {
+				return
+			}
+			lastErr := fmt.Errorf("liveness probe failed: %w", err)
+
+			if !c.policy.enabled {
+				e.setCmdState(c.cfg.Name, CmdError, lastErr)
+				e.recomputeEnvsFor(c.cfg.Name)
+				return
+			}
+
+			if !e.attemptRestart(c, lastErr) {
+				return // gave up or cancelled
+			}
+			// Restart succeeded; loop back to resume monitoring.
+		}
 	}
 }
 
@@ -504,8 +589,14 @@ func (e *Engine) relaunch(c *command) bool {
 		return false
 	}
 
-	// Run the readiness probe (if any), racing against an early process exit.
-	ok := e.waitReadyOrExit(c)
+	// Wait for the process to be ready. Tasks are expected to exit first then pass
+	// a probe; services race their probe against an early process exit.
+	var ok bool
+	if c.cfg.Type == "task" {
+		ok = e.waitTaskReady(c)
+	} else {
+		ok = e.waitReadyOrExit(c)
+	}
 	close(c.startDone)
 	settled = true
 	return ok
@@ -557,6 +648,58 @@ func (e *Engine) waitReadyOrExit(c *command) bool {
 		}
 		return true
 	}
+}
+
+// waitTaskReady waits for a task's process to exit, then runs the readiness probe
+// to verify the side effect (e.g. tunnel open). It returns true only when the
+// probe passes. Unlike waitReadyOrExit there is no process to race against — the
+// process is expected to exit first before the probe makes sense.
+//
+// Called exclusively from relaunch for task-type commands; does NOT emit
+// CmdHealthy (the caller, attemptRestart, does that).
+func (e *Engine) waitTaskReady(c *command) bool {
+	p, timeout, interval := e.buildProbe(c.cfg.Readiness)
+
+	e.mu.Lock()
+	exited := c.exited
+	e.mu.Unlock()
+
+	// Wait for the task process to exit.
+	<-exited
+
+	e.mu.Lock()
+	exitErr := c.exitErr
+	e.mu.Unlock()
+
+	if exitErr != nil {
+		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("relaunch: task failed: %w", exitErr))
+		return false
+	}
+
+	if p == nil {
+		// Restart on a task without a probe is blocked by validation, but be
+		// defensive: treat a successful exit as ready.
+		return true
+	}
+
+	readyDone := make(chan error, 1)
+	probeCtx, cancelProbe := context.WithCancel(context.Background())
+	defer cancelProbe()
+	go func() {
+		readyDone <- probe.WaitReady(probeCtx, p, timeout, interval)
+	}()
+
+	rerr := <-readyDone
+	if rerr != nil {
+		if errors.Is(rerr, probe.ErrTimeout) {
+			e.setCmdState(c.cfg.Name, CmdTimeout, fmt.Errorf("relaunch readiness: %w", rerr))
+		} else {
+			e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("relaunch readiness: %w", rerr))
+		}
+		// The process has already exited; no terminate() needed.
+		return false
+	}
+	return true
 }
 
 // buildProbe constructs a probe from a readiness config, returning nil when no

@@ -787,21 +787,21 @@ func TestValidate_whenSetupStepEmpty_returnsError(t *testing.T) {
 
 // ---- Restart config tests ---------------------------------------------------
 
-func TestValidate_whenRestartOnTask_returnsError(t *testing.T) {
-	// Given
+func TestValidate_whenRestartOnTaskWithoutReadiness_returnsError(t *testing.T) {
+	// Given — task has restart but no readiness probe
 	enabled := true
 	cfg := &Config{
 		Commands: []Command{
 			{
-				Name:    "migrate",
+				Name:    "tunnel",
 				Type:    "task",
 				Source:  Source{Local: "/tmp"},
-				Run:     "migrate.sh",
+				Run:     "open-tunnel.sh",
 				Restart: &Restart{Enabled: &enabled},
 			},
 		},
 		Environments: []Environment{
-			{Name: "dev", Workflow: []WorkflowStep{{Command: "migrate"}}},
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "tunnel"}}},
 		},
 	}
 
@@ -810,7 +810,35 @@ func TestValidate_whenRestartOnTask_returnsError(t *testing.T) {
 
 	// Then
 	if err == nil {
-		t.Fatal("expected error for restart on task, got nil")
+		t.Fatal("expected error for restart on task without readiness probe, got nil")
+	}
+}
+
+func TestValidate_whenRestartOnTaskWithReadiness_isValid(t *testing.T) {
+	// Given — task has both restart and a readiness probe
+	enabled := true
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name:      "tunnel",
+				Type:      "task",
+				Source:    Source{Local: "/tmp"},
+				Run:       "open-tunnel.sh",
+				Readiness: &Readiness{Shell: "check-tunnel.sh"},
+				Restart:   &Restart{Enabled: &enabled},
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error for restart on task with readiness probe, got: %v", err)
 	}
 }
 
@@ -916,6 +944,52 @@ env-starter:
 	}
 	if r.CheckInterval == nil || r.CheckInterval.Duration != 30*time.Second {
 		t.Errorf("expected check-interval=30s, got %v", r.CheckInterval)
+	}
+}
+
+func TestLoad_ofTaskWithReadinessAndRestart_parsesCorrectly(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: tunnel
+      type: task
+      source:
+        local: /tmp
+      run: open-tunnel.sh
+      readiness:
+        shell: check-tunnel.sh
+        timeout: 30s
+      restart:
+        max-retries: 5
+        check-interval: 10s
+  environments:
+    - name: dev
+      workflow:
+        - command: tunnel
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error for task with readiness and restart, got: %v", err)
+	}
+	cmd := cfg.Commands[0]
+	if cmd.Readiness == nil {
+		t.Fatal("expected readiness to be set")
+	}
+	if cmd.Restart == nil {
+		t.Fatal("expected restart to be set")
+	}
+	if cmd.Restart.MaxRetries == nil || *cmd.Restart.MaxRetries != 5 {
+		t.Errorf("expected max-retries=5, got %v", cmd.Restart.MaxRetries)
+	}
+	if cmd.Restart.CheckInterval == nil || cmd.Restart.CheckInterval.Duration != 10*time.Second {
+		t.Errorf("expected check-interval=10s, got %v", cmd.Restart.CheckInterval)
 	}
 }
 

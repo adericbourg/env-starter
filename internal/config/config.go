@@ -84,6 +84,11 @@ func (s *Source) UnmarshalYAML(value *yaml.Node) error {
 
 // Readiness describes how to probe whether a command is ready.
 // Exactly one of TCP or Shell must be set.
+//
+// For tasks with a readiness probe: after the process exits 0 the probe is run
+// to confirm the side effect is up (e.g. a tunnel accepting connections). The
+// task is marked healthy when the probe passes, and its dependents unblock.
+// If restart is also configured, the probe is re-used as the liveness check.
 type Readiness struct {
 	TCP      string    `yaml:"tcp,omitempty"`
 	Shell    string    `yaml:"shell,omitempty"`
@@ -93,11 +98,16 @@ type Readiness struct {
 	Interval *Duration `yaml:"interval,omitempty"`
 }
 
-// Restart configures automatic restart behaviour for a service command.
-// Nil means "defaults": enabled for services (up to 3 retries), disabled for tasks.
+// Restart configures automatic restart behaviour for a command.
+//
+// For services: auto-restart is on by default (no block needed).
+// For tasks: restart is opt-in — a restart block must be declared AND the
+// command must have a readiness probe (the liveness probe is the only failure
+// signal once the process exits). A task with restart: {enabled: false} and
+// no readiness probe is allowed (the block is a no-op).
 type Restart struct {
 	// Enabled controls whether auto-restart is active. Defaults to true for
-	// services, false for tasks (tasks can never be auto-restarted).
+	// services; tasks opt in by declaring a restart block.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// MaxRetries is the number of restart attempts before giving up. Default 3.
 	MaxRetries *int `yaml:"max-retries,omitempty"`
@@ -106,7 +116,8 @@ type Restart struct {
 	BackoffBase *Duration `yaml:"backoff-base,omitempty"`
 	// CheckInterval is the period at which the readiness probe is re-run after
 	// the command is healthy. Default 10s. Set to 0 to disable liveness checking
-	// (crashes are still detected and trigger a restart).
+	// (crashes are still detected for services; for tasks this disables monitoring
+	// entirely since the process is already gone).
 	CheckInterval *Duration `yaml:"check-interval,omitempty"`
 }
 
