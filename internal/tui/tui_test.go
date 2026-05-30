@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
@@ -102,12 +102,12 @@ func seed(m Model) Model {
 	return updated.(Model)
 }
 
-func keyMsg(key string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)}
+func keyMsg(key string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: []rune(key)[0], Text: key}
 }
 
-func specialKey(t tea.KeyType) tea.KeyMsg {
-	return tea.KeyMsg{Type: t}
+func specialKey(t rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: t}
 }
 
 func sendKey(m Model, key string) Model {
@@ -115,7 +115,7 @@ func sendKey(m Model, key string) Model {
 	return updated.(Model)
 }
 
-func sendSpecialKey(m Model, kt tea.KeyType) Model {
+func sendSpecialKey(m Model, kt rune) Model {
 	updated, _ := m.Update(specialKey(kt))
 	return updated.(Model)
 }
@@ -128,7 +128,7 @@ func TestView_initial_rendersEnvNameAndFooterShortcut(t *testing.T) {
 	m := seed(New(ctrl))
 
 	// When
-	view := m.View()
+	view := m.render()
 
 	// Then
 	if !strings.Contains(view, "alpha") {
@@ -277,7 +277,7 @@ func TestUpdate_whenFirstCtrlC_armsConfirmationWithoutQuitting(t *testing.T) {
 	m := seed(New(ctrl))
 
 	// When
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Then: confirmation window armed, quitting flag still false.
@@ -303,7 +303,7 @@ func TestUpdate_whenFirstCtrlC_doesNotShutDownEnvs(t *testing.T) {
 	m := seed(New(ctrl))
 
 	// When
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Then: shutdown must NOT have been called — environments keep running.
@@ -319,7 +319,7 @@ func TestUpdate_whenSecondCtrlC_startsShutdown(t *testing.T) {
 	m.confirmingQuit = true
 
 	// When
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Then: quitting is set; the returned cmd calls Shutdown and yields shutdownDoneMsg.
@@ -416,7 +416,7 @@ func TestView_whenQuitting_showsShuttingDownMessage(t *testing.T) {
 	m.quitting = true
 
 	// When
-	view := m.View()
+	view := m.render()
 
 	// Then
 	if !strings.Contains(view, "shutting down") {
@@ -448,7 +448,7 @@ func TestRenderShutdown_withStoppingCommands_listsCommandWithEnvsSpinnerAndCount
 	m.quitting = true
 
 	// When
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.render())
 
 	// Then — env group, command name, and countdown must all appear.
 	if !strings.Contains(view, "[dev, dev2]") {
@@ -485,7 +485,7 @@ func TestRenderShutdown_whenStoppingCommandBelongsToSingleEnv_showsSingleEnvGrou
 	m.quitting = true
 
 	// When
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.render())
 
 	// Then
 	if !strings.Contains(view, "[dev]") {
@@ -545,7 +545,7 @@ func TestUpdate_whenEventMsg_healthyCmdAppearsInView(t *testing.T) {
 	m = updated.(Model)
 
 	// Then
-	view := m.View()
+	view := m.render()
 	if !strings.Contains(view, "svc-a") {
 		t.Error("expected view to contain command name 'svc-a'")
 	}
@@ -641,7 +641,7 @@ func TestView_whenCommandSelected_showsLogLines(t *testing.T) {
 	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
 
 	// When
-	view := m.View()
+	view := m.render()
 
 	// Then
 	if !strings.Contains(view, "log line 1") {
@@ -755,7 +755,7 @@ func TestUpdate_whenCtrlLOnLogsPane_opensSelectedLog(t *testing.T) {
 	m.focused = focusLogs // svc-a is selected (envCursor=0, cmdCursor=0)
 
 	// When
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	_ = updated
 
 	// Then — opener must have been called with svc-a's log path
@@ -772,7 +772,7 @@ func TestUpdate_whenCtrlLNotOnLogsPane_doesNothing(t *testing.T) {
 	// default focus is focusEnvs
 
 	// When
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	_ = updated
 
 	// Then — opener must NOT have been called
@@ -788,7 +788,7 @@ func TestUpdate_whenOpenFails_setsErrorNotice(t *testing.T) {
 	m.focused = focusLogs
 
 	// When
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Then — notice must contain the error text
@@ -804,7 +804,7 @@ func TestUpdate_whenOpenSucceeds_setsSuccessNotice(t *testing.T) {
 	m.focused = focusLogs
 
 	// When
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlL})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
 	m = updated.(Model)
 
 	// Then — notice must confirm which path was opened
@@ -868,7 +868,7 @@ func TestView_rendersLogsTitleForSelectedEnvAndCommand(t *testing.T) {
 	m := seed(New(ctrl))
 
 	// When
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.render())
 
 	// Then — default selection is alpha / svc-a
 	if !strings.Contains(view, "alpha > svc-a") {
@@ -883,7 +883,7 @@ func TestView_logsTitleTracksEnvCursorWhileEnvPanelFocused(t *testing.T) {
 
 	// When — move env cursor down to beta (which has command svc-c)
 	m = sendSpecialKey(m, tea.KeyDown)
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.render())
 
 	// Then — title must reflect the new env + its first command
 	if !strings.Contains(view, "beta > svc-c") {

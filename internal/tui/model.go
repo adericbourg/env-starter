@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
@@ -91,7 +91,7 @@ type Model struct {
 func New(ctrl Controller) Model {
 	return Model{
 		ctrl:     ctrl,
-		logView:  viewport.New(0, 0),
+		logView:  viewport.New(),
 		openFile: openfile.Open,
 	}
 }
@@ -178,14 +178,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.refreshLogView()
 		return m, waitForEvent(m.ctrl)
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
 	return m, nil
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// While the shutdown screen is shown, all input is ignored.
 	if m.quitting {
 		return m, nil
@@ -383,7 +383,7 @@ func (m Model) refreshLogView() Model {
 		return m
 	}
 	lines := m.ctrl.Logs(cmd)
-	width := m.logView.Width
+	width := m.logView.Width()
 	wrapped := make([]string, 0, len(lines))
 	for _, line := range lines {
 		wrapped = append(wrapped, wrapLogLine(line, width))
@@ -426,8 +426,8 @@ func (m Model) resizePanes() Model {
 	if logWidth < 1 {
 		logWidth = 1
 	}
-	m.logView.Width = logWidth
-	m.logView.Height = logHeight
+	m.logView.SetWidth(logWidth)
+	m.logView.SetHeight(logHeight)
 	return m
 }
 
@@ -438,8 +438,18 @@ const footerHeight = 1
 // on-disk path line shown below the viewport.
 const logPathHeight = 1
 
-// View renders the full TUI.
-func (m Model) View() string {
+// View satisfies tea.Model and declares the full TUI as a tea.View. Alt-screen
+// mode is declared here (the v2 way) instead of via tea.WithAltScreen() in
+// NewProgram. Rendering itself is delegated to render().
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render returns the full TUI as a plain string; it is the rendering
+// implementation called by View() and directly by tests (same package).
+func (m Model) render() string {
 	if m.width == 0 {
 		return "initialising…\n"
 	}
