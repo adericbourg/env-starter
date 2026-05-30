@@ -55,7 +55,7 @@ func (e *Engine) recomputeEnvState(envCfg config.Environment) {
 		switch c.state {
 		case CmdHealthy, CmdDone:
 			up++
-		case CmdError:
+		case CmdError, CmdTimeout:
 			errored++
 		}
 	}

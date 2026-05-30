@@ -42,6 +42,7 @@ const (
 	CmdDone     CmdState = "done"
 	CmdStopping CmdState = "stopping"
 	CmdError    CmdState = "error"
+	CmdTimeout  CmdState = "timeout"
 	CmdStopped  CmdState = "stopped"
 )
 

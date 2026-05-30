@@ -717,3 +717,43 @@ func TestStartEnvironment_whenRestartingFailedEnv_recoversToRunning(t *testing.T
 	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
 	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
 }
+
+func TestStartEnvironment_whenReadinessTimesOut_marksTimeout(t *testing.T) {
+	// Given a service whose readiness probe never passes and whose timeout is
+	// deliberately short so the test runs quickly.
+	dir := t.TempDir()
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Stay alive so the probe timeout fires (not an early-exit error).
+				Run: "sleep 30",
+				Readiness: &config.Readiness{
+					Shell:   "false", // never succeeds
+					Timeout: &config.Duration{Duration: 100 * time.Millisecond},
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name:     "dev",
+				Workflow: []config.WorkflowStep{{Command: "svc"}},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the environment is started.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the command is marked timeout (not error) and the env is error.
+	waitForCmd(t, e, "svc", CmdTimeout, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}

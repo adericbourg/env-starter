@@ -280,7 +280,7 @@ readiness:
 | Required | no |
 | Default | `30s` |
 
-Maximum time to wait for the readiness probe to succeed. If the probe does not pass within this window, the command is marked `error`.
+Maximum time to wait for the readiness probe to succeed. If the probe does not pass within this window, the command is marked `timeout`.
 
 ```yaml
 readiness:
@@ -402,7 +402,8 @@ workflow:
 | `starting` | Process has been spawned; readiness probe not yet passing. |
 | `healthy` | Readiness probe passed (service) or the command has not yet exited (task awaiting probe). |
 | `done` | Task exited with code 0. |
-| `error` | Process exited non-zero or readiness timed out. |
+| `error` | Process exited non-zero or failed before becoming healthy. |
+| `timeout` | Readiness probe did not pass within `readiness.timeout`. |
 | `stopped` | Stopped explicitly (teardown run if declared, then signal for service; teardown run for task). |
 
 ---

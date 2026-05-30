@@ -893,3 +893,19 @@ func TestView_logsTitleTracksEnvCursorWhileEnvPanelFocused(t *testing.T) {
 		t.Errorf("expected stale title %q to be gone after moving env cursor, but found it in:\n%s", "alpha > svc-a", view)
 	}
 }
+
+func TestCmdStateIndicator_whenTimedOut_containsHourglassGlyph(t *testing.T) {
+	// Given / When
+	indicator := cmdStateIndicator(engine.CmdTimeout, 0)
+
+	// Then: the rendered indicator must contain the hourglass glyph and be
+	// identical across frames (it is not animated).
+	if !strings.Contains(indicator, "⧖") {
+		t.Errorf("expected indicator for CmdTimeout to contain '⧖', got: %q", indicator)
+	}
+
+	frame1 := cmdStateIndicator(engine.CmdTimeout, 1)
+	if indicator != frame1 {
+		t.Errorf("expected CmdTimeout indicator to be frame-stable, got %q (frame 0) vs %q (frame 1)", indicator, frame1)
+	}
+}

@@ -710,6 +710,8 @@ func cmdStateIndicator(s engine.CmdState, frame int) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("✓")
 	case engine.CmdError:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗")
+	case engine.CmdTimeout:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⧖")
 	case engine.CmdStopped:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")
 	default: // CmdPending

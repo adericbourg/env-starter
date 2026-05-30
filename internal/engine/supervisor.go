@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -116,7 +117,7 @@ func (e *Engine) acquireAndStart(envName, name string) bool {
 	c, exists := e.commands[name]
 	// A previously stopped/errored command (refcount 0) is recreated fresh so a
 	// re-start gets a new process, channels and log ring.
-	if exists && c.refcount == 0 && (c.state == CmdStopped || c.state == CmdError || c.state == CmdDone) {
+	if exists && c.refcount == 0 && (c.state == CmdStopped || c.state == CmdError || c.state == CmdTimeout || c.state == CmdDone) {
 		exists = false
 	}
 	if !exists {
@@ -260,7 +261,11 @@ func (e *Engine) handleService(c *command) {
 		return
 	case rerr := <-readyDone:
 		if rerr != nil {
-			e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("readiness: %w", rerr))
+			if errors.Is(rerr, probe.ErrTimeout) {
+				e.setCmdState(c.cfg.Name, CmdTimeout, fmt.Errorf("readiness: %w", rerr))
+			} else {
+				e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("readiness: %w", rerr))
+			}
 			// Tear down the unhealthy process and wait for it to exit.
 			e.terminate(c)
 			return
