@@ -718,6 +718,337 @@ func TestStartEnvironment_whenRestartingFailedEnv_recoversToRunning(t *testing.T
 	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
 }
 
+// ---- Auto-restart tests -------------------------------------------------------
+
+// shortRestart returns a *config.Restart with all timings shrunk for fast
+// tests. maxRetries defaults to 3 if zero.
+func shortRestart(t *testing.T, maxRetries int) *config.Restart {
+	t.Helper()
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	one := true
+	base := config.Duration{Duration: 20 * time.Millisecond}
+	check := config.Duration{Duration: 30 * time.Millisecond}
+	return &config.Restart{
+		Enabled:       &one,
+		MaxRetries:    &maxRetries,
+		BackoffBase:   &base,
+		CheckInterval: &check,
+	}
+}
+
+func TestResolveRestart_serviceDefaults_enabledThreeRetriesOneSecondBase(t *testing.T) {
+	// Given a service with no restart config
+	cmd := config.Command{
+		Name:      "svc",
+		Type:      "service",
+		Readiness: &config.Readiness{Shell: "true"},
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if !p.enabled {
+		t.Error("expected enabled=true for service with no restart config")
+	}
+	if p.maxRetries != 3 {
+		t.Errorf("expected maxRetries=3, got %d", p.maxRetries)
+	}
+	if p.backoffBase != time.Second {
+		t.Errorf("expected backoffBase=1s, got %v", p.backoffBase)
+	}
+	if p.checkInterval != 10*time.Second {
+		t.Errorf("expected checkInterval=10s, got %v", p.checkInterval)
+	}
+}
+
+func TestResolveRestart_taskType_disabledRegardlessOfConfig(t *testing.T) {
+	// Given a task with restart.enabled=true
+	enabled := true
+	cmd := config.Command{
+		Name:    "migrate",
+		Type:    "task",
+		Restart: &config.Restart{Enabled: &enabled},
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if p.enabled {
+		t.Error("expected enabled=false for task type")
+	}
+}
+
+func TestResolveRestart_serviceWithNoReadiness_checkIntervalZero(t *testing.T) {
+	// Given a service with no readiness probe
+	cmd := config.Command{
+		Name: "svc",
+		Type: "service",
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then: liveness impossible without probe
+	if p.checkInterval != 0 {
+		t.Errorf("expected checkInterval=0 for service with no readiness probe, got %v", p.checkInterval)
+	}
+	// But crash-restart is still enabled
+	if !p.enabled {
+		t.Error("expected enabled=true even without readiness probe")
+	}
+}
+
+func TestSuperviseService_whenProcessCrashesAfterHealthy_restarts(t *testing.T) {
+	// Given a service that becomes healthy, then exits unexpectedly, then
+	// becomes healthy again on the next run.
+	dir := t.TempDir()
+	readyMarker := filepath.Join(dir, "ready")
+	crashOnce := filepath.Join(dir, "crashed") // created after first run so subsequent runs stay alive
+
+	// Run script: create readyMarker, then on first run sleep briefly and exit
+	// (giving the probe time to fire before the exit), on subsequent runs sleep
+	// forever.
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				Run: fmt.Sprintf(
+					`touch %q; if [ ! -f %q ]; then touch %q; sleep 0.5; exit 1; fi; sleep 30`,
+					readyMarker, crashOnce, crashOnce,
+				),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyMarker)},
+				Restart:   shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then: the service becomes healthy, crashes, restarts, and is healthy again.
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	// After the first crash (after 500ms sleep) a restart cycle fires.
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	// Retry counter resets to 0 on success.
+	attempts, _ := e.CmdRetries("svc")
+	if attempts != 0 {
+		t.Errorf("expected retry counter reset to 0 after success, got %d", attempts)
+	}
+}
+
+func TestSuperviseService_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *testing.T) {
+	// Given a service that stays alive but whose liveness probe starts failing
+	// (marker deleted) and then starts passing again (marker recreated).
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+	restartedMarker := filepath.Join(dir, "restarted") // created on second run
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Stay alive; the probe checks the marker, not the process health.
+				Run: fmt.Sprintf(`touch %q; sleep 30`, restartedMarker),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", liveMarker),
+				},
+				Restart: shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+
+	// Simulate liveness failure: remove the marker.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// The liveness probe will fail; the service should start restarting.
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+
+	// Recreate the marker so the next readiness probe passes.
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("recreate live marker: %v", err)
+	}
+
+	// The service should come back healthy.
+	waitForCmd(t, e, "svc", CmdHealthy, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestSuperviseService_whenRestartDisabled_crashMarksError(t *testing.T) {
+	// Given a service with restart.enabled=false that crashes after becoming healthy.
+	dir := t.TempDir()
+	readyMarker := filepath.Join(dir, "ready")
+
+	disabled := false
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Create ready marker, sleep briefly so the probe fires and the
+				// command reaches CmdHealthy, then exit. The sleep must exceed the
+				// probe interval (20ms in tests) to ensure a reliable outcome.
+				Run:       fmt.Sprintf("touch %q; sleep 0.3; exit 0", readyMarker),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyMarker)},
+				Restart:   &config.Restart{Enabled: &disabled},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// The service should become healthy, then crash and stay errored (no restart).
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "svc", CmdError, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+func TestAttemptRestart_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
+	// Given a service that becomes healthy on its first run (by sleeping past
+	// noProbeGrace), then exits. Every subsequent relaunch also exits immediately
+	// (< noProbeGrace), causing each restart attempt to fail. With max-retries=2
+	// and no readiness probe (so no liveness checking), the engine should give up
+	// and mark the command CmdError.
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+
+	max := 2
+	base := config.Duration{Duration: 10 * time.Millisecond}
+	enabled := true
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// No readiness probe: healthy after 150ms (noProbeGrace).
+				// First run: sleep 300ms (> noProbeGrace) so the command reaches
+				// CmdHealthy, then exit. Subsequent runs: exit immediately (<
+				// noProbeGrace), so each relaunch fails.
+				Run: fmt.Sprintf(
+					`if [ ! -f %q ]; then touch %q; sleep 0.3; fi; exit 1`,
+					started, started,
+				),
+				Restart: &config.Restart{Enabled: &enabled, MaxRetries: &max, BackoffBase: &base},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Wait for all retries to be exhausted → CmdError.
+	waitForCmd(t, e, "svc", CmdError, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+
+	attempts, maxRetries := e.CmdRetries("svc")
+	if attempts != max {
+		t.Errorf("expected %d retries recorded, got %d", max, attempts)
+	}
+	if maxRetries != max {
+		t.Errorf("expected max=%d, got %d", max, maxRetries)
+	}
+}
+
+func TestStopEnvironment_duringBackoffSleep_userStopWins(t *testing.T) {
+	// Given a service that becomes healthy, exits (triggering a restart with a
+	// long backoff), we stop the environment while the backoff sleep is in
+	// progress. The command must end up stopped, not healthy or restarting.
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+
+	enabled := true
+	max := 3
+	longBackoff := config.Duration{Duration: 10 * time.Second} // long enough to stop during
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// No readiness probe: healthy after 150ms (noProbeGrace).
+				// First run: sleep 300ms so the command reaches CmdHealthy, then exit.
+				// The long backoff (10s) means we have plenty of time to call
+				// StopEnvironment before the restart fires.
+				Run: fmt.Sprintf(
+					`if [ ! -f %q ]; then touch %q; sleep 0.3; fi; exit 1`,
+					started, started,
+				),
+				Restart: &config.Restart{Enabled: &enabled, MaxRetries: &max, BackoffBase: &longBackoff},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+
+	// Stop the environment while in the backoff sleep.
+	if err := e.StopEnvironment("dev"); err != nil {
+		t.Fatalf("StopEnvironment: %v", err)
+	}
+
+	// The command must end up stopped (not healthy or restarting).
+	waitForCmd(t, e, "svc", CmdStopped, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvStopped, 5*time.Second)
+}
+
 func TestStartEnvironment_whenReadinessTimesOut_marksTimeout(t *testing.T) {
 	// Given a service whose readiness probe never passes and whose timeout is
 	// deliberately short so the test runs quickly.

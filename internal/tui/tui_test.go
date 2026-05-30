@@ -16,13 +16,14 @@ import (
 // ── Fake controller ───────────────────────────────────────────────────────────
 
 type fakeController struct {
-	envs     []engine.EnvInfo
-	commands map[string][]string
-	envState map[string]engine.EnvState
-	cmdState map[string]engine.CmdState
-	logs     map[string][]string
-	events   chan engine.Event
-	stopping []engine.StoppingCommand
+	envs      []engine.EnvInfo
+	commands  map[string][]string
+	envState  map[string]engine.EnvState
+	cmdState  map[string]engine.CmdState
+	cmdRetries map[string][2]int // [attempts, max]
+	logs      map[string][]string
+	events    chan engine.Event
+	stopping  []engine.StoppingCommand
 
 	startedEnvs    []string
 	stoppedEnvs    []string
@@ -72,6 +73,13 @@ func (f *fakeController) CmdState(cmd string) engine.CmdState {
 		return s
 	}
 	return engine.CmdPending
+}
+
+func (f *fakeController) CmdRetries(cmd string) (attempts, max int) {
+	if r, ok := f.cmdRetries[cmd]; ok {
+		return r[0], r[1]
+	}
+	return 0, 0
 }
 
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
@@ -907,5 +915,72 @@ func TestCmdStateIndicator_whenTimedOut_containsHourglassGlyph(t *testing.T) {
 	frame1 := cmdStateIndicator(engine.CmdTimeout, 1)
 	if indicator != frame1 {
 		t.Errorf("expected CmdTimeout indicator to be frame-stable, got %q (frame 0) vs %q (frame 1)", indicator, frame1)
+	}
+}
+
+func TestCmdStateIndicator_whenRestarting_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := cmdStateIndicator(engine.CmdRestarting, 0)
+	frame1 := cmdStateIndicator(engine.CmdRestarting, 1)
+
+	// Then: the indicator is animated (spinner), so it must differ across frames.
+	if frame0 == frame1 {
+		t.Errorf("expected CmdRestarting indicator to vary across frames, got %q for both", frame0)
+	}
+}
+
+func TestRenderCmdPane_whenRestarting_showsRetryCounter(t *testing.T) {
+	// Given a command in CmdRestarting with retries=1, max=3.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdRestarting
+	ctrl.cmdRetries = map[string][2]int{
+		"svc-a": {1, 3},
+	}
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then the retry counter appears next to the command name.
+	if !strings.Contains(pane, "svc-a") {
+		t.Fatalf("expected pane to contain command name 'svc-a', got: %q", pane)
+	}
+	if !strings.Contains(ansi.Strip(pane), "(retry 2/3)") {
+		t.Errorf("expected pane to contain '(retry 2/3)', got: %q", ansi.Strip(pane))
+	}
+}
+
+func TestRenderCmdPane_whenFailedAfterRetries_showsFailedCount(t *testing.T) {
+	// Given a command in CmdError that exhausted 3 retries.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdError
+	ctrl.cmdRetries = map[string][2]int{
+		"svc-a": {3, 3},
+	}
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then the failure annotation appears next to the command name.
+	if !strings.Contains(ansi.Strip(pane), "svc-a (failed after 3 retries)") {
+		t.Errorf("expected pane to contain 'svc-a (failed after 3 retries)', got: %q", ansi.Strip(pane))
+	}
+}
+
+func TestRenderCmdPane_whenErrorWithNoRetries_showsNoSuffix(t *testing.T) {
+	// Given a command in CmdError that never auto-restarted (attempts=0).
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdError
+	// cmdRetries not set → (0, 0)
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then no retry annotation is appended.
+	stripped := ansi.Strip(pane)
+	if strings.Contains(stripped, "(failed") || strings.Contains(stripped, "(retry") {
+		t.Errorf("expected no retry suffix for error with 0 retries, got: %q", stripped)
 	}
 }

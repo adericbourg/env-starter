@@ -54,11 +54,20 @@ func (e *Engine) releaseCommand(name string) {
 		return
 	}
 
+	// Cancel any in-flight restart/monitor cycle so the supervisor goroutine
+	// exits instead of attempting another restart after we stop the command.
+	e.mu.Lock()
+	c.userStopped = true
+	if c.quit != nil {
+		c.quitOnce.Do(func() { close(c.quit) })
+	}
+	e.mu.Unlock()
+
 	// Signal intent to stop for active commands so the TUI can animate the
 	// transition before the process actually exits. Stamp stopStartedAt here
 	// (under the same lock) so the shutdown-screen countdown begins immediately.
 	e.mu.Lock()
-	active := c.state == CmdHealthy || c.state == CmdStarting
+	active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
 	if active {
 		c.stopStartedAt = time.Now()
 	}
@@ -67,10 +76,13 @@ func (e *Engine) releaseCommand(name string) {
 		e.setCmdState(name, CmdStopping, nil)
 	}
 
-	// Wait until the command has finished starting before stopping it, so we do
-	// not race the launch. The stopped entry is kept in the map (reporting
-	// CmdStopped) and recreated on a subsequent start.
-	<-c.startDone
+	// Wait until the command has finished starting (or restarting) before
+	// stopping it, so we do not race the launch. The stopped entry is kept in
+	// the map (reporting CmdStopped) and recreated on a subsequent start.
+	e.mu.Lock()
+	startDone := c.startDone
+	e.mu.Unlock()
+	<-startDone
 
 	e.stopCommand(c)
 }
@@ -113,31 +125,51 @@ func (e *Engine) stopCommand(c *command) {
 }
 
 // terminate sends SIGINT to a service's process group, waits up to GracePeriod
-// for it to exit, then SIGKILLs it.
+// for it to exit, then SIGKILLs it. It pre-marks the state CmdStopped so the
+// supervise goroutine does not flip the state back to error on process exit.
+// For restart-path kills, use killAndWait instead (no state pre-mark).
 func (e *Engine) terminate(c *command) {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return
 	}
 
-	// Mark stopped first so the exit watcher does not flip the state to error.
+	// Mark stopped first so the supervise goroutine does not flip the state to
+	// error when it observes the process exit.
 	e.mu.Lock()
 	if c.state == CmdHealthy || c.state == CmdStopping {
 		c.state = CmdStopped
 	}
 	e.mu.Unlock()
 
-	_ = interruptProcess(c.cmd)
+	e.killAndWait(c)
+}
+
+// killAndWait sends SIGINT to the process group and waits up to GracePeriod
+// for the process to exit, then SIGKILLs it. Unlike terminate it does NOT
+// pre-mark the state, so it is safe to use from the restart path where the
+// command is already in CmdRestarting.
+func (e *Engine) killAndWait(c *command) {
+	e.mu.Lock()
+	cmd := c.cmd
+	exited := c.exited
+	e.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	_ = interruptProcess(cmd)
 
 	grace := e.GracePeriod
 	if grace <= 0 {
 		grace = defaultGracePeriod
 	}
 	select {
-	case <-c.exited:
+	case <-exited:
 		return
 	case <-time.After(grace):
-		_ = killProcess(c.cmd)
-		<-c.exited
+		_ = killProcess(cmd)
+		<-exited
 	}
 }
 
@@ -177,16 +209,22 @@ func (e *Engine) Shutdown(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		for _, c := range cmds {
+			// Cancel any in-flight restart/monitor cycle before stopping.
 			e.mu.Lock()
-			active := c.state == CmdHealthy || c.state == CmdStarting
+			c.userStopped = true
+			if c.quit != nil {
+				c.quitOnce.Do(func() { close(c.quit) })
+			}
+			active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
 			if active {
 				c.stopStartedAt = time.Now()
 			}
+			startDone := c.startDone
 			e.mu.Unlock()
 			if active {
 				e.setCmdState(c.cfg.Name, CmdStopping, nil)
 			}
-			<-c.startDone
+			<-startDone
 			e.stopCommand(c)
 		}
 		close(done)

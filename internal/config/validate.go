@@ -54,6 +54,21 @@ func validateCommand(idx int, cmd Command) error {
 			return err
 		}
 	}
+	if cmd.Restart != nil {
+		if err := validateRestart(cmd.Name, cmd.Type, *cmd.Restart); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRestart(cmdName, cmdType string, r Restart) error {
+	if cmdType == "task" {
+		return fmt.Errorf("command %q: restart is not supported for tasks", cmdName)
+	}
+	if r.MaxRetries != nil && *r.MaxRetries < 0 {
+		return fmt.Errorf("command %q: restart.max-retries must not be negative, got %d", cmdName, *r.MaxRetries)
+	}
 	return nil
 }
 

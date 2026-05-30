@@ -14,6 +14,10 @@ type Controller interface {
 	WorkflowCommands(env string) []string
 	EnvState(env string) engine.EnvState
 	CmdState(command string) engine.CmdState
+	// CmdRetries returns the number of restart attempts consumed in the current
+	// cycle and the configured maximum. Both are 0 for commands that are not
+	// (or cannot be) auto-restarted.
+	CmdRetries(command string) (attempts, max int)
 	Logs(command string) []string
 	LogPath(command string) string
 	StartEnvironment(env string) error

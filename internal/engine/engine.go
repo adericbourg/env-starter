@@ -36,14 +36,15 @@ const (
 type CmdState string
 
 const (
-	CmdPending  CmdState = "pending"
-	CmdStarting CmdState = "starting"
-	CmdHealthy  CmdState = "healthy"
-	CmdDone     CmdState = "done"
-	CmdStopping CmdState = "stopping"
-	CmdError    CmdState = "error"
-	CmdTimeout  CmdState = "timeout"
-	CmdStopped  CmdState = "stopped"
+	CmdPending    CmdState = "pending"
+	CmdStarting   CmdState = "starting"
+	CmdHealthy    CmdState = "healthy"
+	CmdDone       CmdState = "done"
+	CmdStopping   CmdState = "stopping"
+	CmdError      CmdState = "error"
+	CmdTimeout    CmdState = "timeout"
+	CmdStopped    CmdState = "stopped"
+	CmdRestarting CmdState = "restarting"
 )
 
 // EnvInfo is a lightweight description of an environment.
@@ -64,15 +65,69 @@ type Event struct {
 }
 
 const (
-	defaultGracePeriod  = 30 * time.Second
-	defaultProbeTimeout = 30 * time.Second
-	defaultProbeTick    = 1 * time.Second
-	eventBufferSize     = 256
-	logRingCapacity     = 1000
+	defaultGracePeriod    = 30 * time.Second
+	defaultProbeTimeout   = 30 * time.Second
+	defaultProbeTick      = 1 * time.Second
+	defaultMaxRetries     = 3
+	defaultBackoffBase    = 1 * time.Second
+	defaultCheckInterval  = 10 * time.Second
+	eventBufferSize       = 256
+	logRingCapacity       = 1000
 	// noProbeGrace is how long a probe-less service is observed before being
 	// declared healthy, so an immediate non-zero exit surfaces as an error.
 	noProbeGrace = 150 * time.Millisecond
 )
+
+// restartPolicy is the resolved, per-command restart configuration.
+type restartPolicy struct {
+	enabled       bool
+	maxRetries    int
+	backoffBase   time.Duration
+	checkInterval time.Duration // 0 means no periodic liveness check
+}
+
+// resolveRestart computes a concrete restart policy from the command's config,
+// applying type-aware defaults: services default to auto-restart on; tasks are
+// always off regardless of what the config declares.
+func resolveRestart(cmd config.Command) restartPolicy {
+	// Tasks cannot be auto-restarted — they run to completion.
+	if cmd.Type == "task" {
+		return restartPolicy{}
+	}
+
+	p := restartPolicy{
+		enabled:       true,
+		maxRetries:    defaultMaxRetries,
+		backoffBase:   defaultBackoffBase,
+		checkInterval: defaultCheckInterval,
+	}
+
+	r := cmd.Restart
+	if r != nil {
+		if r.Enabled != nil {
+			p.enabled = *r.Enabled
+		}
+		if r.MaxRetries != nil && *r.MaxRetries >= 0 {
+			p.maxRetries = *r.MaxRetries
+		}
+		if r.BackoffBase != nil && r.BackoffBase.Duration > 0 {
+			p.backoffBase = r.BackoffBase.Duration
+		}
+		if r.CheckInterval != nil {
+			// A non-nil but zero value explicitly disables liveness checking.
+			p.checkInterval = r.CheckInterval.Duration
+		}
+	}
+
+	// Liveness checking requires a readiness probe. Without one, the only
+	// unhealthy signal is the process exiting. Enforce this regardless of what
+	// the config declares.
+	if cmd.Readiness == nil {
+		p.checkInterval = 0
+	}
+
+	return p
+}
 
 // StoppingCommand describes a command currently being torn down, for the
 // shutdown screen. Elapsed is the time since it began stopping; Grace is the
@@ -84,13 +139,25 @@ type StoppingCommand struct {
 }
 
 // command is the runtime state of a single (global, reference-counted) command.
+// All fields are guarded by Engine.mu — the command struct has no own mutex.
 type command struct {
-	cfg config.Command
+	cfg    config.Command
+	policy restartPolicy // resolved once at creation
 
 	state CmdState
 	err   error
 
 	refcount int
+
+	// restart tracking
+	retries     int  // restart attempts consumed in the current cycle; reset to 0 on success
+	userStopped bool // set by the stop path to signal that no restart should follow
+
+	// quit is closed exactly once (via quitOnce) to cancel the supervise/restart
+	// owner goroutine. Created when the first monitor goroutine starts (i.e. when
+	// the service first becomes healthy) and valid until the command is destroyed.
+	quit     chan struct{}
+	quitOnce sync.Once
 
 	// stopStartedAt is set (to the current time) when the command begins being
 	// torn down and cleared (to zero) when teardown completes. A non-zero value
@@ -101,8 +168,6 @@ type command struct {
 	// screen exactly during the grace window.
 	stopStartedAt time.Time
 
-	// ready is closed when the command becomes healthy or done; readyErr holds
-	// the failure (if any) once startDone is closed.
 	cmd       *exec.Cmd
 	ring      *logbuf.Ring
 	writer    *logbuf.Writer
@@ -111,6 +176,11 @@ type command struct {
 
 	// exited is closed exactly once by the reaper goroutine when the process
 	// has exited; exitErr then holds the process's exit error (nil on exit 0).
+	//
+	// IMPORTANT: on restart, both exited and startDone are swapped for fresh
+	// channels under Engine.mu — they are single-use (close-once). The restart
+	// owner goroutine always re-snapshots these under the lock at the top of each
+	// loop iteration so it observes the correct current channel.
 	exited    chan struct{}
 	exitErr   error
 	writeOnce sync.Once
@@ -136,6 +206,11 @@ type Engine struct {
 	envOrder []string
 	cmdOf    map[string]config.Command
 
+	// envsOf maps a command name to the names of all environments whose workflow
+	// includes it. Used by the restart owner goroutine (which outlives
+	// runEnvironment) to recompute environment state after a restart.
+	envsOf map[string][]string
+
 	events chan Event
 }
 
@@ -153,6 +228,7 @@ func New(cfg *config.Config) (*Engine, error) {
 
 	envOrder := make([]string, 0, len(cfg.Environments))
 	envState := make(map[string]EnvState, len(cfg.Environments))
+	envsOf := make(map[string][]string)
 	for _, env := range cfg.Environments {
 		envOrder = append(envOrder, env.Name)
 		envState[env.Name] = EnvStopped
@@ -160,6 +236,7 @@ func New(cfg *config.Config) (*Engine, error) {
 			if _, ok := cmdOf[step.Command]; !ok {
 				return nil, fmt.Errorf("engine: environment %q references unknown command %q", env.Name, step.Command)
 			}
+			envsOf[step.Command] = append(envsOf[step.Command], env.Name)
 		}
 	}
 
@@ -172,6 +249,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		envState:      envState,
 		envOrder:      envOrder,
 		cmdOf:         cmdOf,
+		envsOf:        envsOf,
 		events:        make(chan Event, eventBufferSize),
 	}, nil
 }
@@ -219,6 +297,18 @@ func (e *Engine) CmdState(command string) CmdState {
 		return c.state
 	}
 	return CmdPending
+}
+
+// CmdRetries returns the number of restart attempts consumed in the current
+// cycle and the configured maximum. Both values are 0 for a command that has
+// never been (or never can be) auto-restarted.
+func (e *Engine) CmdRetries(command string) (attempts, max int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if c, ok := e.commands[command]; ok {
+		return c.retries, c.policy.maxRetries
+	}
+	return 0, 0
 }
 
 // Logs returns a copy of the command's ring-buffer lines, or an empty slice if

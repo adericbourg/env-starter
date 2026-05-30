@@ -93,6 +93,23 @@ type Readiness struct {
 	Interval *Duration `yaml:"interval,omitempty"`
 }
 
+// Restart configures automatic restart behaviour for a service command.
+// Nil means "defaults": enabled for services (up to 3 retries), disabled for tasks.
+type Restart struct {
+	// Enabled controls whether auto-restart is active. Defaults to true for
+	// services, false for tasks (tasks can never be auto-restarted).
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// MaxRetries is the number of restart attempts before giving up. Default 3.
+	MaxRetries *int `yaml:"max-retries,omitempty"`
+	// BackoffBase is the delay before the first retry; subsequent delays double.
+	// Default 1s (giving waits of 1s, 2s, 4s for the default 3 retries).
+	BackoffBase *Duration `yaml:"backoff-base,omitempty"`
+	// CheckInterval is the period at which the readiness probe is re-run after
+	// the command is healthy. Default 10s. Set to 0 to disable liveness checking
+	// (crashes are still detected and trigger a restart).
+	CheckInterval *Duration `yaml:"check-interval,omitempty"`
+}
+
 // Command represents a runnable unit (service or task).
 type Command struct {
 	Name      string            `yaml:"name"`
@@ -103,6 +120,7 @@ type Command struct {
 	Teardown  string            `yaml:"teardown,omitempty"`
 	Env       map[string]string `yaml:"env,omitempty"`
 	Readiness *Readiness        `yaml:"readiness,omitempty"`
+	Restart   *Restart          `yaml:"restart,omitempty"`
 }
 
 // WorkflowStep is a reference to a command within an environment workflow.

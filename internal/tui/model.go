@@ -562,7 +562,9 @@ func (m Model) renderCmdPane(width, height int) string {
 	for i, cmd := range cmds {
 		state := m.ctrl.CmdState(cmd)
 		indicator := cmdStateIndicator(state, m.spinnerFrame)
-		line := fmt.Sprintf("%s %s", indicator, cmd)
+		retryAttempts, retryMax := m.ctrl.CmdRetries(cmd)
+		label := cmd + cmdRetrySuffix(state, retryAttempts, retryMax)
+		line := fmt.Sprintf("%s %s", indicator, label)
 		if i == m.cmdCursor && m.focused == focusCmds {
 			line = selectedLine.Render("> " + line)
 		} else if i == m.cmdCursor {
@@ -706,6 +708,8 @@ func cmdStateIndicator(s engine.CmdState, frame int) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
 	case engine.CmdStopping:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(spinnerChar(frame))
+	case engine.CmdRestarting:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(spinnerChar(frame))
 	case engine.CmdDone:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("✓")
 	case engine.CmdError:
@@ -717,4 +721,19 @@ func cmdStateIndicator(s engine.CmdState, frame int) string {
 	default: // CmdPending
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("·")
 	}
+}
+
+// cmdRetrySuffix returns a short annotation to append after the command name.
+// During a restart cycle it shows "(retry N/max)"; after permanent failure it
+// shows "(failed after N retries)". Returns an empty string in all other cases.
+func cmdRetrySuffix(state engine.CmdState, attempts, max int) string {
+	switch state {
+	case engine.CmdRestarting:
+		return fmt.Sprintf(" (retry %d/%d)", attempts+1, max)
+	case engine.CmdError:
+		if attempts > 0 {
+			return fmt.Sprintf(" (failed after %d retries)", attempts)
+		}
+	}
+	return ""
 }

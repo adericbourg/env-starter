@@ -36,8 +36,25 @@ func (e *Engine) setEnvState(name string, state EnvState) {
 	})
 }
 
+// recomputeEnvsFor recomputes state for every environment whose workflow
+// contains the named command. Called by the restart owner goroutine after a
+// restart completes (success or give-up), since runEnvironment has already
+// returned and cannot be used.
+func (e *Engine) recomputeEnvsFor(cmdName string) {
+	for _, envName := range e.envsOf[cmdName] {
+		cfg, ok := e.findEnv(envName)
+		if !ok {
+			continue
+		}
+		e.recomputeEnvState(cfg)
+	}
+}
+
 // recomputeEnvState derives an environment's state from the states of the
 // commands in its workflow and emits an environment event.
+//
+// CmdRestarting is treated as neither up nor errored, so it contributes to
+// EnvDegraded (the environment is partially available during a restart cycle).
 //
 //	all healthy/done          → running
 //	none up, at least one err → error

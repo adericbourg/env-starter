@@ -785,6 +785,140 @@ func TestValidate_whenSetupStepEmpty_returnsError(t *testing.T) {
 	}
 }
 
+// ---- Restart config tests ---------------------------------------------------
+
+func TestValidate_whenRestartOnTask_returnsError(t *testing.T) {
+	// Given
+	enabled := true
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name:    "migrate",
+				Type:    "task",
+				Source:  Source{Local: "/tmp"},
+				Run:     "migrate.sh",
+				Restart: &Restart{Enabled: &enabled},
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "migrate"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for restart on task, got nil")
+	}
+}
+
+func TestValidate_whenRestartMaxRetriesNegative_returnsError(t *testing.T) {
+	// Given
+	neg := -1
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name:    "svc",
+				Type:    "service",
+				Source:  Source{Local: "/tmp"},
+				Run:     "run.sh",
+				Restart: &Restart{MaxRetries: &neg},
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for negative max-retries, got nil")
+	}
+}
+
+func TestValidate_whenRestartOnService_isValid(t *testing.T) {
+	// Given
+	enabled := false
+	max := 5
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name:    "svc",
+				Type:    "service",
+				Source:  Source{Local: "/tmp"},
+				Run:     "run.sh",
+				Restart: &Restart{Enabled: &enabled, MaxRetries: &max},
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error for valid restart config on service, got: %v", err)
+	}
+}
+
+func TestLoad_ofConfigWithRestart_parsesRestartBlock(t *testing.T) {
+	// Given
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: tunnel
+      type: service
+      source:
+        local: /tmp
+      run: run.sh
+      readiness:
+        shell: check.sh
+      restart:
+        enabled: false
+        max-retries: 5
+        backoff-base: 2s
+        check-interval: 30s
+  environments:
+    - name: dev
+      workflow:
+        - command: tunnel
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	r := cfg.Commands[0].Restart
+	if r == nil {
+		t.Fatal("expected restart block to be set")
+	}
+	if r.Enabled == nil || *r.Enabled != false {
+		t.Errorf("expected enabled=false, got %v", r.Enabled)
+	}
+	if r.MaxRetries == nil || *r.MaxRetries != 5 {
+		t.Errorf("expected max-retries=5, got %v", r.MaxRetries)
+	}
+	if r.BackoffBase == nil || r.BackoffBase.Duration != 2*time.Second {
+		t.Errorf("expected backoff-base=2s, got %v", r.BackoffBase)
+	}
+	if r.CheckInterval == nil || r.CheckInterval.Duration != 30*time.Second {
+		t.Errorf("expected check-interval=30s, got %v", r.CheckInterval)
+	}
+}
+
 func TestMerge_environmentsMergedByName(t *testing.T) {
 	// Given
 	base := &Config{
