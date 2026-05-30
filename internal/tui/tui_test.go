@@ -16,14 +16,14 @@ import (
 // ── Fake controller ───────────────────────────────────────────────────────────
 
 type fakeController struct {
-	envs      []engine.EnvInfo
-	commands  map[string][]string
-	envState  map[string]engine.EnvState
-	cmdState  map[string]engine.CmdState
+	envs       []engine.EnvInfo
+	commands   map[string][]string
+	envState   map[string]engine.EnvState
+	cmdState   map[string]engine.CmdState
 	cmdRetries map[string][2]int // [attempts, max]
-	logs      map[string][]string
-	events    chan engine.Event
-	stopping  []engine.StoppingCommand
+	logs       map[string][]string
+	events     chan engine.Event
+	stopping   []engine.StoppingCommand
 
 	startedEnvs    []string
 	stoppedEnvs    []string

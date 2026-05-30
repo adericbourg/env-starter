@@ -65,14 +65,14 @@ type Event struct {
 }
 
 const (
-	defaultGracePeriod    = 30 * time.Second
-	defaultProbeTimeout   = 30 * time.Second
-	defaultProbeTick      = 1 * time.Second
-	defaultMaxRetries     = 3
-	defaultBackoffBase    = 1 * time.Second
-	defaultCheckInterval  = 10 * time.Second
-	eventBufferSize       = 256
-	logRingCapacity       = 1000
+	defaultGracePeriod   = 30 * time.Second
+	defaultProbeTimeout  = 30 * time.Second
+	defaultProbeTick     = 1 * time.Second
+	defaultMaxRetries    = 3
+	defaultBackoffBase   = 1 * time.Second
+	defaultCheckInterval = 10 * time.Second
+	eventBufferSize      = 256
+	logRingCapacity      = 1000
 	// noProbeGrace is how long a probe-less service is observed before being
 	// declared healthy, so an immediate non-zero exit surfaces as an error.
 	noProbeGrace = 150 * time.Millisecond
