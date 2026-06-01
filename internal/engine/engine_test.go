@@ -1955,6 +1955,51 @@ func TestAppendSubdir_whenSubdirEmpty_returnsBase(t *testing.T) {
 	}
 }
 
+func TestStopEnvironment_taskTeardownOutputAppearsInLogs(t *testing.T) {
+	// Given a task with a teardown script that emits a known marker.
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:     "mytask",
+				Type:     "task",
+				Source:   localSource(dir),
+				Run:      "exit 0",
+				Teardown: "echo TEARDOWN_MARKER",
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "mytask"}}},
+		},
+	}
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When started (task exits quickly) then stopped.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "mytask", CmdDone, 5*time.Second)
+
+	if err := e.StopEnvironment("dev"); err != nil {
+		t.Fatalf("StopEnvironment: %v", err)
+	}
+	waitForEnv(t, e, "dev", EnvStopped, 5*time.Second)
+
+	// Then the teardown output must appear in the task's log.
+	logs := e.Logs("mytask")
+	found := false
+	for _, line := range logs {
+		if strings.Contains(line, "TEARDOWN_MARKER") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected task logs to contain TEARDOWN_MARKER; got: %v", logs)
+	}
+}
+
 func TestStartEnvironment_whenSubdirMissing_logsErrorToCommandLog(t *testing.T) {
 	// Given – a local source that exists but configured with a subdir that does not.
 	srcDir := t.TempDir()

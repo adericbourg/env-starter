@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
+	"github.com/adericbourg/env-starter/internal/logbuf"
 )
 
 // StopEnvironment decrements the reference count of every command in the named
@@ -164,7 +165,10 @@ func (e *Engine) killAndWait(c *command) {
 	}
 }
 
-// runTeardown runs a task's Teardown script (if any) via sh -c in its run dir.
+// runTeardown runs a command's Teardown script (if any) via sh -c in its run dir.
+// It creates a fresh log writer over the persistent ring so that teardown output
+// is captured regardless of whether the per-run writer has already been closed
+// (which is always the case for tasks, whose process exits before teardown runs).
 func (e *Engine) runTeardown(c *command) {
 	if c.cfg.Teardown == "" {
 		return
@@ -172,15 +176,23 @@ func (e *Engine) runTeardown(c *command) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	// Open the log file in append mode so teardown output follows the run's output
+	// in the on-disk log without truncating it. Failure is non-fatal: we still
+	// capture into the ring for the TUI.
+	file, err := logbuf.OpenFileAppend(e.logPath(c.cfg.Name))
+	if err != nil {
+		file = nil
+	}
+	w := logbuf.NewWriter(c.ring, file)
+	defer w.Close()
+
 	cmd := exec.CommandContext(ctx, "sh", "-c", c.cfg.Teardown)
 	if c.runDir != "" {
 		cmd.Dir = c.runDir
 	}
 	cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
-	if c.writer != nil {
-		cmd.Stdout = c.writer
-		cmd.Stderr = c.writer
-	}
+	cmd.Stdout = w
+	cmd.Stderr = w
 	setSysProcAttr(cmd)
 	_ = cmd.Run()
 }

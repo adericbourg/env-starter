@@ -200,6 +200,37 @@ func TestWrite_teesToFile_fileContainsRawBytes(t *testing.T) {
 	}
 }
 
+func TestOpenFileAppend_appendsWithoutTruncating(t *testing.T) {
+	// Given an existing file with initial content written via OpenFile.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "out.log")
+
+	wc, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	wc.Write([]byte("first\n"))
+	wc.Close()
+
+	// When appending via OpenFileAppend.
+	wa, err := OpenFileAppend(path)
+	if err != nil {
+		t.Fatalf("OpenFileAppend: %v", err)
+	}
+	wa.Write([]byte("second\n"))
+	wa.Close()
+
+	// Then both writes are present — initial content was not truncated.
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	want := "first\nsecond\n"
+	if string(got) != want {
+		t.Errorf("file content = %q, want %q", string(got), want)
+	}
+}
+
 func TestOpenFile_createsMissingDirsAndFile(t *testing.T) {
 	// Given
 	dir := t.TempDir()

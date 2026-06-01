@@ -87,14 +87,16 @@ func NewWriter(ring *Ring, file io.WriteCloser) *Writer {
 }
 
 // Write splits p into lines, adding each complete line to the ring, and tees
-// all bytes to the underlying file. It always returns n == len(p) on success.
+// all bytes to the underlying file. The ring always receives the data; a file
+// I/O error is returned but does not suppress ring writes.
 func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	var fileErr error
 	if w.file != nil {
 		if _, err := w.file.Write(p); err != nil {
-			return 0, err
+			fileErr = err
 		}
 	}
 
@@ -113,6 +115,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 		w.ring.Add(line)
 	}
 
+	if fileErr != nil {
+		return 0, fileErr
+	}
 	return len(p), nil
 }
 
@@ -140,4 +145,15 @@ func OpenFile(path string) (io.WriteCloser, error) {
 		return nil, err
 	}
 	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+}
+
+// OpenFileAppend creates any missing parent directories and opens path for
+// appending (creating it if absent), returning the file as an io.WriteCloser.
+// Unlike OpenFile it does not truncate existing content, so subsequent phases
+// (e.g. teardown) can be appended after the main run's output.
+func OpenFileAppend(path string) (io.WriteCloser, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 }
