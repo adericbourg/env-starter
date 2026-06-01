@@ -42,12 +42,30 @@ func (e *Engine) setEnvState(name string, state EnvState) {
 // returned and cannot be used.
 func (e *Engine) recomputeEnvsFor(cmdName string) {
 	for _, envName := range e.envsOf[cmdName] {
+		if !e.isEnvActive(envName) {
+			// Never started (or already stopped): a command it merely shares with
+			// another environment must not derive its state. Keep it stopped.
+			continue
+		}
 		cfg, ok := e.findEnv(envName)
 		if !ok {
 			continue
 		}
 		e.recomputeEnvState(cfg)
 	}
+}
+
+// isEnvActive reports whether the user has an active engagement with env — it has
+// been started and not (yet) stopped. Stopped/stopping envs are excluded so a
+// shared command's state changes never resurrect them.
+func (e *Engine) isEnvActive(env string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	s, ok := e.envState[env]
+	if !ok {
+		return false
+	}
+	return s != EnvStopped && s != EnvStopping
 }
 
 // recomputeEnvState derives an environment's state from the states of the

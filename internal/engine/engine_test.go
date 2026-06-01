@@ -1361,10 +1361,10 @@ func TestStartEnvironment_whenRetryDegradedEnv_healthyCommandNotRestarted(t *tes
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
 			},
 			{
-				Name:   "svc-b",
-				Type:   "service",
-				Source: localSource(dir),
-				Run:    fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Name:      "svc-b",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
 			},
 		},
@@ -1419,17 +1419,17 @@ func TestStartEnvironment_whenRetrySharedHealthyCommand_otherEnvUnaffected(t *te
 	cfg := &config.Config{
 		Commands: []config.Command{
 			{
-				Name:   "shared",
-				Type:   "service",
-				Source: localSource(dir),
-				Run:    fmt.Sprintf(`printf 'x' >> %q; touch %q; sleep 30`, counterA, readyA),
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf(`printf 'x' >> %q; touch %q; sleep 30`, counterA, readyA),
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
 			},
 			{
-				Name:   "web",
-				Type:   "service",
-				Source: localSource(dir),
-				Run:    fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Name:      "web",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
 			},
 		},
@@ -1503,10 +1503,10 @@ func TestStartEnvironment_whenRetryRecoversFailedDependency_dependentStarts(t *t
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
 			},
 			{
-				Name:   "svc-b",
-				Type:   "service",
-				Source: localSource(dir),
-				Run:    fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Name:      "svc-b",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
 			},
 			{
@@ -1573,10 +1573,10 @@ func TestStartEnvironment_whenRetryAfterTaskDone_taskNotRerun(t *testing.T) {
 				Run: fmt.Sprintf(`printf 'x' >> %q`, counterTask),
 			},
 			{
-				Name:   "web",
-				Type:   "service",
-				Source: localSource(dir),
-				Run:    fmt.Sprintf("test -f %q && touch %q && sleep 30", fixSvc, readySvc),
+				Name:      "web",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixSvc, readySvc),
 				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readySvc)},
 			},
 		},
@@ -1804,5 +1804,103 @@ func TestSuperviseTask_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
 	}
 	if maxRetries != max {
 		t.Errorf("expected max=%d, got %d", max, maxRetries)
+	}
+}
+
+// ---- Shared-command status isolation -----------------------------------------
+
+func TestRecomputeEnvsFor_whenSharedCommandChanges_leavesStoppedEnvStopped(t *testing.T) {
+	// Given two environments sharing command "shared"; "env2" also needs "other".
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{Name: "shared", Type: "service", Source: localSource(dir)},
+			{Name: "other", Type: "service", Source: localSource(dir)},
+		},
+		Environments: []config.Environment{
+			{Name: "env1", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "env2", Workflow: []config.WorkflowStep{{Command: "shared"}, {Command: "other"}}},
+		},
+	}
+	e := newTestEngine(t, cfg)
+
+	// And "shared" is healthy, "env1" was started (active), "env2" never was.
+	e.mu.Lock()
+	e.commands["shared"] = &command{cfg: cfg.Commands[0], state: CmdHealthy, startDone: make(chan struct{})}
+	e.mu.Unlock()
+	e.setEnvState("env1", EnvStarting)
+
+	// When a shared-command state change fans out to every referencing env.
+	e.recomputeEnvsFor("shared")
+
+	// Then the active env is recomputed (EnvStarting -> EnvRunning)...
+	if got := e.EnvState("env1"); got != EnvRunning {
+		t.Errorf("active env1: expected %q, got %q", EnvRunning, got)
+	}
+	// ...but the never-started env stays stopped (not EnvDegraded).
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Errorf("unstarted env2: expected %q, got %q", EnvStopped, got)
+	}
+}
+
+func TestStartEnvironment_whenSharedCommandFails_unstartedEnvStaysStopped(t *testing.T) {
+	// Given a shared service that becomes healthy then exits on demand (restart
+	// disabled, so an exit lands in CmdError and triggers env recomputation),
+	// shared by "env1" (started) and "env2" (never started, also needs "other").
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	kill := filepath.Join(dir, "kill")
+	off := false
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; while [ ! -f %q ]; do sleep 0.02; done", ready, kill),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+				Restart:   &config.Restart{Enabled: &off},
+			},
+			{
+				Name:      "other",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       "sleep 30",
+				Readiness: &config.Readiness{Shell: "true"},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "env1", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "env2", Workflow: []config.WorkflowStep{{Command: "shared"}, {Command: "other"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When only env1 is started.
+	if err := e.StartEnvironment("env1"); err != nil {
+		t.Fatalf("StartEnvironment env1: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "env1", EnvRunning, 5*time.Second)
+
+	// Then the never-started env2 stays stopped while shared is healthy.
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Fatalf("env2 after env1 start: expected %q, got %q", EnvStopped, got)
+	}
+
+	// When the shared command fails.
+	if err := os.WriteFile(kill, []byte{}, 0o600); err != nil {
+		t.Fatalf("write kill marker: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdError, 5*time.Second)
+
+	// Then the active env1 shows the failure...
+	waitForEnv(t, e, "env1", EnvError, 5*time.Second)
+	// ...but env2, never started, is still stopped (not EnvDegraded).
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Errorf("env2 after shared failure: expected %q, got %q", EnvStopped, got)
 	}
 }
