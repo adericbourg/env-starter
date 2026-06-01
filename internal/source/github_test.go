@@ -150,10 +150,15 @@ func TestGitHub_Fetch_methodFallback_sshFailsGhFailsHttpsSucceeds(t *testing.T) 
 func TestGitHub_Fetch_withSubdir_appendsSubdir(t *testing.T) {
 	// Given
 	cacheBase := t.TempDir()
-	git := &callRecorder{}
 
 	g := newGitHub(cacheBase, "owner/repo", "main", "https", "scripts")
-	g.runGit = git.successRunner
+
+	// Use a runner that creates the clone dir *and* the subdir so the existence
+	// check introduced alongside this test can pass.
+	g.runGit = func(_ context.Context, args ...string) error {
+		cloneDir := args[len(args)-1]
+		return os.MkdirAll(filepath.Join(cloneDir, "scripts"), 0o750)
+	}
 
 	// When
 	dir, err := g.Fetch(context.Background())
@@ -166,6 +171,31 @@ func TestGitHub_Fetch_withSubdir_appendsSubdir(t *testing.T) {
 	want := filepath.Join(cacheDir, "scripts")
 	if dir != want {
 		t.Errorf("dir = %q, want %q", dir, want)
+	}
+}
+
+func TestGitHub_Fetch_whenSubdirMissing_returnsError(t *testing.T) {
+	// Given
+	cacheBase := t.TempDir()
+
+	g := newGitHub(cacheBase, "owner/repo", "main", "https", "nonexistent")
+
+	// Runner creates the clone dir but NOT the subdir, simulating a repo that
+	// does not contain the configured subdir.
+	g.runGit = func(_ context.Context, args ...string) error {
+		cloneDir := args[len(args)-1]
+		return os.MkdirAll(cloneDir, 0o750)
+	}
+
+	// When
+	_, err := g.Fetch(context.Background())
+
+	// Then
+	if err == nil {
+		t.Fatal("expected an error when subdir does not exist, got nil")
+	}
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("expected error to mention the missing subdir name, got: %v", err)
 	}
 }
 

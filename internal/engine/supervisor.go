@@ -184,21 +184,27 @@ func (e *Engine) startCommand(c *command) {
 
 	runDir, err := e.fetchSource(ctx, c.cfg, c.writer)
 	if err != nil {
+		fetchErr := fmt.Errorf("fetch source: %w", err)
+		e.logCmdError(c, fetchErr)
 		c.writer.Close()
-		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("fetch source: %w", err))
+		e.setCmdState(c.cfg.Name, CmdError, fetchErr)
 		return
 	}
 	c.runDir = runDir
 
 	if err := e.runSetup(ctx, c, runDir); err != nil {
+		setupErr := fmt.Errorf("setup failed: %w", err)
+		e.logCmdError(c, setupErr)
 		c.writer.Close()
-		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("setup failed: %w", err))
+		e.setCmdState(c.cfg.Name, CmdError, setupErr)
 		return
 	}
 
 	if err := e.launchProcess(c); err != nil {
+		launchErr := fmt.Errorf("start process: %w", err)
+		e.logCmdError(c, launchErr)
 		c.writer.Close()
-		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("start process: %w", err))
+		e.setCmdState(c.cfg.Name, CmdError, launchErr)
 		return
 	}
 
@@ -747,7 +753,7 @@ func (e *Engine) fetchSource(ctx context.Context, cmd config.Command, out io.Wri
 		if err != nil {
 			return "", err
 		}
-		return appendSubdir(dir, src.Subdir), nil
+		return appendSubdir(dir, src.Subdir)
 	case src.GitHub != nil:
 		gh := &source.GitHub{
 			Repo:   src.GitHub.Repo,
@@ -767,17 +773,32 @@ func (e *Engine) fetchSource(ctx context.Context, cmd config.Command, out io.Wri
 		if err != nil {
 			return "", err
 		}
-		return appendSubdir(dir, src.Subdir), nil
+		return appendSubdir(dir, src.Subdir)
 	default:
 		return "", fmt.Errorf("command %q: no source configured", cmd.Name)
 	}
 }
 
-func appendSubdir(dir, subdir string) string {
+// appendSubdir joins subdir onto dir and verifies the resulting path exists.
+// Returns an error when subdir is set but does not exist inside dir, so callers
+// can surface a clear diagnostic rather than passing a non-existent path to the
+// process runner.
+func appendSubdir(dir, subdir string) (string, error) {
 	if subdir == "" {
-		return dir
+		return dir, nil
 	}
-	return filepath.Join(dir, subdir)
+	target := filepath.Join(dir, subdir)
+	if _, err := os.Stat(target); err != nil {
+		return "", fmt.Errorf("subdir %q does not exist in %s: %w", subdir, dir, err)
+	}
+	return target, nil
+}
+
+// logCmdError writes a human-readable failure line to the command log (TUI panel
+// + log file) so configuration problems are visible, not just flagged with ✗.
+// Must be called while c.writer is still open.
+func (e *Engine) logCmdError(c *command, err error) {
+	fmt.Fprintf(c.writer, "\nenv-starter: %v\n", err)
 }
 
 func (e *Engine) logPath(cmdName string) string {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1902,5 +1903,94 @@ func TestStartEnvironment_whenSharedCommandFails_unstartedEnvStaysStopped(t *tes
 	// ...but env2, never started, is still stopped (not EnvDegraded).
 	if got := e.EnvState("env2"); got != EnvStopped {
 		t.Errorf("env2 after shared failure: expected %q, got %q", EnvStopped, got)
+	}
+}
+
+func TestAppendSubdir_whenSubdirExists_returnsJoinedPath(t *testing.T) {
+	// Given
+	base := t.TempDir()
+	sub := filepath.Join(base, "scripts")
+	if err := os.MkdirAll(sub, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	got, err := appendSubdir(base, "scripts")
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != sub {
+		t.Errorf("got %q, want %q", got, sub)
+	}
+}
+
+func TestAppendSubdir_whenSubdirMissing_returnsError(t *testing.T) {
+	// Given
+	base := t.TempDir()
+
+	// When
+	_, err := appendSubdir(base, "nonexistent")
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for missing subdir, got nil")
+	}
+}
+
+func TestAppendSubdir_whenSubdirEmpty_returnsBase(t *testing.T) {
+	// Given
+	base := t.TempDir()
+
+	// When
+	got, err := appendSubdir(base, "")
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != base {
+		t.Errorf("got %q, want %q", got, base)
+	}
+}
+
+func TestStartEnvironment_whenSubdirMissing_logsErrorToCommandLog(t *testing.T) {
+	// Given – a local source that exists but configured with a subdir that does not.
+	srcDir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "task",
+				Source: config.Source{Local: srcDir, Subdir: "nonexistent"},
+				Run:    "exit 0",
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdError, 5*time.Second)
+
+	// Then – the error must appear in the command log so the user can diagnose it.
+	logs := e.Logs("svc")
+	found := false
+	for _, line := range logs {
+		if strings.Contains(line, "nonexistent") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected log to contain 'nonexistent', got: %v", logs)
 	}
 }

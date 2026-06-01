@@ -168,6 +168,10 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 	target := dir
 	if g.Subdir != "" {
 		target = filepath.Join(dir, g.Subdir)
+		if _, err := os.Stat(target); err != nil {
+			return "", fmt.Errorf("subdir %q does not exist in %s (branch %s): %w",
+				g.Subdir, g.Repo, g.effectiveBranch(), err)
+		}
 	}
 	return target, nil
 }
