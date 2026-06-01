@@ -42,7 +42,20 @@ type shutdownDoneMsg struct{}
 // transient notice so the normal shortcut bar is shown again.
 type noticeResetMsg struct{}
 
+// configScanMsg is sent by the periodic config-file scanner to trigger a check
+// for on-disk changes.
+type configScanMsg struct{}
+
+// reloadDoneMsg is sent once the background config reload (triggered by pressing
+// "c") has completed. err is nil on success.
+type reloadDoneMsg struct{ err error }
+
 const tickInterval = 500 * time.Millisecond
+
+// configScanInterval is how often the config files are stat-ed for changes.
+// 2s is sufficient latency for a human-initiated banner; using a dedicated
+// ticker (rather than every Nth tickMsg) keeps the two concerns independent.
+const configScanInterval = 2 * time.Second
 
 // quitConfirmWindow is how long after a first Ctrl+C a second press still counts
 // as confirmation. After it elapses the confirmation is cancelled.
@@ -82,6 +95,21 @@ type Model struct {
 	// transient footer notice (e.g. "opened …" after ^L); cleared by noticeResetMsg
 	notice string
 
+	// configDirty is set when the on-disk config differs semantically from the
+	// running engine's config. It triggers the sticky reload banner and enables
+	// the "c" key. Cleared by a successful Reload.
+	configDirty bool
+
+	// reloadErr holds the error message from the last failed reload attempt (only
+	// for engine-construction failures; parse errors surface via configParseErr).
+	// Appended to the configDirty banner; cleared on a successful reload.
+	reloadErr string
+
+	// configParseErr holds a parse error reported by the last config scan. While
+	// set, the error banner is shown and the (c) key is blocked. Cleared when the
+	// file next loads successfully or a reload succeeds.
+	configParseErr string
+
 	// openFile opens the given path in the OS default application. Defaults to
 	// openfile.Open; swapped out in tests.
 	openFile func(string) error
@@ -96,10 +124,10 @@ func New(ctrl Controller) Model {
 	}
 }
 
-// Init returns the initial commands: start listening for engine events and arm
-// the periodic refresh ticker.
+// Init returns the initial commands: start listening for engine events, arm
+// the periodic refresh ticker, and arm the config-file scanner.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForEvent(m.ctrl), tickCmd())
+	return tea.Batch(waitForEvent(m.ctrl), tickCmd(), configScanCmd())
 }
 
 // waitForEvent returns a Cmd that blocks until the next engine event, then
@@ -132,6 +160,22 @@ func noticeResetCmd() tea.Cmd {
 	return tea.Tick(noticeWindow, func(time.Time) tea.Msg {
 		return noticeResetMsg{}
 	})
+}
+
+func configScanCmd() tea.Cmd {
+	return tea.Tick(configScanInterval, func(time.Time) tea.Msg {
+		return configScanMsg{}
+	})
+}
+
+// reloadCmd runs the full config reload (Shutdown → re-load → engine.New →
+// swap) in the background and delivers the outcome as a reloadDoneMsg.
+func reloadCmd(ctrl Controller) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		return reloadDoneMsg{err: ctrl.Reload(ctx)}
+	}
 }
 
 // shutdownCmd runs the engine teardown and then signals that it has finished.
@@ -169,6 +213,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case noticeResetMsg:
 		m.notice = ""
 		return m, nil
+
+	case configScanMsg:
+		dirty, parseErr := m.ctrl.ConfigChanged()
+		m.configDirty = dirty
+		if parseErr != nil {
+			m.configParseErr = parseErr.Error()
+			m.reloadErr = "" // parse error supersedes any prior reload error
+		} else {
+			m.configParseErr = ""
+		}
+		return m, configScanCmd()
+
+	case reloadDoneMsg:
+		if msg.err != nil {
+			m.reloadErr = msg.err.Error()
+			// configDirty stays true so the banner remains and shows the error.
+			return m, nil
+		}
+		m.configDirty = false
+		m.reloadErr = ""
+		m.configParseErr = ""
+		m = m.clampCursors()
+		m = m.refreshLogView()
+		// Re-arm event listening against the new engine's channel.
+		return m, waitForEvent(m.ctrl)
 
 	case shutdownDoneMsg:
 		return m, tea.Quit
@@ -257,6 +326,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		m = m.refreshLogView()
+
+	case "c":
+		if !m.configDirty || m.configParseErr != "" {
+			// "c" is inert when no valid change is pending (or file is unparseable).
+			break
+		}
+		m.notice = "Reloading config…"
+		return m, reloadCmd(m.ctrl)
 	}
 
 	// Forward scroll keys to viewport when logs are focused.
@@ -356,6 +433,21 @@ func (m Model) selectedCommand() string {
 		return ""
 	}
 	return cmds[m.cmdCursor]
+}
+
+// clampCursors ensures envCursor and cmdCursor remain within the bounds of the
+// current environment and command lists. This is called after a reload, where
+// the new config may have fewer entries than the old one.
+func (m Model) clampCursors() Model {
+	envs := m.ctrl.Environments()
+	if m.envCursor >= len(envs) {
+		m.envCursor = max(len(envs)-1, 0)
+	}
+	cmds := m.selectedEnvCommands()
+	if m.cmdCursor >= len(cmds) {
+		m.cmdCursor = max(len(cmds)-1, 0)
+	}
+	return m
 }
 
 // logsTitle builds the header shown above the logs viewport, identifying which
@@ -489,6 +581,12 @@ var (
 				Bold(true).
 				Foreground(lipgloss.Color("214"))
 
+	// configDirtyStyle renders the config-change banner in the same amber as the
+	// quit confirmation so it is visually prominent.
+	configDirtyStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("214"))
+
 	// shutdownStyle is used for the full-screen "env shutting down…" message.
 	shutdownStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -562,7 +660,9 @@ func (m Model) renderCmdPane(width, height int) string {
 	for i, cmd := range cmds {
 		state := m.ctrl.CmdState(cmd)
 		indicator := cmdStateIndicator(state, m.spinnerFrame)
-		line := fmt.Sprintf("%s %s", indicator, cmd)
+		retryAttempts, retryMax := m.ctrl.CmdRetries(cmd)
+		label := cmd + cmdRetrySuffix(state, retryAttempts, retryMax)
+		line := fmt.Sprintf("%s %s", indicator, label)
 		if i == m.cmdCursor && m.focused == focusCmds {
 			line = selectedLine.Render("> " + line)
 		} else if i == m.cmdCursor {
@@ -605,10 +705,20 @@ func (m Model) renderFooter() string {
 	if m.confirmingQuit {
 		return quitConfirmStyle.Render("Press Ctrl+C again to quit")
 	}
+	if m.configParseErr != "" {
+		return configDirtyStyle.Render("Updated configuration cannot be parsed — fix errors to reload")
+	}
+	if m.configDirty {
+		msg := "Configuration file has been updated. Press (c) to reload config"
+		if m.reloadErr != "" {
+			msg += "  (reload failed: " + m.reloadErr + ")"
+		}
+		return configDirtyStyle.Render(msg)
+	}
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh  ^L open  ^C quit"
+	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh logs  ^L open  ^C quit"
 	return footerStyle.Render(shortcuts)
 }
 
@@ -706,13 +816,32 @@ func cmdStateIndicator(s engine.CmdState, frame int) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("11")).Render(spinnerChar(frame))
 	case engine.CmdStopping:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Render(spinnerChar(frame))
+	case engine.CmdRestarting:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render(spinnerChar(frame))
 	case engine.CmdDone:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Render("✓")
 	case engine.CmdError:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("✗")
+	case engine.CmdTimeout:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Render("⧖")
 	case engine.CmdStopped:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("○")
 	default: // CmdPending
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("·")
 	}
+}
+
+// cmdRetrySuffix returns a short annotation to append after the command name.
+// During a restart cycle it shows "(retry N/max)"; after permanent failure it
+// shows "(failed after N retries)". Returns an empty string in all other cases.
+func cmdRetrySuffix(state engine.CmdState, attempts, max int) string {
+	switch state {
+	case engine.CmdRestarting:
+		return fmt.Sprintf(" (retry %d/%d)", attempts+1, max)
+	case engine.CmdError:
+		if attempts > 0 {
+			return fmt.Sprintf(" (failed after %d retries)", attempts)
+		}
+	}
+	return ""
 }

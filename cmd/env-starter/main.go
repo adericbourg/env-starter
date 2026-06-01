@@ -52,7 +52,7 @@ func main() {
 
 	maybeSuggestUpdate()
 
-	cfg, err := resolveConfig(configFile, configOverlay)
+	cfg, loadFn, watchPaths, err := resolveConfig(configFile, configOverlay)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -64,13 +64,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctrl := tui.NewReloadController(eng, cfg, watchPaths, loadFn)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// tuiDone receives the error (or nil) from tui.Run once it returns.
 	tuiDone := make(chan error, 1)
 	go func() {
-		tuiDone <- tui.Run(eng)
+		tuiDone <- tui.Run(ctrl)
 	}()
 
 	// Wait for either the TUI to finish or a signal to arrive.
@@ -87,7 +89,9 @@ func main() {
 	fmt.Fprintln(os.Stderr, "shutting down…")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
-	eng.Shutdown(shutdownCtx)
+	// Use ctrl.Shutdown (not eng.Shutdown) so that post-reload engines are also
+	// torn down correctly. eng may no longer be the active engine after a reload.
+	ctrl.Shutdown(shutdownCtx)
 
 	if tuiErr != nil {
 		fmt.Fprintf(os.Stderr, "error: tui: %v\n", tuiErr)
@@ -176,34 +180,52 @@ func maybeSuggestUpdate() {
 // resolveConfig loads the effective *config.Config from the flag values.
 // baseFile is the --config flag; overlayFile is the --config-overlay flag.
 // When neither flag is set, the XDG default path is used as the base.
-func resolveConfig(baseFile, overlayFile string) (*config.Config, error) {
+// resolveConfig loads the configuration from disk and returns:
+//   - the initially parsed *config.Config
+//   - a loadFn closure that re-runs the same load+merge logic for hot-reload
+//   - watchPaths: the set of files to stat for change detection
+//   - any error encountered during the initial load
+func resolveConfig(baseFile, overlayFile string) (*config.Config, func() (*config.Config, error), []string, error) {
 	basePath := baseFile
 	if basePath == "" {
 		basePath = defaultConfigPath()
 	}
 
-	base, err := config.Load(basePath)
+	// loadFn re-runs the full resolution (base + optional overlay) using the
+	// resolved paths captured here. It is safe to call repeatedly.
+	loadFn := func() (*config.Config, error) {
+		base, err := config.Load(basePath)
+		if err != nil {
+			return nil, fmt.Errorf("loading config %q: %w", basePath, err)
+		}
+		if overlayFile == "" {
+			return base, nil
+		}
+		overlay, err := config.Load(overlayFile)
+		if err != nil {
+			return nil, fmt.Errorf("loading overlay config %q: %w", overlayFile, err)
+		}
+		return config.Merge(base, overlay), nil
+	}
+
+	cfg, err := loadFn()
 	if err != nil {
 		if baseFile == "" && errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"no configuration file found at %s; "+
 					"create ~/.config/env-starter/config.yaml or pass --config",
 				basePath,
 			)
 		}
-		return nil, fmt.Errorf("loading config %q: %w", basePath, err)
+		return nil, nil, nil, err
 	}
 
-	if overlayFile == "" {
-		return base, nil
+	watchPaths := []string{basePath}
+	if overlayFile != "" {
+		watchPaths = append(watchPaths, overlayFile)
 	}
 
-	overlay, err := config.Load(overlayFile)
-	if err != nil {
-		return nil, fmt.Errorf("loading overlay config %q: %w", overlayFile, err)
-	}
-
-	return config.Merge(base, overlay), nil
+	return cfg, loadFn, watchPaths, nil
 }
 
 // defaultConfigPath returns $XDG_CONFIG_HOME/env-starter/config.yaml if

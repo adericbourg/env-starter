@@ -54,6 +54,25 @@ func validateCommand(idx int, cmd Command) error {
 			return err
 		}
 	}
+	if cmd.Restart != nil {
+		if err := validateRestart(cmd.Name, *cmd.Restart); err != nil {
+			return err
+		}
+	}
+	// Cross-field: restart on a task requires a readiness probe (the liveness probe
+	// is the only failure signal — the process exits normally on success).
+	if cmd.Type == "task" && cmd.Restart != nil && cmd.Readiness == nil {
+		if cmd.Restart.Enabled == nil || *cmd.Restart.Enabled {
+			return fmt.Errorf("command %q: restart on a task requires a readiness probe", cmd.Name)
+		}
+	}
+	return nil
+}
+
+func validateRestart(cmdName string, r Restart) error {
+	if r.MaxRetries != nil && *r.MaxRetries < 0 {
+		return fmt.Errorf("command %q: restart.max-retries must not be negative, got %d", cmdName, *r.MaxRetries)
+	}
 	return nil
 }
 

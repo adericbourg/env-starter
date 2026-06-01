@@ -717,3 +717,1190 @@ func TestStartEnvironment_whenRestartingFailedEnv_recoversToRunning(t *testing.T
 	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
 	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
 }
+
+// ---- Auto-restart tests -------------------------------------------------------
+
+// shortRestart returns a *config.Restart with all timings shrunk for fast
+// tests. maxRetries defaults to 3 if zero.
+func shortRestart(t *testing.T, maxRetries int) *config.Restart {
+	t.Helper()
+	if maxRetries == 0 {
+		maxRetries = 3
+	}
+	one := true
+	base := config.Duration{Duration: 20 * time.Millisecond}
+	check := config.Duration{Duration: 30 * time.Millisecond}
+	return &config.Restart{
+		Enabled:       &one,
+		MaxRetries:    &maxRetries,
+		BackoffBase:   &base,
+		CheckInterval: &check,
+	}
+}
+
+func TestResolveRestart_serviceDefaults_enabledThreeRetriesOneSecondBase(t *testing.T) {
+	// Given a service with no restart config
+	cmd := config.Command{
+		Name:      "svc",
+		Type:      "service",
+		Readiness: &config.Readiness{Shell: "true"},
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if !p.enabled {
+		t.Error("expected enabled=true for service with no restart config")
+	}
+	if p.maxRetries != 3 {
+		t.Errorf("expected maxRetries=3, got %d", p.maxRetries)
+	}
+	if p.backoffBase != time.Second {
+		t.Errorf("expected backoffBase=1s, got %v", p.backoffBase)
+	}
+	if p.checkInterval != 10*time.Second {
+		t.Errorf("expected checkInterval=10s, got %v", p.checkInterval)
+	}
+}
+
+func TestResolveRestart_taskWithNoBlock_isDisabled(t *testing.T) {
+	// Given a task with no restart block
+	cmd := config.Command{
+		Name: "migrate",
+		Type: "task",
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if p.enabled {
+		t.Error("expected enabled=false for task with no restart block")
+	}
+}
+
+func TestResolveRestart_taskWithBlock_isEnabled(t *testing.T) {
+	// Given a task with an explicit restart block and a readiness probe
+	enabled := true
+	cmd := config.Command{
+		Name:      "tunnel",
+		Type:      "task",
+		Readiness: &config.Readiness{Shell: "check.sh"},
+		Restart:   &config.Restart{Enabled: &enabled},
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then
+	if !p.enabled {
+		t.Error("expected enabled=true for task with explicit restart block")
+	}
+	if p.maxRetries != 3 {
+		t.Errorf("expected default maxRetries=3, got %d", p.maxRetries)
+	}
+	if p.checkInterval != 10*time.Second {
+		t.Errorf("expected default checkInterval=10s, got %v", p.checkInterval)
+	}
+}
+
+func TestResolveRestart_serviceWithNoReadiness_checkIntervalZero(t *testing.T) {
+	// Given a service with no readiness probe
+	cmd := config.Command{
+		Name: "svc",
+		Type: "service",
+	}
+
+	// When
+	p := resolveRestart(cmd)
+
+	// Then: liveness impossible without probe
+	if p.checkInterval != 0 {
+		t.Errorf("expected checkInterval=0 for service with no readiness probe, got %v", p.checkInterval)
+	}
+	// But crash-restart is still enabled
+	if !p.enabled {
+		t.Error("expected enabled=true even without readiness probe")
+	}
+}
+
+func TestSuperviseService_whenProcessCrashesAfterHealthy_restarts(t *testing.T) {
+	// Given a service that becomes healthy, then exits unexpectedly, then
+	// becomes healthy again on the next run.
+	dir := t.TempDir()
+	readyMarker := filepath.Join(dir, "ready")
+	crashOnce := filepath.Join(dir, "crashed") // created after first run so subsequent runs stay alive
+
+	// Run script: create readyMarker, then on first run sleep briefly and exit
+	// (giving the probe time to fire before the exit), on subsequent runs sleep
+	// forever.
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				Run: fmt.Sprintf(
+					`touch %q; if [ ! -f %q ]; then touch %q; sleep 0.5; exit 1; fi; sleep 30`,
+					readyMarker, crashOnce, crashOnce,
+				),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyMarker)},
+				Restart:   shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then: the service becomes healthy, crashes, restarts, and is healthy again.
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	// After the first crash (after 500ms sleep) a restart cycle fires.
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	// Retry counter resets to 0 on success.
+	attempts, _ := e.CmdRetries("svc")
+	if attempts != 0 {
+		t.Errorf("expected retry counter reset to 0 after success, got %d", attempts)
+	}
+}
+
+func TestSuperviseService_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *testing.T) {
+	// Given a service that stays alive but whose liveness probe starts failing
+	// (marker deleted) and then starts passing again (marker recreated).
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+	restartedMarker := filepath.Join(dir, "restarted") // created on second run
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Stay alive; the probe checks the marker, not the process health.
+				Run: fmt.Sprintf(`touch %q; sleep 30`, restartedMarker),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", liveMarker),
+				},
+				Restart: shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+
+	// Simulate liveness failure: remove the marker.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// The liveness probe will fail; the service should start restarting.
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+
+	// Recreate the marker so the next readiness probe passes.
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("recreate live marker: %v", err)
+	}
+
+	// The service should come back healthy.
+	waitForCmd(t, e, "svc", CmdHealthy, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestSuperviseService_whenRestartDisabled_crashMarksError(t *testing.T) {
+	// Given a service with restart.enabled=false that crashes after becoming healthy.
+	dir := t.TempDir()
+	readyMarker := filepath.Join(dir, "ready")
+
+	disabled := false
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Create ready marker, sleep briefly so the probe fires and the
+				// command reaches CmdHealthy, then exit. The sleep must exceed the
+				// probe interval (20ms in tests) to ensure a reliable outcome.
+				Run:       fmt.Sprintf("touch %q; sleep 0.3; exit 0", readyMarker),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyMarker)},
+				Restart:   &config.Restart{Enabled: &disabled},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// The service should become healthy, then crash and stay errored (no restart).
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "svc", CmdError, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+func TestAttemptRestart_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
+	// Given a service that becomes healthy on its first run (by sleeping past
+	// noProbeGrace), then exits. Every subsequent relaunch also exits immediately
+	// (< noProbeGrace), causing each restart attempt to fail. With max-retries=2
+	// and no readiness probe (so no liveness checking), the engine should give up
+	// and mark the command CmdError.
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+
+	max := 2
+	base := config.Duration{Duration: 10 * time.Millisecond}
+	enabled := true
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// No readiness probe: healthy after 150ms (noProbeGrace).
+				// First run: sleep 300ms (> noProbeGrace) so the command reaches
+				// CmdHealthy, then exit. Subsequent runs: exit immediately (<
+				// noProbeGrace), so each relaunch fails.
+				Run: fmt.Sprintf(
+					`if [ ! -f %q ]; then touch %q; sleep 0.3; fi; exit 1`,
+					started, started,
+				),
+				Restart: &config.Restart{Enabled: &enabled, MaxRetries: &max, BackoffBase: &base},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Wait for all retries to be exhausted → CmdError.
+	waitForCmd(t, e, "svc", CmdError, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+
+	attempts, maxRetries := e.CmdRetries("svc")
+	if attempts != max {
+		t.Errorf("expected %d retries recorded, got %d", max, attempts)
+	}
+	if maxRetries != max {
+		t.Errorf("expected max=%d, got %d", max, maxRetries)
+	}
+}
+
+func TestStopEnvironment_duringBackoffSleep_userStopWins(t *testing.T) {
+	// Given a service that becomes healthy, exits (triggering a restart with a
+	// long backoff), we stop the environment while the backoff sleep is in
+	// progress. The command must end up stopped, not healthy or restarting.
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+
+	enabled := true
+	max := 3
+	longBackoff := config.Duration{Duration: 10 * time.Second} // long enough to stop during
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// No readiness probe: healthy after 150ms (noProbeGrace).
+				// First run: sleep 300ms so the command reaches CmdHealthy, then exit.
+				// The long backoff (10s) means we have plenty of time to call
+				// StopEnvironment before the restart fires.
+				Run: fmt.Sprintf(
+					`if [ ! -f %q ]; then touch %q; sleep 0.3; fi; exit 1`,
+					started, started,
+				),
+				Restart: &config.Restart{Enabled: &enabled, MaxRetries: &max, BackoffBase: &longBackoff},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdRestarting, 5*time.Second)
+
+	// Stop the environment while in the backoff sleep.
+	if err := e.StopEnvironment("dev"); err != nil {
+		t.Fatalf("StopEnvironment: %v", err)
+	}
+
+	// The command must end up stopped (not healthy or restarting).
+	waitForCmd(t, e, "svc", CmdStopped, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvStopped, 5*time.Second)
+}
+
+func TestStartEnvironment_whenReadinessTimesOut_marksTimeout(t *testing.T) {
+	// Given a service whose readiness probe never passes and whose timeout is
+	// deliberately short so the test runs quickly.
+	dir := t.TempDir()
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc",
+				Type:   "service",
+				Source: localSource(dir),
+				// Stay alive so the probe timeout fires (not an early-exit error).
+				Run: "sleep 30",
+				Readiness: &config.Readiness{
+					Shell:   "false", // never succeeds
+					Timeout: &config.Duration{Duration: 100 * time.Millisecond},
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name:     "dev",
+				Workflow: []config.WorkflowStep{{Command: "svc"}},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the environment is started.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the command is marked timeout (not error) and the env is error.
+	waitForCmd(t, e, "svc", CmdTimeout, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+// ---- Task with readiness probe tests -----------------------------------------
+
+func TestHandleTask_withNoProbe_reachesDone(t *testing.T) {
+	// Given a task with no readiness probe that exits 0.
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "migrate",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    "exit 0",
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "migrate"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task reaches done (not healthy) — regression guard for no-probe path.
+	waitForCmd(t, e, "migrate", CmdDone, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestHandleTask_withReadinessProbe_reachesHealthy(t *testing.T) {
+	// Given a task that exits 0 and leaves a marker file that the probe checks.
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit 0 immediately while creating the marker (simulating a tunnel
+				// that backgrounds itself and returns).
+				Run:       fmt.Sprintf("touch %q", marker),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", marker)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task reaches healthy (not done) and the env is running.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestHandleTask_whenReadinessTimesOut_reachesTimeout(t *testing.T) {
+	// Given a task whose process exits 0 but the readiness probe never passes.
+	dir := t.TempDir()
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit immediately; the probe will never see a marker.
+				Run: "exit 0",
+				Readiness: &config.Readiness{
+					Shell:   "false", // never succeeds
+					Timeout: &config.Duration{Duration: 100 * time.Millisecond},
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the task is marked timeout (not done).
+	waitForCmd(t, e, "tunnel", CmdTimeout, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+}
+
+func TestHandleTask_withReadinessProbe_unblocksDependent(t *testing.T) {
+	// Given a task (tunnel) with a readiness probe, and a dependent service that
+	// records whether the probe had passed before it started.
+	dir := t.TempDir()
+	tunnelMarker := filepath.Join(dir, "tunnel-ready")
+	witness := filepath.Join(dir, "witness")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    fmt.Sprintf("touch %q", tunnelMarker),
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", tunnelMarker),
+				},
+			},
+			{
+				Name:   "app",
+				Type:   "service",
+				Source: localSource(dir),
+				// Record whether the tunnel marker existed when the service started.
+				Run: fmt.Sprintf(
+					"if [ -f %q ]; then echo ok > %q; else echo bad > %q; fi; sleep 30",
+					tunnelMarker, witness, witness,
+				),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", witness)},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name: "dev",
+				Workflow: []config.WorkflowStep{
+					{Command: "tunnel"},
+					{Command: "app", DependsOn: []string{"tunnel"}},
+				},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+
+	// Then the tunnel is healthy (not just done) and app started only after probe passed.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "app", CmdHealthy, 5*time.Second)
+
+	got, err := os.ReadFile(witness)
+	if err != nil {
+		t.Fatalf("read witness: %v", err)
+	}
+	if string(got) != "ok\n" {
+		t.Fatalf("app started before tunnel probe passed: witness=%q", string(got))
+	}
+}
+
+func TestSuperviseTask_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *testing.T) {
+	// Given a task that exits 0 and passes its probe (marker exists); after the
+	// task is healthy, the marker is removed (liveness fails → restart); then
+	// the marker is recreated so the relaunched task passes the probe again.
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				// Exit 0 immediately; the probe checks an external marker file.
+				Run: "exit 0",
+				Readiness: &config.Readiness{
+					Shell: fmt.Sprintf("test -f %q", liveMarker),
+				},
+				Restart: shortRestart(t, 3),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+
+	// Simulate liveness failure: remove the marker.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// The liveness probe should fail → restart cycle begins.
+	waitForCmd(t, e, "tunnel", CmdRestarting, 5*time.Second)
+
+	// Recreate the marker so the relaunched task's probe passes.
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("recreate live marker: %v", err)
+	}
+
+	// The task should come back healthy.
+	waitForCmd(t, e, "tunnel", CmdHealthy, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	// Retry counter resets to 0 on success.
+	attempts, _ := e.CmdRetries("tunnel")
+	if attempts != 0 {
+		t.Errorf("expected retry counter reset to 0 after success, got %d", attempts)
+	}
+}
+
+// ---- Selective retry tests ---------------------------------------------------
+
+func TestStartEnvironment_whenRetryDegradedEnv_healthyCommandNotRestarted(t *testing.T) {
+	// Given an env with a healthy service A and a failing service B (→ EnvDegraded).
+	// A records every process launch in a counter file.
+	dir := t.TempDir()
+	counterA := filepath.Join(dir, "a-launches")
+	readyA := filepath.Join(dir, "a-ready")
+	fixB := filepath.Join(dir, "b-fix")
+	readyB := filepath.Join(dir, "b-ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "svc-a",
+				Type:   "service",
+				Source: localSource(dir),
+				// Append one byte per launch so we can count launches by file size.
+				Run:       fmt.Sprintf(`printf 'x' >> %q; touch %q; sleep 30`, counterA, readyA),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
+			},
+			{
+				Name:      "svc-b",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{
+				{Command: "svc-a"},
+				{Command: "svc-b"},
+			}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When the env is started (svc-a healthy, svc-b fails → degraded).
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (first): %v", err)
+	}
+	waitForCmd(t, e, "svc-a", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvDegraded, 5*time.Second)
+
+	// Fix svc-b and retry the env.
+	if err := os.WriteFile(fixB, []byte{}, 0o600); err != nil {
+		t.Fatalf("create fix marker: %v", err)
+	}
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (retry): %v", err)
+	}
+
+	// Then the env recovers to running, svc-b becomes healthy, and svc-a was NOT relaunched.
+	waitForCmd(t, e, "svc-b", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	data, err := os.ReadFile(counterA)
+	if err != nil {
+		t.Fatalf("read svc-a counter: %v", err)
+	}
+	if len(data) != 1 {
+		t.Errorf("svc-a launched %d time(s), expected exactly 1", len(data))
+	}
+}
+
+func TestStartEnvironment_whenRetrySharedHealthyCommand_otherEnvUnaffected(t *testing.T) {
+	// Given envs dev and prod sharing a healthy service A; dev also has a failing
+	// service B. Retrying dev must not disturb A or prod.
+	dir := t.TempDir()
+	counterA := filepath.Join(dir, "a-launches")
+	readyA := filepath.Join(dir, "a-ready")
+	fixB := filepath.Join(dir, "b-fix")
+	readyB := filepath.Join(dir, "b-ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf(`printf 'x' >> %q; touch %q; sleep 30`, counterA, readyA),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
+			},
+			{
+				Name:      "web",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "prod", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "dev", Workflow: []config.WorkflowStep{
+				{Command: "shared"},
+				{Command: "web"},
+			}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// Start prod (shared becomes healthy).
+	if err := e.StartEnvironment("prod"); err != nil {
+		t.Fatalf("StartEnvironment prod: %v", err)
+	}
+	waitForEnv(t, e, "prod", EnvRunning, 5*time.Second)
+
+	// Start dev (shared already healthy, web fails → dev degraded).
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment dev: %v", err)
+	}
+	waitForEnv(t, e, "dev", EnvDegraded, 5*time.Second)
+
+	// Fix web and retry dev.
+	if err := os.WriteFile(fixB, []byte{}, 0o600); err != nil {
+		t.Fatalf("create fix marker: %v", err)
+	}
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment dev retry: %v", err)
+	}
+
+	// Then dev reaches running, prod stays running, and shared was never relaunched.
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+	if got := e.EnvState("prod"); got != EnvRunning {
+		t.Errorf("prod expected EnvRunning after dev retry, got %q", got)
+	}
+	if got := e.CmdState("shared"); got != CmdHealthy {
+		t.Errorf("shared expected CmdHealthy after dev retry, got %q", got)
+	}
+
+	data, err := os.ReadFile(counterA)
+	if err != nil {
+		t.Fatalf("read shared counter: %v", err)
+	}
+	if len(data) != 1 {
+		t.Errorf("shared launched %d time(s), expected exactly 1", len(data))
+	}
+}
+
+func TestStartEnvironment_whenRetryRecoversFailedDependency_dependentStarts(t *testing.T) {
+	// Given a dep chain: A (healthy) → B (fails until fixed) → C (depends on B).
+	// On first start C stays pending because B fails. After fixing B and retrying,
+	// C should start.
+	dir := t.TempDir()
+	readyA := filepath.Join(dir, "a-ready")
+	fixB := filepath.Join(dir, "b-fix")
+	readyB := filepath.Join(dir, "b-ready")
+	readyC := filepath.Join(dir, "c-ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "svc-a",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 30", readyA),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyA)},
+			},
+			{
+				Name:      "svc-b",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixB, readyB),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyB)},
+			},
+			{
+				Name:      "svc-c",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 30", readyC),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readyC)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{
+				{Command: "svc-a"},
+				{Command: "svc-b"},
+				{Command: "svc-c", DependsOn: []string{"svc-b"}},
+			}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When started before svc-b is fixed: svc-a healthy, svc-b fails, svc-c pending.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (first): %v", err)
+	}
+	waitForCmd(t, e, "svc-a", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "svc-b", CmdError, 5*time.Second)
+	// svc-c must stay pending (dep failed, never started).
+	if got := e.CmdState("svc-c"); got != CmdPending {
+		t.Errorf("svc-c expected CmdPending before retry, got %q", got)
+	}
+
+	// Fix svc-b and retry.
+	if err := os.WriteFile(fixB, []byte{}, 0o600); err != nil {
+		t.Fatalf("create fix marker: %v", err)
+	}
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (retry): %v", err)
+	}
+
+	// Then svc-b and svc-c become healthy and the env reaches running.
+	waitForCmd(t, e, "svc-b", CmdHealthy, 5*time.Second)
+	waitForCmd(t, e, "svc-c", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+}
+
+func TestStartEnvironment_whenRetryAfterTaskDone_taskNotRerun(t *testing.T) {
+	// Given an env with a task that has completed (CmdDone) and a failing service.
+	// On retry the task must not re-run.
+	dir := t.TempDir()
+	counterTask := filepath.Join(dir, "task-launches")
+	fixSvc := filepath.Join(dir, "svc-fix")
+	readySvc := filepath.Join(dir, "svc-ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				// No readiness probe → exits 0 → CmdDone.
+				Name:   "migrate",
+				Type:   "task",
+				Source: localSource(dir),
+				// Append one byte per run.
+				Run: fmt.Sprintf(`printf 'x' >> %q`, counterTask),
+			},
+			{
+				Name:      "web",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("test -f %q && touch %q && sleep 30", fixSvc, readySvc),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", readySvc)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{
+				{Command: "migrate"},
+				{Command: "web"},
+			}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When started: migrate runs once (Done), web fails → env degraded.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (first): %v", err)
+	}
+	waitForCmd(t, e, "migrate", CmdDone, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvDegraded, 5*time.Second)
+
+	// Fix web and retry.
+	if err := os.WriteFile(fixSvc, []byte{}, 0o600); err != nil {
+		t.Fatalf("create fix marker: %v", err)
+	}
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment (retry): %v", err)
+	}
+
+	// Then web becomes healthy, env reaches running, and migrate was NOT re-run.
+	waitForCmd(t, e, "web", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+
+	if got := e.CmdState("migrate"); got != CmdDone {
+		t.Errorf("migrate expected CmdDone after retry, got %q", got)
+	}
+	data, err := os.ReadFile(counterTask)
+	if err != nil {
+		t.Fatalf("read task counter: %v", err)
+	}
+	if len(data) != 1 {
+		t.Errorf("migrate ran %d time(s), expected exactly 1", len(data))
+	}
+}
+
+func TestStartEnvironment_whenRetryDownSharedCommand_relaunchesForBothEnvs(t *testing.T) {
+	// Given a command shared by two envs that is driven to CmdError (liveness
+	// failure exhausts retries). Retrying one env must restart the command in place
+	// and recover both envs to running.
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+	probeTimeout := config.Duration{Duration: 100 * time.Millisecond}
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "shared",
+				Type:   "service",
+				Source: localSource(dir),
+				Run:    "sleep 30",
+				Readiness: &config.Readiness{
+					Shell:   fmt.Sprintf("test -f %q", liveMarker),
+					Timeout: &probeTimeout,
+				},
+				Restart: shortRestart(t, 2),
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "prod", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// Start both envs.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment dev: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+	if err := e.StartEnvironment("prod"); err != nil {
+		t.Fatalf("StartEnvironment prod: %v", err)
+	}
+	waitForEnv(t, e, "prod", EnvRunning, 5*time.Second)
+
+	// Drive shared to CmdError by removing the liveness marker (exhausts retries).
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdError, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+	waitForEnv(t, e, "prod", EnvError, 5*time.Second)
+
+	// Restore the marker so the in-place restart will succeed.
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("restore live marker: %v", err)
+	}
+
+	// Retrying dev must restart the shared command in place and recover both envs.
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment dev retry: %v", err)
+	}
+
+	waitForCmd(t, e, "shared", CmdHealthy, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvRunning, 5*time.Second)
+	waitForEnv(t, e, "prod", EnvRunning, 5*time.Second)
+}
+
+func TestReleaseCommand_whenOneOfTwoHoldersReleases_commandStaysUp(t *testing.T) {
+	// Given two envs sharing a command. Releasing one env's hold must leave the
+	// command healthy; releasing the second must tear it down. Pins the holders
+	// balance invariant.
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 30", ready),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "a", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "b", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When both envs are started.
+	if err := e.StartEnvironment("a"); err != nil {
+		t.Fatalf("StartEnvironment a: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+	if err := e.StartEnvironment("b"); err != nil {
+		t.Fatalf("StartEnvironment b: %v", err)
+	}
+	waitForEnv(t, e, "b", EnvRunning, 5*time.Second)
+
+	// Then stopping one env leaves shared healthy.
+	if err := e.StopEnvironment("a"); err != nil {
+		t.Fatalf("StopEnvironment a: %v", err)
+	}
+	if got := e.CmdState("shared"); got != CmdHealthy {
+		t.Errorf("after releasing a's hold, shared expected CmdHealthy, got %q", got)
+	}
+
+	// And stopping the other tears it down.
+	if err := e.StopEnvironment("b"); err != nil {
+		t.Fatalf("StopEnvironment b: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdStopped, 2*time.Second)
+}
+
+func TestSuperviseTask_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
+	// Given a task that passes its initial probe (marker exists) but after the
+	// marker is permanently removed, each restart attempt's probe fails, exhausting
+	// all retries and ending in CmdError.
+	dir := t.TempDir()
+	liveMarker := filepath.Join(dir, "live")
+
+	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
+		t.Fatalf("create live marker: %v", err)
+	}
+
+	max := 2
+	enabled := true
+	base := config.Duration{Duration: 10 * time.Millisecond}
+	check := config.Duration{Duration: 30 * time.Millisecond}
+	probeTimeout := config.Duration{Duration: 50 * time.Millisecond}
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "tunnel",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    "exit 0",
+				Readiness: &config.Readiness{
+					Shell:   fmt.Sprintf("test -f %q", liveMarker),
+					Timeout: &probeTimeout,
+				},
+				Restart: &config.Restart{
+					Enabled:       &enabled,
+					MaxRetries:    &max,
+					BackoffBase:   &base,
+					CheckInterval: &check,
+				},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "tunnel"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "tunnel", CmdHealthy, 5*time.Second)
+
+	// Remove the marker permanently so all restart probes fail.
+	if err := os.Remove(liveMarker); err != nil {
+		t.Fatalf("remove live marker: %v", err)
+	}
+
+	// All retries exhausted → CmdError.
+	waitForCmd(t, e, "tunnel", CmdError, 10*time.Second)
+	waitForEnv(t, e, "dev", EnvError, 5*time.Second)
+
+	attempts, maxRetries := e.CmdRetries("tunnel")
+	if attempts != max {
+		t.Errorf("expected %d retries recorded, got %d", max, attempts)
+	}
+	if maxRetries != max {
+		t.Errorf("expected max=%d, got %d", max, maxRetries)
+	}
+}
+
+// ---- Shared-command status isolation -----------------------------------------
+
+func TestRecomputeEnvsFor_whenSharedCommandChanges_leavesStoppedEnvStopped(t *testing.T) {
+	// Given two environments sharing command "shared"; "env2" also needs "other".
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{Name: "shared", Type: "service", Source: localSource(dir)},
+			{Name: "other", Type: "service", Source: localSource(dir)},
+		},
+		Environments: []config.Environment{
+			{Name: "env1", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "env2", Workflow: []config.WorkflowStep{{Command: "shared"}, {Command: "other"}}},
+		},
+	}
+	e := newTestEngine(t, cfg)
+
+	// And "shared" is healthy, "env1" was started (active), "env2" never was.
+	e.mu.Lock()
+	e.commands["shared"] = &command{cfg: cfg.Commands[0], state: CmdHealthy, startDone: make(chan struct{})}
+	e.mu.Unlock()
+	e.setEnvState("env1", EnvStarting)
+
+	// When a shared-command state change fans out to every referencing env.
+	e.recomputeEnvsFor("shared")
+
+	// Then the active env is recomputed (EnvStarting -> EnvRunning)...
+	if got := e.EnvState("env1"); got != EnvRunning {
+		t.Errorf("active env1: expected %q, got %q", EnvRunning, got)
+	}
+	// ...but the never-started env stays stopped (not EnvDegraded).
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Errorf("unstarted env2: expected %q, got %q", EnvStopped, got)
+	}
+}
+
+func TestStartEnvironment_whenSharedCommandFails_unstartedEnvStaysStopped(t *testing.T) {
+	// Given a shared service that becomes healthy then exits on demand (restart
+	// disabled, so an exit lands in CmdError and triggers env recomputation),
+	// shared by "env1" (started) and "env2" (never started, also needs "other").
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	kill := filepath.Join(dir, "kill")
+	off := false
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; while [ ! -f %q ]; do sleep 0.02; done", ready, kill),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+				Restart:   &config.Restart{Enabled: &off},
+			},
+			{
+				Name:      "other",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       "sleep 30",
+				Readiness: &config.Readiness{Shell: "true"},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "env1", Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "env2", Workflow: []config.WorkflowStep{{Command: "shared"}, {Command: "other"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When only env1 is started.
+	if err := e.StartEnvironment("env1"); err != nil {
+		t.Fatalf("StartEnvironment env1: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+	waitForEnv(t, e, "env1", EnvRunning, 5*time.Second)
+
+	// Then the never-started env2 stays stopped while shared is healthy.
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Fatalf("env2 after env1 start: expected %q, got %q", EnvStopped, got)
+	}
+
+	// When the shared command fails.
+	if err := os.WriteFile(kill, []byte{}, 0o600); err != nil {
+		t.Fatalf("write kill marker: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdError, 5*time.Second)
+
+	// Then the active env1 shows the failure...
+	waitForEnv(t, e, "env1", EnvError, 5*time.Second)
+	// ...but env2, never started, is still stopped (not EnvDegraded).
+	if got := e.EnvState("env2"); got != EnvStopped {
+		t.Errorf("env2 after shared failure: expected %q, got %q", EnvStopped, got)
+	}
+}

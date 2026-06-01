@@ -5,6 +5,7 @@ package probe
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -75,6 +76,11 @@ func (p *shellProbe) Check(ctx context.Context) error {
 	return nil
 }
 
+// ErrTimeout is returned (wrapped) by WaitReady when the overall deadline
+// elapses before the probe succeeds. Callers can distinguish it from other
+// probe failures using errors.Is.
+var ErrTimeout = errors.New("timed out waiting for readiness")
+
 // defaultTimeout is used by WaitReady when timeout is zero.
 // defaultInterval is used by WaitReady (and as a fallback) when interval is zero.
 const (
@@ -128,7 +134,7 @@ func WaitReady(ctx context.Context, p Probe, timeout, interval time.Duration) er
 			if time.Now().Before(deadline) {
 				return fmt.Errorf("probe: context cancelled while waiting for readiness: %w (last error: %v)", ctx.Err(), lastErr)
 			}
-			return fmt.Errorf("probe: timed out after %s waiting for readiness (last error: %v)", timeout, lastErr)
+			return fmt.Errorf("probe: %w after %s (last error: %v)", ErrTimeout, timeout, lastErr)
 		case <-time.After(interval):
 		}
 	}

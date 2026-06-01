@@ -27,38 +27,45 @@ func (e *Engine) StopEnvironment(env string) error {
 	return nil
 }
 
-// releaseWorkflow releases every command in an environment's workflow once,
-// decrementing reference counts and tearing down commands whose count reaches zero.
+// releaseWorkflow removes envCfg's hold on every command in its workflow,
+// tearing down commands that have no remaining holders.
 func (e *Engine) releaseWorkflow(envCfg config.Environment) {
 	for _, step := range envCfg.Workflow {
-		e.releaseCommand(step.Command)
+		e.releaseCommand(envCfg.Name, step.Command)
 	}
 }
 
-// releaseCommand decrements a command's refcount and stops it when it reaches
-// zero.
-func (e *Engine) releaseCommand(name string) {
+// releaseCommand removes envName's hold on command name and tears the command
+// down when no holders remain.
+func (e *Engine) releaseCommand(envName, name string) {
 	e.mu.Lock()
 	c, ok := e.commands[name]
 	if !ok {
 		e.mu.Unlock()
 		return
 	}
-	if c.refcount > 0 {
-		c.refcount--
-	}
-	shouldStop := c.refcount == 0
+	delete(c.holders, envName)
+	shouldStop := len(c.holders) == 0
 	e.mu.Unlock()
 
 	if !shouldStop {
 		return
 	}
 
+	// Cancel any in-flight restart/monitor cycle so the supervisor goroutine
+	// exits instead of attempting another restart after we stop the command.
+	e.mu.Lock()
+	c.userStopped = true
+	if c.quit != nil {
+		c.quitOnce.Do(func() { close(c.quit) })
+	}
+	e.mu.Unlock()
+
 	// Signal intent to stop for active commands so the TUI can animate the
 	// transition before the process actually exits. Stamp stopStartedAt here
 	// (under the same lock) so the shutdown-screen countdown begins immediately.
 	e.mu.Lock()
-	active := c.state == CmdHealthy || c.state == CmdStarting
+	active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
 	if active {
 		c.stopStartedAt = time.Now()
 	}
@@ -67,10 +74,13 @@ func (e *Engine) releaseCommand(name string) {
 		e.setCmdState(name, CmdStopping, nil)
 	}
 
-	// Wait until the command has finished starting before stopping it, so we do
-	// not race the launch. The stopped entry is kept in the map (reporting
-	// CmdStopped) and recreated on a subsequent start.
-	<-c.startDone
+	// Wait until the command has finished starting (or restarting) before
+	// stopping it, so we do not race the launch. The stopped entry is kept in
+	// the map (reporting CmdStopped) and recreated on a subsequent start.
+	e.mu.Lock()
+	startDone := c.startDone
+	e.mu.Unlock()
+	<-startDone
 
 	e.stopCommand(c)
 }
@@ -117,24 +127,40 @@ func (e *Engine) stopCommand(c *command) {
 // terminate sends SIGINT to a service's process group, waits up to GracePeriod
 // for it to exit, then SIGKILLs it. The supervisor is prevented from flipping
 // the state to CmdError by the userStopped flag, which is set before terminate
-// is called.
+// is called. For restart-path kills, use killAndWait instead.
 func (e *Engine) terminate(c *command) {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return
 	}
+	e.killAndWait(c)
+}
 
-	_ = interruptProcess(c.cmd)
+// killAndWait sends SIGINT to the process group and waits up to GracePeriod
+// for the process to exit, then SIGKILLs it. Unlike terminate it does NOT
+// pre-mark the state, so it is safe to use from the restart path where the
+// command is already in CmdRestarting.
+func (e *Engine) killAndWait(c *command) {
+	e.mu.Lock()
+	cmd := c.cmd
+	exited := c.exited
+	e.mu.Unlock()
+
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+
+	_ = interruptProcess(cmd)
 
 	grace := e.GracePeriod
 	if grace <= 0 {
 		grace = defaultGracePeriod
 	}
 	select {
-	case <-c.exited:
+	case <-exited:
 		return
 	case <-time.After(grace):
-		_ = killProcess(c.cmd)
-		<-c.exited
+		_ = killProcess(cmd)
+		<-exited
 	}
 }
 
@@ -159,8 +185,64 @@ func (e *Engine) runTeardown(c *command) {
 	_ = cmd.Run()
 }
 
+// resetForRetry prepares a previously-failed environment for a re-run.
+// Commands in a healthy or terminal-success state (Healthy, Done, Starting,
+// Restarting, Stopping) are left running untouched. Commands in a terminal-
+// failure state (Error, Timeout, Stopped) are either released when this env is
+// the sole holder — so acquireAndStart recreates them fresh — or restarted
+// in-place when another env still holds them.
+func (e *Engine) resetForRetry(envCfg config.Environment) {
+	for _, step := range envCfg.Workflow {
+		e.mu.Lock()
+		c, ok := e.commands[step.Command]
+		if !ok {
+			// Never started (pending) — runEnvironment will start it fresh.
+			e.mu.Unlock()
+			continue
+		}
+		state := c.state
+		holders := len(c.holders)
+		e.mu.Unlock()
+
+		switch state {
+		case CmdHealthy, CmdDone, CmdStarting, CmdRestarting, CmdStopping:
+			// Leave running: healthy, successfully-done, or in-progress commands
+			// are re-acquired idempotently by runEnvironment.
+		case CmdError, CmdTimeout, CmdStopped:
+			if holders <= 1 {
+				// Sole holder: release so acquireAndStart recreates the command fresh.
+				e.releaseCommand(envCfg.Name, step.Command)
+			} else {
+				// Shared with another running env: restart in place so it recovers
+				// for all holders without recreating the struct.
+				e.restartInPlace(c)
+			}
+		}
+	}
+}
+
+// restartInPlace recovers a down command that is still held by another
+// environment, without recreating the command struct. The command's supervisor
+// goroutine has already exited (it set CmdError), so this relaunches the process
+// and re-establishes monitoring. Runs synchronously so startDone is closed
+// before the subsequent acquireAndStart in runEnvironment observes the command.
+func (e *Engine) restartInPlace(c *command) {
+	e.mu.Lock()
+	c.retries = 0
+	e.mu.Unlock()
+
+	e.setCmdState(c.cfg.Name, CmdRestarting, nil)
+	if e.relaunch(c) {
+		e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+		e.startMonitor(c)
+	}
+	// Recompute state for every env sharing this command (including the retrying
+	// env and any other holder) so their states reflect the restart outcome.
+	e.recomputeEnvsFor(c.cfg.Name)
+}
+
 // Shutdown stops every currently-running command gracefully, respecting ctx as
-// an overall deadline. Reference counts are reset.
+// an overall deadline. All holders are cleared.
 func (e *Engine) Shutdown(ctx context.Context) {
 	e.mu.Lock()
 	names := make([]string, 0, len(e.commands))
@@ -174,16 +256,22 @@ func (e *Engine) Shutdown(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		for _, c := range cmds {
+			// Cancel any in-flight restart/monitor cycle before stopping.
 			e.mu.Lock()
-			active := c.state == CmdHealthy || c.state == CmdStarting
+			c.userStopped = true
+			if c.quit != nil {
+				c.quitOnce.Do(func() { close(c.quit) })
+			}
+			active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
 			if active {
 				c.stopStartedAt = time.Now()
 			}
+			startDone := c.startDone
 			e.mu.Unlock()
 			if active {
 				e.setCmdState(c.cfg.Name, CmdStopping, nil)
 			}
-			<-c.startDone
+			<-startDone
 			e.stopCommand(c)
 		}
 		close(done)

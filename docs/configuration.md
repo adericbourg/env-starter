@@ -61,7 +61,7 @@ name: database
 Controls the command's lifecycle:
 
 - **`service`** — long-running process (e.g. `docker run`, a proxy, a server). Never expected to return on its own. When stopped, the `teardown` command (if declared) runs first so it can shut down a backing resource gracefully (e.g. `docker stop`); then the foreground process is waited on and killed if still alive (SIGINT → 30 s grace period → SIGKILL). A service with no readiness probe is considered healthy immediately after it starts.
-- **`task`** — runs to completion. A non-zero exit marks the command `error` and blocks its dependents. Stopped by running its `teardown` command (if declared). A task with no readiness probe is considered healthy when it exits 0.
+- **`task`** — runs to completion. A non-zero exit marks the command `error` and blocks its dependents. Stopped by running its `teardown` command (if declared). A task with no readiness probe is considered healthy (`done`) when it exits 0. A task with a readiness probe is considered healthy when its process exits 0 **and** the probe passes — useful for tasks that background a side effect (e.g. a tunnel) and return immediately.
 
 ```yaml
 type: service
@@ -149,6 +149,16 @@ Required. See the [`source`](#source) section below.
 | Required | no |
 
 Optional probe used to determine when the command is healthy. See the [`readiness`](#readiness) section below.
+
+### `restart`
+
+| | |
+|---|---|
+| Type | object |
+| Required | no |
+| Applies to | `service` only |
+
+Controls automatic restart behaviour when a service becomes unhealthy. See the [`restart`](#restart) section below.
 
 ---
 
@@ -238,7 +248,9 @@ Optional. Declares how to probe whether a command is healthy before its dependen
 
 If omitted:
 - A **service** is considered healthy immediately after it starts.
-- A **task** is considered healthy when it exits 0.
+- A **task** is considered healthy (`done`) when it exits 0.
+
+If set on a **task**: after the process exits 0, the probe is run to confirm the side effect is ready (e.g. a background tunnel is accepting connections). The task is marked `healthy` when the probe passes, and its dependents unblock. If `restart` is also configured, the same probe is used as the liveness check.
 
 Exactly one probe type must be set (`tcp` or `shell`). Specifying more than one is a validation error.
 
@@ -280,7 +292,7 @@ readiness:
 | Required | no |
 | Default | `30s` |
 
-Maximum time to wait for the readiness probe to succeed. If the probe does not pass within this window, the command is marked `error`.
+Maximum time to wait for the readiness probe to succeed. If the probe does not pass within this window, the command is marked `timeout`.
 
 ```yaml
 readiness:
@@ -302,6 +314,122 @@ How long to wait between probe attempts.
 readiness:
   tcp: "localhost:5432"
   interval: 2s
+```
+
+---
+
+## `restart`
+
+Optional. Configures automatic restart behaviour for a command.
+
+- **Services**: auto-restart is on by default. No `restart` block is needed to enable it; add one only to tune the settings or disable it.
+- **Tasks**: opt-in. A `restart` block must be declared, **and the task must have a `readiness` probe** (the liveness probe is the only failure signal — the process has already exited). A task without a readiness probe cannot use restart; validation rejects this combination.
+
+**What triggers a restart:**
+
+For services, either of the following:
+
+1. The process exits unexpectedly (after it was healthy).
+2. The liveness probe fails — the readiness probe is re-run on the configured interval after the command is healthy. This detects the case where a process stays alive but stops working (e.g. a Teleport tunnel with expired authentication).
+
+For tasks, only liveness probe failure (item 2 above). Task processes are expected to exit — exit 0 is not a crash. If the process exits non-zero *after* becoming healthy, this is currently not a restart trigger (configure the `run` command to keep a foreground process alive if crash-restart is needed).
+
+If the command has no `readiness` probe, only crash-based restart is active for services (no liveness checking). Tasks with no probe cannot use `restart` at all.
+
+### `restart.enabled`
+
+| | |
+|---|---|
+| Type | bool |
+| Required | no |
+| Default | `true` when a `restart` block is present |
+
+Set to `false` to disable auto-restart for a specific command while keeping the block for other settings.
+
+```yaml
+restart:
+  enabled: false
+```
+
+### `restart.max-retries`
+
+| | |
+|---|---|
+| Type | integer (≥ 0) |
+| Required | no |
+| Default | `3` |
+
+Maximum number of restart attempts before the command is marked `error`. Negative values are rejected.
+
+```yaml
+restart:
+  max-retries: 5
+```
+
+### `restart.backoff-base`
+
+| | |
+|---|---|
+| Type | Go duration string |
+| Required | no |
+| Default | `1s` |
+
+The delay before the first retry. Each subsequent attempt doubles this value (exponential backoff). With the default of `1s` the delays are 1s, 2s, 4s.
+
+```yaml
+restart:
+  backoff-base: 500ms
+```
+
+### `restart.check-interval`
+
+| | |
+|---|---|
+| Type | Go duration string |
+| Required | no |
+| Default | `10s` |
+
+How often the readiness probe is re-run after the command is healthy (liveness check). Set to `0` to disable liveness checking while still allowing crash-based restart. Has no effect if the command has no `readiness` probe.
+
+```yaml
+restart:
+  check-interval: 30s
+```
+
+**Full example — service:**
+
+```yaml
+commands:
+  - name: teleport
+    type: service
+    source:
+      local: /usr/local/bin
+    run: tsh proxy ssh ...
+    readiness:
+      shell: tsh status
+    restart:
+      max-retries: 5
+      backoff-base: 2s
+      check-interval: 30s
+```
+
+**Full example — task (tunnel that backgrounds itself):**
+
+```yaml
+commands:
+  - name: tunnel
+    type: task
+    source:
+      local: /usr/local/bin
+    # Opens a tunnel in the background and returns exit 0.
+    run: open-tunnel.sh
+    readiness:
+      tcp: "localhost:2222"
+      timeout: 30s
+    restart:
+      max-retries: 3
+      backoff-base: 2s
+      check-interval: 15s
 ```
 
 ---
@@ -400,9 +528,11 @@ workflow:
 |--------|---------|
 | `pending` | Waiting for dependencies to become healthy. |
 | `starting` | Process has been spawned; readiness probe not yet passing. |
-| `healthy` | Readiness probe passed (service) or the command has not yet exited (task awaiting probe). |
+| `healthy` | Readiness probe passed. For services: the process is running and the probe passed. For tasks with a readiness probe: the process exited 0 and the probe passed (e.g. a tunnel is accepting connections). |
+| `restarting` | Command was healthy but became unhealthy; currently tearing down and relaunching. The TUI shows `(retry N/max)` next to the command name. |
 | `done` | Task exited with code 0. |
-| `error` | Process exited non-zero or readiness timed out. |
+| `error` | Process exited non-zero, or failed to become healthy, or exhausted all restart attempts. The TUI shows `(failed after N retries)` when retries were involved. |
+| `timeout` | Readiness probe did not pass within `readiness.timeout`. |
 | `stopped` | Stopped explicitly (teardown run if declared, then signal for service; teardown run for task). |
 
 ---
@@ -416,6 +546,23 @@ When the same command name appears in multiple environments, it runs as a single
 ### Foreground supervision
 
 All launched processes are children of the `env-starter` TUI process. Quitting the TUI (or sending SIGINT/SIGTERM to `env-starter`) triggers a graceful shutdown of all running commands.
+
+### Auto-restart
+
+Commands can be configured to restart automatically when they become unhealthy after being healthy. The behaviour differs by type:
+
+**Services** restart by default. Two signals trigger a restart:
+
+1. **Crash**: the process exits unexpectedly.
+2. **Liveness failure**: the readiness probe fails during the periodic liveness check (every `restart.check-interval`, default 10 s). This catches cases where a process stays alive but stops working — for example, a Teleport tunnel whose session token expires.
+
+**Tasks** restart only on liveness failure (item 2 above). They must opt in by declaring a `restart` block and providing a `readiness` probe. Because a task's process is expected to exit on success, process exit is not a restart trigger. On each restart attempt the task process is re-run and the probe is re-checked to confirm the side effect is healthy again.
+
+For both types, each restart attempt is preceded by a teardown of the unhealthy resource (teardown script, if any, then for services: SIGINT → grace period → SIGKILL). Failed attempts are retried with exponential backoff (`restart.backoff-base`, doubling each time). After `restart.max-retries` failed attempts the command is marked `error` and no further restarts are attempted.
+
+The TUI shows `(retry N/max)` during a restart cycle and `(failed after N retries)` once all attempts are exhausted.
+
+To disable auto-restart for a specific command, set `restart.enabled: false`.
 
 ### Logs
 
@@ -438,6 +585,8 @@ The following conditions cause `env-starter` to fail at startup with a descripti
 | `command.run` is required | A command entry has no `run`. |
 | `source` must specify exactly one variant | `github`, `url`, and `local` are mutually exclusive; having none or more than one is rejected. |
 | `readiness` probe must be `tcp` or `shell` | `http` and `log` probes are not yet supported. Specifying more than one of `tcp`/`shell` is also rejected. |
+| `restart` on a task requires a `readiness` probe | A task with a `restart` block (and restart not explicitly disabled) must also declare a `readiness` probe. Without a probe, liveness monitoring is impossible for a task. |
+| `restart.max-retries` must not be negative | Negative values are rejected. |
 | `environment.name` is required | An environment entry has no `name`. |
 | `environment.workflow` must be non-empty | An environment with an empty workflow list is rejected. |
 | `workflow[].command` must reference a defined command | Unknown command names in a workflow are rejected. |

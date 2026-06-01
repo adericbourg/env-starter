@@ -16,17 +16,24 @@ import (
 // ── Fake controller ───────────────────────────────────────────────────────────
 
 type fakeController struct {
-	envs     []engine.EnvInfo
-	commands map[string][]string
-	envState map[string]engine.EnvState
-	cmdState map[string]engine.CmdState
-	logs     map[string][]string
-	events   chan engine.Event
-	stopping []engine.StoppingCommand
+	envs       []engine.EnvInfo
+	commands   map[string][]string
+	envState   map[string]engine.EnvState
+	cmdState   map[string]engine.CmdState
+	cmdRetries map[string][2]int // [attempts, max]
+	logs       map[string][]string
+	events     chan engine.Event
+	stopping   []engine.StoppingCommand
 
 	startedEnvs    []string
 	stoppedEnvs    []string
 	shutdownCalled bool
+
+	// hot-reload stubs
+	configChanged  bool
+	configParseErr error
+	reloadCalled   bool
+	reloadErr      error
 }
 
 func newFakeController() *fakeController {
@@ -74,6 +81,13 @@ func (f *fakeController) CmdState(cmd string) engine.CmdState {
 	return engine.CmdPending
 }
 
+func (f *fakeController) CmdRetries(cmd string) (attempts, max int) {
+	if r, ok := f.cmdRetries[cmd]; ok {
+		return r[0], r[1]
+	}
+	return 0, 0
+}
+
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
 
 func (f *fakeController) LogPath(cmd string) string { return "/tmp/logs/" + cmd + ".log" }
@@ -93,6 +107,15 @@ func (f *fakeController) Events() <-chan engine.Event { return f.events }
 func (f *fakeController) StoppingCommands() []engine.StoppingCommand { return f.stopping }
 
 func (f *fakeController) Shutdown(_ context.Context) { f.shutdownCalled = true }
+
+func (f *fakeController) ConfigChanged() (bool, error) {
+	return f.configChanged, f.configParseErr
+}
+
+func (f *fakeController) Reload(_ context.Context) error {
+	f.reloadCalled = true
+	return f.reloadErr
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -891,5 +914,410 @@ func TestView_logsTitleTracksEnvCursorWhileEnvPanelFocused(t *testing.T) {
 	}
 	if strings.Contains(view, "alpha > svc-a") {
 		t.Errorf("expected stale title %q to be gone after moving env cursor, but found it in:\n%s", "alpha > svc-a", view)
+	}
+}
+
+func TestCmdStateIndicator_whenTimedOut_containsHourglassGlyph(t *testing.T) {
+	// Given / When
+	indicator := cmdStateIndicator(engine.CmdTimeout, 0)
+
+	// Then: the rendered indicator must contain the hourglass glyph and be
+	// identical across frames (it is not animated).
+	if !strings.Contains(indicator, "⧖") {
+		t.Errorf("expected indicator for CmdTimeout to contain '⧖', got: %q", indicator)
+	}
+
+	frame1 := cmdStateIndicator(engine.CmdTimeout, 1)
+	if indicator != frame1 {
+		t.Errorf("expected CmdTimeout indicator to be frame-stable, got %q (frame 0) vs %q (frame 1)", indicator, frame1)
+	}
+}
+
+func TestCmdStateIndicator_whenRestarting_producesDistinctOutputAcrossFrames(t *testing.T) {
+	// Given / When
+	frame0 := cmdStateIndicator(engine.CmdRestarting, 0)
+	frame1 := cmdStateIndicator(engine.CmdRestarting, 1)
+
+	// Then: the indicator is animated (spinner), so it must differ across frames.
+	if frame0 == frame1 {
+		t.Errorf("expected CmdRestarting indicator to vary across frames, got %q for both", frame0)
+	}
+}
+
+func TestRenderCmdPane_whenRestarting_showsRetryCounter(t *testing.T) {
+	// Given a command in CmdRestarting with retries=1, max=3.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdRestarting
+	ctrl.cmdRetries = map[string][2]int{
+		"svc-a": {1, 3},
+	}
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then the retry counter appears next to the command name.
+	if !strings.Contains(pane, "svc-a") {
+		t.Fatalf("expected pane to contain command name 'svc-a', got: %q", pane)
+	}
+	if !strings.Contains(ansi.Strip(pane), "(retry 2/3)") {
+		t.Errorf("expected pane to contain '(retry 2/3)', got: %q", ansi.Strip(pane))
+	}
+}
+
+func TestRenderCmdPane_whenFailedAfterRetries_showsFailedCount(t *testing.T) {
+	// Given a command in CmdError that exhausted 3 retries.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdError
+	ctrl.cmdRetries = map[string][2]int{
+		"svc-a": {3, 3},
+	}
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then the failure annotation appears next to the command name.
+	if !strings.Contains(ansi.Strip(pane), "svc-a (failed after 3 retries)") {
+		t.Errorf("expected pane to contain 'svc-a (failed after 3 retries)', got: %q", ansi.Strip(pane))
+	}
+}
+
+func TestRenderCmdPane_whenErrorWithNoRetries_showsNoSuffix(t *testing.T) {
+	// Given a command in CmdError that never auto-restarted (attempts=0).
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdError
+	// cmdRetries not set → (0, 0)
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then no retry annotation is appended.
+	stripped := ansi.Strip(pane)
+	if strings.Contains(stripped, "(failed") || strings.Contains(stripped, "(retry") {
+		t.Errorf("expected no retry suffix for error with 0 retries, got: %q", stripped)
+	}
+}
+
+// ── Config hot-reload model tests ─────────────────────────────────────────────
+
+func TestRenderFooter_static_showsRefreshLogsLabel(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if !strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected footer to contain 'r refresh logs', got %q", footer)
+	}
+	if strings.Contains(footer, "(c)") {
+		t.Errorf("expected '(c)' not to appear in the normal footer, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigDirty_showsBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — static shortcuts must be suppressed; banner must show.
+	if !strings.Contains(footer, "Press (c) to reload config") {
+		t.Errorf("expected footer to contain 'Press (c) to reload config', got %q", footer)
+	}
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected static shortcuts to be suppressed while banner is shown, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigParseErr_showsParseErrorBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configParseErr = "yaml: line 3: did not find expected key"
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — parse error banner shown; reload offer suppressed.
+	if !strings.Contains(footer, "cannot be parsed") {
+		t.Errorf("expected footer to contain 'cannot be parsed', got %q", footer)
+	}
+	if strings.Contains(footer, "Press (c)") {
+		t.Errorf("expected reload offer to be suppressed when parse error is shown, got %q", footer)
+	}
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected static shortcuts to be suppressed, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigParseErrTakesPriorityOverDirty(t *testing.T) {
+	// Given — both set simultaneously (shouldn't normally happen, but guard it).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configParseErr = "parse failure"
+	m.configDirty = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — parse error wins.
+	if !strings.Contains(footer, "cannot be parsed") {
+		t.Errorf("expected parse error banner, got %q", footer)
+	}
+	if strings.Contains(footer, "Press (c)") {
+		t.Errorf("expected reload offer to be suppressed, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigDirtyWithReloadErr_showsErrorInBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.reloadErr = "syntax error on line 5"
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — both the banner and the error must be present.
+	if !strings.Contains(footer, "Press (c) to reload config") {
+		t.Errorf("expected footer to contain reload prompt, got %q", footer)
+	}
+	if !strings.Contains(footer, "syntax error on line 5") {
+		t.Errorf("expected footer to contain reload error, got %q", footer)
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andChanged_setsDirty(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.configChanged = true
+	m := seed(New(ctrl))
+	if m.configDirty {
+		t.Fatal("expected configDirty to start false")
+	}
+
+	// When
+	updated, cmd := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — dirty flag set; scan re-armed.
+	if !m.configDirty {
+		t.Error("expected configDirty to be set after configScanMsg with change detected")
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil cmd (re-arm configScanCmd) from configScanMsg")
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andNotChanged_staysClean(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	m := seed(New(ctrl))
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.configDirty {
+		t.Error("expected configDirty to remain false when no change detected")
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andAlreadyDirty_remainsDirty(t *testing.T) {
+	// Given — controller reports dirty=true (unchanged file, still pending).
+	ctrl := newFakeController()
+	ctrl.configChanged = true
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — dirty must remain.
+	if !m.configDirty {
+		t.Error("expected configDirty to remain true when controller still reports dirty")
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andParseError_setsParseErrAndClearsDirty(t *testing.T) {
+	// Given — controller reports a parse error (file changed but is invalid).
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	ctrl.configParseErr = fmt.Errorf("yaml: line 3: did not find expected key")
+	m := seed(New(ctrl))
+	m.configDirty = true // had a prior valid change
+	m.reloadErr = "old error"
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — parse error surfaced; dirty and reload error cleared.
+	if m.configDirty {
+		t.Error("expected configDirty to be cleared when parse error is detected")
+	}
+	if !strings.Contains(m.configParseErr, "line 3") {
+		t.Errorf("expected configParseErr to contain the error, got %q", m.configParseErr)
+	}
+	if m.reloadErr != "" {
+		t.Errorf("expected reloadErr to be cleared by parse error, got %q", m.reloadErr)
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andParseErrorCleared_clearsParseErr(t *testing.T) {
+	// Given — controller now reports clean (file fixed, but same as running).
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	ctrl.configParseErr = nil
+	m := seed(New(ctrl))
+	m.configParseErr = "stale yaml error"
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — stale parse error cleared.
+	if m.configParseErr != "" {
+		t.Errorf("expected configParseErr to be cleared, got %q", m.configParseErr)
+	}
+}
+
+func TestKeyC_whenParseErr_isNoop(t *testing.T) {
+	// Given — dirty is true but file currently has a parse error.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.configParseErr = "yaml: unexpected key"
+
+	// When
+	_, cmd := m.Update(keyMsg("c"))
+
+	// Then — Reload must not be invoked.
+	if ctrl.reloadCalled {
+		t.Error("expected Reload not to be called when configParseErr is set")
+	}
+	_ = cmd
+}
+
+func TestKeyC_whenNotDirty_isNoop(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = false
+
+	// When
+	updated, cmd := m.Update(keyMsg("c"))
+	m = updated.(Model)
+
+	// Then — Reload must not be invoked; no cmd returned.
+	if ctrl.reloadCalled {
+		t.Error("expected Reload not to be called when configDirty is false")
+	}
+	_ = m
+	_ = cmd
+}
+
+func TestKeyC_whenDirty_invokesReloadAndReturnsCmd(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	_, cmd := m.Update(keyMsg("c"))
+
+	// Then — a background cmd must be returned (it will call Reload).
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd from pressing 'c' when dirty")
+	}
+	// Execute the cmd to simulate the background goroutine completing.
+	result := cmd()
+	if _, ok := result.(reloadDoneMsg); !ok {
+		t.Errorf("expected reloadDoneMsg from the reload cmd, got %T", result)
+	}
+	if !ctrl.reloadCalled {
+		t.Error("expected Reload to have been called by the cmd")
+	}
+}
+
+func TestUpdate_whenReloadDoneMsg_success_clearsDirtyAndParseErr(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.reloadErr = "old error"
+	m.configParseErr = "old parse error"
+
+	// When
+	updated, cmd := m.Update(reloadDoneMsg{err: nil})
+	m = updated.(Model)
+
+	// Then — dirty, reload error, and parse error all cleared; event listener re-armed.
+	if m.configDirty {
+		t.Error("expected configDirty to be cleared after successful reload")
+	}
+	if m.reloadErr != "" {
+		t.Errorf("expected reloadErr to be cleared, got %q", m.reloadErr)
+	}
+	if m.configParseErr != "" {
+		t.Errorf("expected configParseErr to be cleared, got %q", m.configParseErr)
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil cmd (re-arm waitForEvent) after successful reload")
+	}
+}
+
+func TestUpdate_whenReloadDoneMsg_error_keepsDirtyAndSetsErr(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	updated, _ := m.Update(reloadDoneMsg{err: fmt.Errorf("parse error")})
+	m = updated.(Model)
+
+	// Then — dirty remains; error text captured for the banner.
+	if !m.configDirty {
+		t.Error("expected configDirty to remain true after failed reload")
+	}
+	if !strings.Contains(m.reloadErr, "parse error") {
+		t.Errorf("expected reloadErr to contain 'parse error', got %q", m.reloadErr)
+	}
+}
+
+func TestClampCursors_whenCursorsOutOfRange_clampsToLast(t *testing.T) {
+	// Given — controller with 1 env and 1 command; cursors pointing past end.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{{Name: "solo"}}
+	ctrl.commands = map[string][]string{"solo": {"cmd-a"}}
+	ctrl.envState = map[string]engine.EnvState{"solo": engine.EnvStopped}
+	ctrl.cmdState = map[string]engine.CmdState{"cmd-a": engine.CmdPending}
+
+	m := seed(New(ctrl))
+	m.envCursor = 5
+	m.cmdCursor = 5
+
+	// When
+	m = m.clampCursors()
+
+	// Then — both clamp to 0 (last valid index in a 1-element list).
+	if m.envCursor != 0 {
+		t.Errorf("expected envCursor clamped to 0, got %d", m.envCursor)
+	}
+	if m.cmdCursor != 0 {
+		t.Errorf("expected cmdCursor clamped to 0, got %d", m.cmdCursor)
 	}
 }

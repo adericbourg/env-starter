@@ -55,7 +55,7 @@ func TestResolveConfig_defaultMissing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
 	// When
-	_, err := resolveConfig("", "")
+	_, _, _, err := resolveConfig("", "")
 
 	// Then: expect a helpful error message.
 	if err == nil {
@@ -72,7 +72,7 @@ func TestResolveConfig_explicitConfigOnly(t *testing.T) {
 	cfgPath := writeConfig(t, dir, "config.yaml", minimalConfig)
 
 	// When
-	cfg, err := resolveConfig(cfgPath, "")
+	cfg, _, _, err := resolveConfig(cfgPath, "")
 
 	// Then
 	if err != nil {
@@ -96,7 +96,7 @@ func TestResolveConfig_overlayOnly(t *testing.T) {
 	overlayPath := writeConfig(t, overlayDir, "overlay.yaml", minimalConfig)
 
 	// When
-	cfg, err := resolveConfig("", overlayPath)
+	cfg, _, _, err := resolveConfig("", overlayPath)
 
 	// Then
 	if err != nil {
@@ -114,7 +114,7 @@ func TestResolveConfig_bothConfigAndOverlay(t *testing.T) {
 	overlayPath := writeConfig(t, dir, "overlay.yaml", minimalConfig)
 
 	// When
-	cfg, err := resolveConfig(basePath, overlayPath)
+	cfg, _, _, err := resolveConfig(basePath, overlayPath)
 
 	// Then
 	if err != nil {
@@ -128,7 +128,7 @@ func TestResolveConfig_bothConfigAndOverlay(t *testing.T) {
 func TestResolveConfig_missingExplicitConfig(t *testing.T) {
 	// Given: a path that does not exist.
 	// When
-	_, err := resolveConfig("/nonexistent/path/config.yaml", "")
+	_, _, _, err := resolveConfig("/nonexistent/path/config.yaml", "")
 
 	// Then
 	if err == nil {

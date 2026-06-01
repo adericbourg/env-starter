@@ -151,6 +151,9 @@ func TestWaitReady_overallTimeout_returnsError(t *testing.T) {
 	if err == nil {
 		t.Error("expected timeout error, got nil")
 	}
+	if !errors.Is(err, ErrTimeout) {
+		t.Errorf("expected errors.Is(err, ErrTimeout) to be true, got: %v", err)
+	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("WaitReady ran too long: %v", elapsed)
 	}
@@ -171,9 +174,12 @@ func TestWaitReady_contextCancelled_returnsError(t *testing.T) {
 	err := WaitReady(ctx, p, 10*time.Second, 10*time.Millisecond)
 	elapsed := time.Since(start)
 
-	// Then: must return quickly with an error
+	// Then: must return quickly with an error, but NOT as a timeout
 	if err == nil {
 		t.Error("expected cancellation error, got nil")
+	}
+	if errors.Is(err, ErrTimeout) {
+		t.Errorf("cancellation should not be classified as ErrTimeout, got: %v", err)
 	}
 	if elapsed > 500*time.Millisecond {
 		t.Errorf("WaitReady did not return promptly on cancellation: %v", elapsed)
