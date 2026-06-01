@@ -1,13 +1,41 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
+
+// runProcess executes name with args, routing stdout to out.
+// stderr is captured separately and forwarded to out after the process exits,
+// avoiding concurrent writes to the same writer from the separate goroutines
+// exec.Cmd uses to drain stdout and stderr. On non-zero exit, the trimmed
+// stderr is folded into the returned error so callers can surface the reason
+// without ever writing to the real terminal.
+func runProcess(ctx context.Context, out io.Writer, name string, args ...string) error {
+	var errBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stdout = out
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	// Forward captured stderr to the log writer regardless of exit status so
+	// it appears in the command's log pane.
+	if errBuf.Len() > 0 {
+		_, _ = out.Write(errBuf.Bytes())
+	}
+	if err != nil {
+		if tail := strings.TrimSpace(errBuf.String()); tail != "" {
+			return fmt.Errorf("%s: %w", tail, err)
+		}
+		return err
+	}
+	return nil
+}
 
 // GitHub is a Source that clones or pulls a GitHub repository into the OS cache
 // and returns the local directory (optionally under Subdir).
@@ -21,11 +49,15 @@ type GitHub struct {
 	// Subdir is an optional path appended to the cache directory.
 	Subdir string
 
-	// runGit executes a git command. Defaults to the real git binary.
+	// Output receives git/gh stdout and stderr. Must never be set to os.Stdout
+	// or os.Stderr while a TUI owns the terminal. nil means discard.
+	Output io.Writer
+
+	// runGit executes a git command. Defaults to g.gitRunner.
 	// Signature: func(ctx context.Context, args ...string) error
 	runGit func(ctx context.Context, args ...string) error
 
-	// runGh executes a gh command. Defaults to the real gh binary.
+	// runGh executes a gh command. Defaults to g.ghRunner.
 	runGh func(ctx context.Context, args ...string) error
 
 	// cacheBase overrides the cache directory base for tests.
@@ -68,20 +100,23 @@ func (g *GitHub) cacheDir() (string, error) {
 	return filepath.Join(base, "env-starter", subName), nil
 }
 
-// gitRunner is the default git executor.
-func gitRunner(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+// output returns the writer to use for git/gh output. Falls back to io.Discard
+// when Output is nil so that no subprocess output reaches the real terminal.
+func (g *GitHub) output() io.Writer {
+	if g.Output == nil {
+		return io.Discard
+	}
+	return g.Output
 }
 
-// ghRunner is the default gh executor.
-func ghRunner(ctx context.Context, args ...string) error {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+// gitRunner is the default git executor; it routes output through g.Output.
+func (g *GitHub) gitRunner(ctx context.Context, args ...string) error {
+	return runProcess(ctx, g.output(), "git", args...)
+}
+
+// ghRunner is the default gh executor; it routes output through g.Output.
+func (g *GitHub) ghRunner(ctx context.Context, args ...string) error {
+	return runProcess(ctx, g.output(), "gh", args...)
 }
 
 // sshCloneURL builds the SSH clone URL.
@@ -107,11 +142,11 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 
 	runGit := g.runGit
 	if runGit == nil {
-		runGit = gitRunner
+		runGit = g.gitRunner
 	}
 	runGh := g.runGh
 	if runGh == nil {
-		runGh = ghRunner
+		runGh = g.ghRunner
 	}
 
 	info, statErr := os.Stat(dir)

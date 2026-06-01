@@ -1,10 +1,13 @@
 package source
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -290,6 +293,54 @@ func TestGitHub_Fetch_whenConcurrentDifferentRefs_clonesEach(t *testing.T) {
 	}
 	if got := cloneCount.Load(); got != int32(len(branches)) {
 		t.Errorf("clone count = %d, want %d (one clone per distinct ref)", got, len(branches))
+	}
+}
+
+// TestRunProcess_writesStdoutToProvidedWriter verifies that runProcess routes
+// subprocess stdout to the supplied io.Writer instead of the real terminal.
+func TestRunProcess_writesStdoutToProvidedWriter(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses sh -c syntax")
+	}
+
+	// Given
+	var buf bytes.Buffer
+
+	// When
+	err := runProcess(context.Background(), &buf, "sh", "-c", "echo hello")
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "hello") {
+		t.Errorf("expected 'hello' in writer output, got: %q", buf.String())
+	}
+}
+
+// TestRunProcess_whenCommandFails_includesStderrInError verifies that runProcess
+// tees subprocess stderr into both the writer and the returned error, so that
+// callers can show the failure reason without ever writing to the terminal.
+func TestRunProcess_whenCommandFails_includesStderrInError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test uses sh -c syntax")
+	}
+
+	// Given
+	var buf bytes.Buffer
+
+	// When
+	err := runProcess(context.Background(), &buf, "sh", "-c", "echo boom >&2; exit 3")
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for non-zero exit, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("expected 'boom' in error, got: %q", err.Error())
+	}
+	if !strings.Contains(buf.String(), "boom") {
+		t.Errorf("expected 'boom' in writer output, got: %q", buf.String())
 	}
 }
 

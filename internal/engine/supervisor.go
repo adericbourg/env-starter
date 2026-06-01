@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,13 +171,9 @@ func (e *Engine) startCommand(c *command) {
 
 	ctx := context.Background()
 
-	runDir, err := e.fetchSource(ctx, c.cfg)
-	if err != nil {
-		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("fetch source: %w", err))
-		return
-	}
-	c.runDir = runDir
-
+	// Create the log writer before fetching the source so that git/gh output
+	// during clone or pull is captured into the command log instead of leaking
+	// to the terminal (which would corrupt the TUI).
 	logPath := e.logPath(c.cfg.Name)
 	file, err := logbuf.OpenFile(logPath)
 	if err != nil {
@@ -184,6 +181,14 @@ func (e *Engine) startCommand(c *command) {
 		file = nil
 	}
 	c.writer = logbuf.NewWriter(c.ring, file)
+
+	runDir, err := e.fetchSource(ctx, c.cfg, c.writer)
+	if err != nil {
+		c.writer.Close()
+		e.setCmdState(c.cfg.Name, CmdError, fmt.Errorf("fetch source: %w", err))
+		return
+	}
+	c.runDir = runDir
 
 	if err := e.runSetup(ctx, c, runDir); err != nil {
 		c.writer.Close()
@@ -732,8 +737,9 @@ func (e *Engine) buildProbe(r *config.Readiness) (probe.Probe, time.Duration, ti
 
 // fetchSource builds the right source.Source for a command and returns the run
 // directory, applying Subdir for Local and URL sources (GitHub applies it
-// internally).
-func (e *Engine) fetchSource(ctx context.Context, cmd config.Command) (string, error) {
+// internally). out receives git/gh stdout and stderr for GitHub sources so that
+// fetch output is captured in the command log rather than leaking to the terminal.
+func (e *Engine) fetchSource(ctx context.Context, cmd config.Command, out io.Writer) (string, error) {
 	src := cmd.Source
 	switch {
 	case src.Local != "":
@@ -748,6 +754,7 @@ func (e *Engine) fetchSource(ctx context.Context, cmd config.Command) (string, e
 			Branch: src.GitHub.Branch,
 			Method: src.GitHub.Method,
 			Subdir: src.Subdir,
+			Output: out,
 		}
 		return gh.Fetch(ctx)
 	case src.URLSource != nil:
