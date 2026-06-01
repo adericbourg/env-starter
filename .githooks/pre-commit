@@ -1,0 +1,40 @@
+#!/bin/sh
+# pre-commit: auto-format staged Go files with gofmt and re-stage them.
+#
+# This ensures every commit's content is already gofmt-formatted, so pushes
+# never trigger the CI "Check formatting" step to fail.
+#
+# Note: re-staging with `git add` stages the whole file. If you used
+# `git add -p` to partially stage a file, the previously-unstaged hunks will
+# be included in the commit after re-staging. This is an accepted trade-off.
+
+set -e
+
+# Collect staged Go files (Added, Copied, Modified — not Deleted).
+staged_go_files=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+
+# Nothing to do if no Go files are staged.
+[ -z "$staged_go_files" ] && exit 0
+
+# Find any unformatted files.
+unformatted=""
+while IFS= read -r file; do
+  if [ -n "$(gofmt -l "$file")" ]; then
+    unformatted="$unformatted $file"
+  fi
+done <<EOF
+$staged_go_files
+EOF
+
+# All files already formatted — nothing to do.
+[ -z "$unformatted" ] && exit 0
+
+# Format and re-stage each unformatted file.
+echo "gofmt: reformatting staged Go files:"
+for file in $unformatted; do
+  gofmt -w "$file"
+  git add "$file"
+  echo "  $file"
+done
+
+exit 0

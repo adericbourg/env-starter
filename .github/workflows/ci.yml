@@ -20,6 +20,11 @@ jobs:
           cache: true
 
       - name: Check formatting
+        # On PRs, format.yml auto-formats and commits back to the branch, so a
+        # hard-fail here would remain red on the original commit even after the
+        # fix lands. This check is kept as a backstop for main-branch pushes
+        # and for fork PRs (where format.yml cannot push back).
+        if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
         run: |
           unformatted="$(gofmt -l .)"
           if [ -n "$unformatted" ]; then

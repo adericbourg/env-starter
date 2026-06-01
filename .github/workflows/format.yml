@@ -1,0 +1,47 @@
+name: Format
+
+on:
+  pull_request:
+
+# contents: write is kept in this separate workflow so that ci.yml can remain
+# contents: read (least-privilege).
+permissions:
+  contents: write
+
+jobs:
+  gofmt:
+    # Same-repo PRs only — the default GITHUB_TOKEN is read-only for forks,
+    # so the push step would fail. Fork PRs are covered by the contributor's
+    # local pre-commit hook and the gofmt -l check in ci.yml.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Use the commit SHA (a safe hex string) rather than the branch name to
+          # avoid ref-injection from an attacker-controlled head_ref value.
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Format
+        run: gofmt -w .
+
+      - name: Commit and push if changed
+        # Pass github.head_ref via env so it is treated as a plain shell variable
+        # (not interpolated as GitHub expression syntax inside the run script),
+        # preventing command injection from a crafted branch name.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "style: gofmt"
+            git push origin HEAD:refs/heads/"$HEAD_REF"
+          else
+            echo "Already formatted."
+          fi

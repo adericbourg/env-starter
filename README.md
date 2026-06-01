@@ -215,6 +215,12 @@ On Linux this is typically `~/.cache/env-starter/logs/`. On macOS it is `~/Libra
 
 ---
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and Git hooks setup.
+
+---
+
 ## License
 
 GPL-3.0 — see [LICENSE](LICENSE).
