@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,20 +80,25 @@ func TestConfigChanged_whenFileUnchanged_false(t *testing.T) {
 	ctrl, _ := newTestController(t, cfg)
 
 	// When — called immediately (file has not changed).
+	dirty, parseErr := ctrl.ConfigChanged()
+
 	// Then
-	if ctrl.ConfigChanged() {
-		t.Error("expected ConfigChanged to return false for an unchanged file")
+	if dirty {
+		t.Error("expected ConfigChanged to return dirty=false for an unchanged file")
+	}
+	if parseErr != nil {
+		t.Errorf("expected no parse error for an unchanged file, got: %v", parseErr)
 	}
 }
 
-func TestConfigChanged_whenLoadErrors_false(t *testing.T) {
+func TestConfigChanged_whenLoadErrors_returnsFalseAndError(t *testing.T) {
 	// Given — load function always returns an error (simulates a mid-edit parse
 	// failure after the mtime has changed).
 	path := writeTempConfig(t, "# placeholder")
 	cfg := minimalConfig("alpha")
 	eng := newTestEngine(t, cfg)
 	ctrl := NewReloadController(eng, cfg, []string{path}, func() (*config.Config, error) {
-		return nil, fmt.Errorf("syntax error")
+		return nil, fmt.Errorf("syntax error on line 3")
 	})
 
 	// Bump the file mtime so the stat gate opens.
@@ -100,12 +106,47 @@ func TestConfigChanged_whenLoadErrors_false(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// When / Then — parse error must not set dirty.
-	if ctrl.ConfigChanged() {
-		t.Error("expected ConfigChanged to return false when load fails")
+	// When
+	dirty, parseErr := ctrl.ConfigChanged()
+
+	// Then — parse error surfaced; dirty not set.
+	if dirty {
+		t.Error("expected dirty=false when load fails")
+	}
+	if parseErr == nil {
+		t.Fatal("expected a non-nil parse error")
+	}
+	if !strings.Contains(parseErr.Error(), "syntax error") {
+		t.Errorf("expected error to mention 'syntax error', got: %v", parseErr)
 	}
 	if ctrl.dirty {
-		t.Error("expected dirty to remain false when load fails")
+		t.Error("expected dirty field to remain false when load fails")
+	}
+	if ctrl.parseErr == nil {
+		t.Error("expected parseErr field to be set on the controller")
+	}
+}
+
+func TestConfigChanged_whenFileUnchanged_persistsParseError(t *testing.T) {
+	// Given — controller already has a cached parse error (from a prior scan).
+	cfg := minimalConfig("alpha")
+	path := writeTempConfig(t, "# placeholder")
+	eng := newTestEngine(t, cfg)
+	cachedErr := fmt.Errorf("cached yaml error")
+	ctrl := NewReloadController(eng, cfg, []string{path}, func() (*config.Config, error) {
+		return nil, cachedErr
+	})
+	ctrl.parseErr = cachedErr
+
+	// When — file has NOT changed (same mtime/size).
+	dirty, parseErr := ctrl.ConfigChanged()
+
+	// Then — cached error is returned without re-reading the file.
+	if dirty {
+		t.Error("expected dirty=false")
+	}
+	if parseErr == nil || parseErr.Error() != cachedErr.Error() {
+		t.Errorf("expected cached parse error to be preserved, got: %v", parseErr)
 	}
 }
 
@@ -125,13 +166,22 @@ func TestConfigChanged_whenTouchedButSemanticallyEqual_false(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// When / Then
-	if ctrl.ConfigChanged() {
-		t.Error("expected ConfigChanged to return false for a semantically identical config")
+	// When
+	dirty, parseErr := ctrl.ConfigChanged()
+
+	// Then — no dirty, no error; parse error is also cleared (file loaded OK).
+	if dirty {
+		t.Error("expected dirty=false for a semantically identical config")
+	}
+	if parseErr != nil {
+		t.Errorf("expected no parse error, got: %v", parseErr)
+	}
+	if ctrl.parseErr != nil {
+		t.Error("expected controller parseErr to be cleared after a successful load")
 	}
 }
 
-func TestConfigChanged_whenSemanticChange_trueAndLatches(t *testing.T) {
+func TestConfigChanged_whenSemanticChange_trueAndNilError(t *testing.T) {
 	// Given — load returns a different config (new command name).
 	cfg := minimalConfig("alpha")
 	fresh := minimalConfig("beta")
@@ -147,19 +197,26 @@ func TestConfigChanged_whenSemanticChange_trueAndLatches(t *testing.T) {
 	}
 
 	// When
-	changed := ctrl.ConfigChanged()
+	dirty, parseErr := ctrl.ConfigChanged()
 
-	// Then — first call returns true and latches dirty.
-	if !changed {
-		t.Error("expected ConfigChanged to return true for a semantically different config")
+	// Then — dirty and no error.
+	if !dirty {
+		t.Error("expected dirty=true for a semantically different config")
+	}
+	if parseErr != nil {
+		t.Errorf("expected no parse error, got: %v", parseErr)
 	}
 	if !ctrl.dirty {
-		t.Error("expected dirty to be latched after a semantic change")
+		t.Error("expected dirty field to be set on the controller")
 	}
 
-	// Subsequent calls return true without re-loading (file unchanged now).
-	if !ctrl.ConfigChanged() {
-		t.Error("expected ConfigChanged to remain true once latched")
+	// Subsequent call with unchanged file must return the same state.
+	dirty2, parseErr2 := ctrl.ConfigChanged()
+	if !dirty2 {
+		t.Error("expected dirty to persist on subsequent call with unchanged file")
+	}
+	if parseErr2 != nil {
+		t.Error("expected no parse error on subsequent unchanged call")
 	}
 }
 
@@ -192,7 +249,7 @@ func TestReload_success_swapsEngineAndClearsDirty(t *testing.T) {
 	}
 }
 
-func TestReload_whenLoadFails_keepsOldEngine(t *testing.T) {
+func TestReload_whenLoadFails_keepsOldEngineAndSetsParseErr(t *testing.T) {
 	// Given
 	cfg := minimalConfig("alpha")
 	path := writeTempConfig(t, "# placeholder")
@@ -205,12 +262,16 @@ func TestReload_whenLoadFails_keepsOldEngine(t *testing.T) {
 	// When
 	err := ctrl.Reload(context.Background())
 
-	// Then — error returned; old engine still active; dirty unchanged.
+	// Then — error returned; old engine still active; dirty cleared; parseErr set
+	// (the on-disk file is invalid, so reload is now blocked until it's fixed).
 	if err == nil {
 		t.Fatal("expected Reload to return an error when load fails")
 	}
-	if !ctrl.dirty {
-		t.Error("expected dirty to remain true after a failed reload")
+	if ctrl.dirty {
+		t.Error("expected dirty to be cleared (file is invalid, reload unavailable)")
+	}
+	if ctrl.parseErr == nil {
+		t.Error("expected parseErr to be set after a load failure in Reload")
 	}
 	envs := ctrl.Environments()
 	if len(envs) == 0 || envs[0].Name != "env-alpha" {

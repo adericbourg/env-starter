@@ -100,10 +100,15 @@ type Model struct {
 	// the "c" key. Cleared by a successful Reload.
 	configDirty bool
 
-	// reloadErr holds the error message from the last failed reload attempt. It
-	// is appended to the configDirty banner so the banner and the error coexist.
-	// Cleared on a successful reload.
+	// reloadErr holds the error message from the last failed reload attempt (only
+	// for engine-construction failures; parse errors surface via configParseErr).
+	// Appended to the configDirty banner; cleared on a successful reload.
 	reloadErr string
+
+	// configParseErr holds a parse error reported by the last config scan. While
+	// set, the error banner is shown and the (c) key is blocked. Cleared when the
+	// file next loads successfully or a reload succeeds.
+	configParseErr string
 
 	// openFile opens the given path in the OS default application. Defaults to
 	// openfile.Open; swapped out in tests.
@@ -210,8 +215,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case configScanMsg:
-		if !m.configDirty && m.ctrl.ConfigChanged() {
-			m.configDirty = true
+		dirty, parseErr := m.ctrl.ConfigChanged()
+		m.configDirty = dirty
+		if parseErr != nil {
+			m.configParseErr = parseErr.Error()
+			m.reloadErr = "" // parse error supersedes any prior reload error
+		} else {
+			m.configParseErr = ""
 		}
 		return m, configScanCmd()
 
@@ -223,6 +233,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.configDirty = false
 		m.reloadErr = ""
+		m.configParseErr = ""
 		m = m.clampCursors()
 		m = m.refreshLogView()
 		// Re-arm event listening against the new engine's channel.
@@ -317,8 +328,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.refreshLogView()
 
 	case "c":
-		if !m.configDirty {
-			// "c" is inert when no config change has been detected.
+		if !m.configDirty || m.configParseErr != "" {
+			// "c" is inert when no valid change is pending (or file is unparseable).
 			break
 		}
 		m.notice = "Reloading config…"
@@ -693,6 +704,9 @@ func (m Model) renderLogPath() string {
 func (m Model) renderFooter() string {
 	if m.confirmingQuit {
 		return quitConfirmStyle.Render("Press Ctrl+C again to quit")
+	}
+	if m.configParseErr != "" {
+		return configDirtyStyle.Render("Updated configuration cannot be parsed — fix errors to reload")
 	}
 	if m.configDirty {
 		msg := "Configuration file has been updated. Press (c) to reload config"

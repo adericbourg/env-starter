@@ -30,9 +30,10 @@ type fakeController struct {
 	shutdownCalled bool
 
 	// hot-reload stubs
-	configChanged bool
-	reloadCalled  bool
-	reloadErr     error
+	configChanged   bool
+	configParseErr  error
+	reloadCalled    bool
+	reloadErr       error
 }
 
 func newFakeController() *fakeController {
@@ -107,7 +108,9 @@ func (f *fakeController) StoppingCommands() []engine.StoppingCommand { return f.
 
 func (f *fakeController) Shutdown(_ context.Context) { f.shutdownCalled = true }
 
-func (f *fakeController) ConfigChanged() bool { return f.configChanged }
+func (f *fakeController) ConfigChanged() (bool, error) {
+	return f.configChanged, f.configParseErr
+}
 
 func (f *fakeController) Reload(_ context.Context) error {
 	f.reloadCalled = true
@@ -1034,6 +1037,46 @@ func TestRenderFooter_whenConfigDirty_showsBanner(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_whenConfigParseErr_showsParseErrorBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configParseErr = "yaml: line 3: did not find expected key"
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — parse error banner shown; reload offer suppressed.
+	if !strings.Contains(footer, "cannot be parsed") {
+		t.Errorf("expected footer to contain 'cannot be parsed', got %q", footer)
+	}
+	if strings.Contains(footer, "Press (c)") {
+		t.Errorf("expected reload offer to be suppressed when parse error is shown, got %q", footer)
+	}
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected static shortcuts to be suppressed, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigParseErrTakesPriorityOverDirty(t *testing.T) {
+	// Given — both set simultaneously (shouldn't normally happen, but guard it).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configParseErr = "parse failure"
+	m.configDirty = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — parse error wins.
+	if !strings.Contains(footer, "cannot be parsed") {
+		t.Errorf("expected parse error banner, got %q", footer)
+	}
+	if strings.Contains(footer, "Press (c)") {
+		t.Errorf("expected reload offer to be suppressed, got %q", footer)
+	}
+}
+
 func TestRenderFooter_whenConfigDirtyWithReloadErr_showsErrorInBanner(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
@@ -1092,9 +1135,9 @@ func TestUpdate_whenConfigScanMsg_andNotChanged_staysClean(t *testing.T) {
 }
 
 func TestUpdate_whenConfigScanMsg_andAlreadyDirty_remainsDirty(t *testing.T) {
-	// Given — already dirty; ConfigChanged should not be queried again.
+	// Given — controller reports dirty=true (unchanged file, still pending).
 	ctrl := newFakeController()
-	ctrl.configChanged = false // would return false if queried
+	ctrl.configChanged = true
 	m := seed(New(ctrl))
 	m.configDirty = true
 
@@ -1102,10 +1145,70 @@ func TestUpdate_whenConfigScanMsg_andAlreadyDirty_remainsDirty(t *testing.T) {
 	updated, _ := m.Update(configScanMsg{})
 	m = updated.(Model)
 
-	// Then — dirty must remain; controller is not queried unnecessarily.
+	// Then — dirty must remain.
 	if !m.configDirty {
-		t.Error("expected configDirty to remain true once latched")
+		t.Error("expected configDirty to remain true when controller still reports dirty")
 	}
+}
+
+func TestUpdate_whenConfigScanMsg_andParseError_setsParseErrAndClearsDirty(t *testing.T) {
+	// Given — controller reports a parse error (file changed but is invalid).
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	ctrl.configParseErr = fmt.Errorf("yaml: line 3: did not find expected key")
+	m := seed(New(ctrl))
+	m.configDirty = true  // had a prior valid change
+	m.reloadErr = "old error"
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — parse error surfaced; dirty and reload error cleared.
+	if m.configDirty {
+		t.Error("expected configDirty to be cleared when parse error is detected")
+	}
+	if !strings.Contains(m.configParseErr, "line 3") {
+		t.Errorf("expected configParseErr to contain the error, got %q", m.configParseErr)
+	}
+	if m.reloadErr != "" {
+		t.Errorf("expected reloadErr to be cleared by parse error, got %q", m.reloadErr)
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andParseErrorCleared_clearsParseErr(t *testing.T) {
+	// Given — controller now reports clean (file fixed, but same as running).
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	ctrl.configParseErr = nil
+	m := seed(New(ctrl))
+	m.configParseErr = "stale yaml error"
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — stale parse error cleared.
+	if m.configParseErr != "" {
+		t.Errorf("expected configParseErr to be cleared, got %q", m.configParseErr)
+	}
+}
+
+func TestKeyC_whenParseErr_isNoop(t *testing.T) {
+	// Given — dirty is true but file currently has a parse error.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.configParseErr = "yaml: unexpected key"
+
+	// When
+	_, cmd := m.Update(keyMsg("c"))
+
+	// Then — Reload must not be invoked.
+	if ctrl.reloadCalled {
+		t.Error("expected Reload not to be called when configParseErr is set")
+	}
+	_ = cmd
 }
 
 func TestKeyC_whenNotDirty_isNoop(t *testing.T) {
@@ -1149,23 +1252,27 @@ func TestKeyC_whenDirty_invokesReloadAndReturnsCmd(t *testing.T) {
 	}
 }
 
-func TestUpdate_whenReloadDoneMsg_success_clearsDirty(t *testing.T) {
+func TestUpdate_whenReloadDoneMsg_success_clearsDirtyAndParseErr(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
 	m.configDirty = true
 	m.reloadErr = "old error"
+	m.configParseErr = "old parse error"
 
 	// When
 	updated, cmd := m.Update(reloadDoneMsg{err: nil})
 	m = updated.(Model)
 
-	// Then — dirty and error cleared; event listener re-armed.
+	// Then — dirty, reload error, and parse error all cleared; event listener re-armed.
 	if m.configDirty {
 		t.Error("expected configDirty to be cleared after successful reload")
 	}
 	if m.reloadErr != "" {
 		t.Errorf("expected reloadErr to be cleared, got %q", m.reloadErr)
+	}
+	if m.configParseErr != "" {
+		t.Errorf("expected configParseErr to be cleared, got %q", m.configParseErr)
 	}
 	if cmd == nil {
 		t.Error("expected a non-nil cmd (re-arm waitForEvent) after successful reload")

@@ -36,9 +36,16 @@ type reloadController struct {
 	lastMod  time.Time
 	lastSize int64
 
-	// dirty is latched to true once a semantic change is detected and cleared
-	// only by a successful Reload.
+	// dirty is set when the on-disk config differs semantically from the running
+	// engine's config; cleared by a successful Reload or when the file is found to
+	// be equal to the running config again.
 	dirty bool
+
+	// parseErr holds the last error from config.Load after a file-change was
+	// detected. It is cleared when a subsequent scan loads the file successfully,
+	// and preserved across scans while the file remains unmodified (so callers
+	// see the error without re-reading the file on every tick).
+	parseErr error
 }
 
 // NewReloadController returns a Controller that wraps eng and supports
@@ -93,40 +100,45 @@ func statNewest(paths []string) (time.Time, int64, error) {
 	return newest, totalSize, nil
 }
 
-// ConfigChanged reports whether the on-disk config files differ semantically
-// from the config the running engine was built from. Returns true once a
-// semantic change is detected; latches until a successful Reload.
-func (c *reloadController) ConfigChanged() bool {
+// ConfigChanged reports the current state of the on-disk config relative to
+// the running engine. See the Controller interface for the full contract.
+func (c *reloadController) ConfigChanged() (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.dirty {
-		return true
-	}
-
 	mod, size, err := statNewest(c.watchPaths)
 	if err != nil {
-		return false
-	}
-	if mod.Equal(c.lastMod) && size == c.lastSize {
-		return false
+		// Cannot stat the file — return the last-known state without touching it.
+		return c.dirty, c.parseErr
 	}
 
-	// Disk changed: advance the baseline so we don't re-load on every tick.
+	if mod.Equal(c.lastMod) && size == c.lastSize {
+		// File unchanged on disk — return cached state; no re-read needed.
+		return c.dirty, c.parseErr
+	}
+
+	// File has changed: advance the baseline so we don't re-load on every tick.
 	c.lastMod, c.lastSize = mod, size
 
-	fresh, err := c.load()
-	if err != nil {
-		// Malformed mid-edit: wait for the file to parse cleanly.
-		return false
+	fresh, loadErr := c.load()
+	if loadErr != nil {
+		// Parse error (mid-edit save, syntax error, …). Block reload until fixed.
+		c.dirty = false
+		c.parseErr = loadErr
+		return false, loadErr
 	}
+
+	// Load succeeded: clear any previous parse error.
+	c.parseErr = nil
+
 	if reflect.DeepEqual(c.cfg, fresh) {
-		// Touch / no-op save: no semantic change.
-		return false
+		// Semantically equal to running config (e.g. touch or no-op save).
+		c.dirty = false
+		return false, nil
 	}
 
 	c.dirty = true
-	return true
+	return true, nil
 }
 
 // Reload tears down the running engine, re-loads config from disk, and builds
@@ -136,6 +148,12 @@ func (c *reloadController) ConfigChanged() bool {
 func (c *reloadController) Reload(ctx context.Context) error {
 	fresh, err := c.load()
 	if err != nil {
+		// File became invalid between the scan and the user pressing (c).
+		// Update parseErr so the next scan reflects this immediately.
+		c.mu.Lock()
+		c.dirty = false
+		c.parseErr = err
+		c.mu.Unlock()
 		return err
 	}
 	newEng, err := engine.New(fresh)
