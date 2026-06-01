@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -66,110 +65,74 @@ func TestIsNewer_ofUnparseableLatest_returnsFalse(t *testing.T) {
 	}
 }
 
-// --- assetFor ---
+// --- tagFromLocation ---
 
-func TestAssetFor_forLinuxAmd64_findsCorrectAssets(t *testing.T) {
-	// Given
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: "env-starter_1.2.3_linux_amd64.tar.gz", BrowserDownloadURL: "https://example.com/linux_amd64.tar.gz"},
-			{Name: "env-starter_1.2.3_darwin_arm64.tar.gz", BrowserDownloadURL: "https://example.com/darwin_arm64.tar.gz"},
-			{Name: "checksums.txt", BrowserDownloadURL: "https://example.com/checksums.txt"},
-		},
-	}
-
-	// When
-	archive, checksums, err := assetFor(rel, "linux", "amd64")
+func TestTagFromLocation_ofFullURL_returnsTag(t *testing.T) {
+	// Given / When
+	tag, err := tagFromLocation("https://github.com/adericbourg/env-starter/releases/tag/v2.0.0")
 
 	// Then
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if archive.Name != "env-starter_1.2.3_linux_amd64.tar.gz" {
-		t.Errorf("archive.Name = %q, want linux_amd64 archive", archive.Name)
-	}
-	if checksums.Name != "checksums.txt" {
-		t.Errorf("checksums.Name = %q, want checksums.txt", checksums.Name)
+	if tag != "v2.0.0" {
+		t.Errorf("tag = %q, want v2.0.0", tag)
 	}
 }
 
-func TestAssetFor_forWindowsAmd64_findsZipAsset(t *testing.T) {
-	// Given
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: "env-starter_1.2.3_windows_amd64.zip", BrowserDownloadURL: "https://example.com/windows_amd64.zip"},
-			{Name: "checksums.txt", BrowserDownloadURL: "https://example.com/checksums.txt"},
-		},
-	}
-
-	// When
-	archive, _, err := assetFor(rel, "windows", "amd64")
+func TestTagFromLocation_withTrailingSlash_returnsTag(t *testing.T) {
+	// Given / When
+	tag, err := tagFromLocation("https://github.com/adericbourg/env-starter/releases/tag/v2.0.0/")
 
 	// Then
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if archive.Name != "env-starter_1.2.3_windows_amd64.zip" {
-		t.Errorf("archive.Name = %q, want windows_amd64.zip asset", archive.Name)
+	if tag != "v2.0.0" {
+		t.Errorf("tag = %q, want v2.0.0", tag)
 	}
 }
 
-func TestAssetFor_withMissingArchive_returnsError(t *testing.T) {
-	// Given
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: "checksums.txt"},
-		},
-	}
-
-	// When
-	_, _, err := assetFor(rel, "linux", "amd64")
+func TestTagFromLocation_withMissingTagSegment_returnsError(t *testing.T) {
+	// Given / When
+	_, err := tagFromLocation("https://github.com/adericbourg/env-starter/releases/latest")
 
 	// Then
 	if err == nil {
-		t.Error("expected error when archive asset is missing")
+		t.Error("expected error when /releases/tag/ segment is absent")
 	}
 }
 
-func TestAssetFor_withMissingChecksums_returnsError(t *testing.T) {
-	// Given
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: "env-starter_1.2.3_linux_amd64.tar.gz"},
-		},
-	}
-
-	// When
-	_, _, err := assetFor(rel, "linux", "amd64")
+func TestTagFromLocation_ofEmptyTag_returnsError(t *testing.T) {
+	// Given / When
+	_, err := tagFromLocation("https://github.com/adericbourg/env-starter/releases/tag/")
 
 	// Then
 	if err == nil {
-		t.Error("expected error when checksums.txt is missing")
+		t.Error("expected error for empty tag after /releases/tag/")
+	}
+}
+
+func TestTagFromLocation_ofEmptyLocation_returnsError(t *testing.T) {
+	// Given / When
+	_, err := tagFromLocation("")
+
+	// Then
+	if err == nil {
+		t.Error("expected error for empty location")
 	}
 }
 
 // --- Latest ---
 
-func TestLatest_ofValidResponse_returnsRelease(t *testing.T) {
+func TestLatest_ofRedirectResponse_returnsTagName(t *testing.T) {
 	// Given
-	payload := map[string]any{
-		"tag_name": "v2.0.0",
-		"assets": []map[string]any{
-			{"name": "env-starter_2.0.0_linux_amd64.tar.gz", "browser_download_url": "https://example.com/archive.tar.gz"},
-			{"name": "checksums.txt", "browser_download_url": "https://example.com/checksums.txt"},
-		},
-	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(payload) //nolint:errcheck
+		http.Redirect(w, r, "/adericbourg/env-starter/releases/tag/v2.0.0", http.StatusFound)
 	}))
 	defer srv.Close()
 
-	c := &Client{apiBaseURL: srv.URL}
+	c := &Client{webBaseURL: srv.URL}
 
 	// When
 	rel, err := c.Latest(context.Background())
@@ -181,26 +144,42 @@ func TestLatest_ofValidResponse_returnsRelease(t *testing.T) {
 	if rel.TagName != "v2.0.0" {
 		t.Errorf("TagName = %q, want v2.0.0", rel.TagName)
 	}
-	if len(rel.Assets) != 2 {
-		t.Errorf("len(Assets) = %d, want 2", len(rel.Assets))
-	}
 }
 
-func TestLatest_ofHTTPError_returnsError(t *testing.T) {
+func TestLatest_ofNonRedirectResponse_returnsError(t *testing.T) {
 	// Given
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, "rate limited")
 	}))
 	defer srv.Close()
 
-	c := &Client{apiBaseURL: srv.URL}
+	c := &Client{webBaseURL: srv.URL}
 
 	// When
 	_, err := c.Latest(context.Background())
 
 	// Then
 	if err == nil {
-		t.Error("expected error for 404 response")
+		t.Error("expected error for 403 response")
+	}
+}
+
+func TestLatest_withMissingLocationHeader_returnsError(t *testing.T) {
+	// Given — return 302 without a Location header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	c := &Client{webBaseURL: srv.URL}
+
+	// When
+	_, err := c.Latest(context.Background())
+
+	// Then
+	if err == nil {
+		t.Error("expected error for redirect without Location header")
 	}
 }
 
@@ -236,6 +215,7 @@ func buildTarGz(t *testing.T, binaryName string, content []byte) []byte {
 func TestApply_happyPath_replacesBinary(t *testing.T) {
 	// The Apply function uses runtime.GOOS/GOARCH internally, so the archive
 	// name must match the current platform.
+	tag := "v1.2.3"
 	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 	binaryName := "env-starter"
 	if runtime.GOOS == "windows" {
@@ -249,12 +229,14 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	digest := sha256.Sum256(archiveBytes)
 	checksumsContent := fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName)
 
-	// Serve both assets from a test server.
+	// Serve both assets from a test server at the deterministic release download paths.
+	checksumsPath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/checksums.txt", tag)
+	archivePath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/%s", tag, archiveName)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/checksums.txt":
+		case checksumsPath:
 			fmt.Fprint(w, checksumsContent)
-		case "/" + archiveName:
+		case archivePath:
 			w.Write(archiveBytes) //nolint:errcheck
 		default:
 			http.NotFound(w, r)
@@ -262,13 +244,7 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: archiveName, BrowserDownloadURL: srv.URL + "/" + archiveName},
-			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
-		},
-	}
+	rel := Release{TagName: tag}
 
 	// Redirect the binary replacement to a temp file.
 	targetFile, err := os.CreateTemp(t.TempDir(), "env-starter-test-*")
@@ -277,7 +253,7 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	}
 	targetFile.Close()
 
-	c := &Client{targetPath: targetFile.Name()}
+	c := &Client{webBaseURL: srv.URL, targetPath: targetFile.Name()}
 
 	// When
 	if err := c.Apply(context.Background(), rel); err != nil {
@@ -295,6 +271,7 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 }
 
 func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
+	tag := "v1.2.3"
 	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 	binaryContent := []byte("fake binary content")
 	archiveBytes := buildTarGz(t, "env-starter", binaryContent)
@@ -303,11 +280,13 @@ func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
 	wrongChecksum := hex.EncodeToString(sha256.New().Sum(nil))
 	checksumsContent := fmt.Sprintf("%s  %s\n", wrongChecksum, archiveName)
 
+	checksumsPath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/checksums.txt", tag)
+	archivePath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/%s", tag, archiveName)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/checksums.txt":
+		case checksumsPath:
 			fmt.Fprint(w, checksumsContent)
-		case "/" + archiveName:
+		case archivePath:
 			w.Write(archiveBytes) //nolint:errcheck
 		default:
 			http.NotFound(w, r)
@@ -315,15 +294,8 @@ func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	rel := Release{
-		TagName: "v1.2.3",
-		Assets: []Asset{
-			{Name: archiveName, BrowserDownloadURL: srv.URL + "/" + archiveName},
-			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/checksums.txt"},
-		},
-	}
-
-	c := &Client{}
+	rel := Release{TagName: tag}
+	c := &Client{webBaseURL: srv.URL}
 
 	// When
 	err := c.Apply(context.Background(), rel)

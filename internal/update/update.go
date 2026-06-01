@@ -1,8 +1,10 @@
 // Package update checks for and applies new releases of env-starter from
 // GitHub Releases. The release flow is:
-//  1. [Client.Latest] fetches the latest release metadata.
+//  1. [Client.Latest] fetches the latest release tag by following the
+//     github.com/releases/latest redirect (no API key required).
 //  2. [IsNewer] decides whether the caller's current version is behind.
-//  3. [Client.Apply] downloads, sha256-verifies, and atomically replaces the binary.
+//  3. [Client.Apply] downloads checksums.txt, finds the platform archive,
+//     sha256-verifies it, and atomically replaces the binary.
 //  4. [ReExec] re-launches the newly installed binary in place of the current process.
 package update
 
@@ -13,7 +15,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,27 +29,28 @@ import (
 
 const githubRepo = "adericbourg/env-starter"
 
-// Release holds the metadata returned by the GitHub Releases API for a single release.
-type Release struct {
-	TagName string  `json:"tag_name"`
-	Assets  []Asset `json:"assets"`
+// noRedirectClient stops at the first redirect without following it.
+// Used by Latest to capture the Location header from the 302 response.
+var noRedirectClient = &http.Client{
+	CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	},
 }
 
-// Asset is a file attached to a GitHub release.
-type Asset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
+// Release holds the version tag of a GitHub release.
+type Release struct {
+	TagName string
 }
 
 // Client performs update-related network operations.
 // The zero value is usable; all unexported fields have safe defaults.
 type Client struct {
-	// httpGet is the HTTP GET seam for tests.
+	// httpGet is the HTTP GET seam for asset downloads in tests.
 	// Defaults to a real net/http GET with the request context wired in.
 	httpGet func(ctx context.Context, url string) (io.ReadCloser, error)
 
-	// apiBaseURL overrides the GitHub API base for tests. Defaults to "https://api.github.com".
-	apiBaseURL string
+	// webBaseURL overrides the GitHub web base for tests. Defaults to "https://github.com".
+	webBaseURL string
 
 	// targetPath overrides the binary replacement path for tests.
 	// Defaults to os.Executable().
@@ -67,11 +69,11 @@ func (c *Client) effectiveHTTPGet() func(ctx context.Context, url string) (io.Re
 	return defaultHTTPGet
 }
 
-func (c *Client) effectiveAPIBaseURL() string {
-	if c.apiBaseURL != "" {
-		return c.apiBaseURL
+func (c *Client) effectiveWebBaseURL() string {
+	if c.webBaseURL != "" {
+		return c.webBaseURL
 	}
-	return "https://api.github.com"
+	return "https://github.com"
 }
 
 func defaultHTTPGet(ctx context.Context, url string) (io.ReadCloser, error) {
@@ -79,32 +81,63 @@ func defaultHTTPGet(ctx context.Context, url string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("User-Agent", "env-starter")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP GET %s returned status %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("HTTP GET %s returned status %d: %s", url, resp.StatusCode, bytes.TrimSpace(body))
 	}
 	return resp.Body, nil
 }
 
-// Latest fetches the latest release from GitHub Releases and returns its metadata.
+// tagFromLocation extracts the release tag from a GitHub releases/tag redirect
+// Location header value. It returns an error if the marker segment is absent or
+// the tag is empty.
+func tagFromLocation(location string) (string, error) {
+	const marker = "/releases/tag/"
+	idx := strings.LastIndex(location, marker)
+	if idx < 0 {
+		return "", fmt.Errorf("Location %q does not contain %q", location, marker)
+	}
+	tag := strings.TrimSuffix(location[idx+len(marker):], "/")
+	if tag == "" {
+		return "", fmt.Errorf("empty tag in Location %q", location)
+	}
+	return tag, nil
+}
+
+// Latest resolves the latest release tag by issuing a non-following GET to the
+// github.com releases/latest page and parsing the redirect Location header.
+// This avoids the api.github.com REST endpoint and its unauthenticated rate
+// limit (60 requests/hour per IP).
 func (c *Client) Latest(ctx context.Context) (Release, error) {
-	url := fmt.Sprintf("%s/repos/%s/releases/latest", c.effectiveAPIBaseURL(), githubRepo)
-	body, err := c.effectiveHTTPGet()(ctx, url)
+	url := fmt.Sprintf("%s/%s/releases/latest", c.effectiveWebBaseURL(), githubRepo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return Release{}, fmt.Errorf("fetching latest release: %w", err)
 	}
-	defer body.Close()
+	req.Header.Set("User-Agent", "env-starter")
 
-	var rel Release
-	if err := json.NewDecoder(body).Decode(&rel); err != nil {
-		return Release{}, fmt.Errorf("parsing release JSON: %w", err)
+	resp, err := noRedirectClient.Do(req)
+	if err != nil {
+		return Release{}, fmt.Errorf("fetching latest release: %w", err)
 	}
-	return rel, nil
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return Release{}, fmt.Errorf("fetching latest release: unexpected status %d: %s", resp.StatusCode, bytes.TrimSpace(body))
+	}
+
+	tag, err := tagFromLocation(resp.Header.Get("Location"))
+	if err != nil {
+		return Release{}, fmt.Errorf("fetching latest release: %w", err)
+	}
+	return Release{TagName: tag}, nil
 }
 
 // IsNewer reports whether latestTag names a version newer than current.
@@ -128,23 +161,22 @@ func ensureV(v string) string {
 	return "v" + v
 }
 
-// Apply downloads, verifies, and atomically installs the binary from rel
-// in place of the currently running executable.
+// Apply downloads checksums.txt for the release, discovers the platform
+// archive name and expected digest from it, then downloads, sha256-verifies,
+// and atomically installs the binary in place of the currently running
+// executable.
 func (c *Client) Apply(ctx context.Context, rel Release) error {
-	archiveAsset, checksumsAsset, err := assetFor(rel, runtime.GOOS, runtime.GOARCH)
-	if err != nil {
-		return err
-	}
-
 	tmpDir, err := os.MkdirTemp("", "env-starter-update-*")
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// 1. Download checksums.txt.
+	// 1. Download checksums.txt to discover the archive name and digest.
+	checksumsURL := fmt.Sprintf("%s/%s/releases/download/%s/checksums.txt",
+		c.effectiveWebBaseURL(), githubRepo, rel.TagName)
 	checksumsPath := filepath.Join(tmpDir, "checksums.txt")
-	if err := c.downloadTo(ctx, checksumsAsset.BrowserDownloadURL, checksumsPath); err != nil {
+	if err := c.downloadTo(ctx, checksumsURL, checksumsPath); err != nil {
 		return fmt.Errorf("downloading checksums: %w", err)
 	}
 
@@ -152,14 +184,17 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 	if err != nil {
 		return fmt.Errorf("reading checksums: %w", err)
 	}
-	expectedDigest, err := lookupChecksum(checksumsContent, archiveAsset.Name)
+
+	archiveName, expectedDigest, err := findArchive(checksumsContent, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
-		return fmt.Errorf("looking up checksum: %w", err)
+		return fmt.Errorf("finding platform archive: %w", err)
 	}
 
 	// 2. Download the archive and verify its sha256 while streaming to disk.
-	archivePath := filepath.Join(tmpDir, archiveAsset.Name)
-	if err := c.downloadWithVerify(ctx, archiveAsset.BrowserDownloadURL, archivePath, expectedDigest); err != nil {
+	archiveURL := fmt.Sprintf("%s/%s/releases/download/%s/%s",
+		c.effectiveWebBaseURL(), githubRepo, rel.TagName, archiveName)
+	archivePath := filepath.Join(tmpDir, archiveName)
+	if err := c.downloadWithVerify(ctx, archiveURL, archivePath, expectedDigest); err != nil {
 		return fmt.Errorf("downloading archive: %w", err)
 	}
 
@@ -178,33 +213,6 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 		return fmt.Errorf("applying update: %w", err)
 	}
 	return nil
-}
-
-// assetFor returns the platform-matching archive and checksums.txt assets.
-func assetFor(rel Release, goos, goarch string) (archive Asset, checksums Asset, err error) {
-	suffix := fmt.Sprintf("_%s_%s.tar.gz", goos, goarch)
-	if goos == "windows" {
-		suffix = fmt.Sprintf("_%s_%s.zip", goos, goarch)
-	}
-
-	var foundArchive, foundChecksums bool
-	for _, a := range rel.Assets {
-		switch {
-		case strings.HasSuffix(a.Name, suffix):
-			archive = a
-			foundArchive = true
-		case a.Name == "checksums.txt":
-			checksums = a
-			foundChecksums = true
-		}
-	}
-	if !foundArchive {
-		return Asset{}, Asset{}, fmt.Errorf("no archive asset found for %s/%s (suffix %q)", goos, goarch, suffix)
-	}
-	if !foundChecksums {
-		return Asset{}, Asset{}, fmt.Errorf("no checksums.txt asset in release %s", rel.TagName)
-	}
-	return archive, checksums, nil
 }
 
 // downloadTo fetches url and writes its body to destPath.
