@@ -20,6 +20,15 @@
 
 ## Install
 
+### Homebrew (recommended on macOS)
+
+```sh
+brew install adericbourg/tap/env-starter
+```
+
+This is the recommended path on macOS: Homebrew strips the `com.apple.quarantine` attribute on
+install, so the binary runs without the "unidentified developer" Gatekeeper warning.
+
 ### Download a prebuilt binary
 
 Prebuilt archives for **Linux amd64/arm64**, **macOS amd64/arm64**, and **Windows amd64** are attached to every [GitHub Release](https://github.com/adericbourg/env-starter/releases).
@@ -35,6 +44,10 @@ tar xf env-starter.tar.gz
 sha256sum -c checksums.txt --ignore-missing
 sudo mv env-starter /usr/local/bin/
 ```
+
+> **macOS Gatekeeper warning?** If you downloaded the archive via a browser and macOS blocks the
+> binary, run: `xattr -dr com.apple.quarantine env-starter` before moving it into place.
+> Alternatively, use the Homebrew path above.
 
 ### go install
 
