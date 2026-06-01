@@ -30,10 +30,10 @@ type fakeController struct {
 	shutdownCalled bool
 
 	// hot-reload stubs
-	configChanged   bool
-	configParseErr  error
-	reloadCalled    bool
-	reloadErr       error
+	configChanged  bool
+	configParseErr error
+	reloadCalled   bool
+	reloadErr      error
 }
 
 func newFakeController() *fakeController {
@@ -1157,7 +1157,7 @@ func TestUpdate_whenConfigScanMsg_andParseError_setsParseErrAndClearsDirty(t *te
 	ctrl.configChanged = false
 	ctrl.configParseErr = fmt.Errorf("yaml: line 3: did not find expected key")
 	m := seed(New(ctrl))
-	m.configDirty = true  // had a prior valid change
+	m.configDirty = true // had a prior valid change
 	m.reloadErr = "old error"
 
 	// When
