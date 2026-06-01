@@ -87,6 +87,9 @@ func (e *Engine) stopCommand(c *command) {
 		// environment we report it stopped only if it had not completed.
 		e.mu.Lock()
 		state := c.state
+		// Clear the stop timer before publishing the terminal state so that
+		// StoppingCommands never reports a command that has already finished.
+		c.stopStartedAt = time.Time{}
 		e.mu.Unlock()
 		if state != CmdDone && state != CmdError {
 			e.setCmdState(c.cfg.Name, CmdStopped, nil)
@@ -102,29 +105,23 @@ func (e *Engine) stopCommand(c *command) {
 		if running {
 			e.terminate(c)
 		}
+		// Clear the stop timer before publishing the terminal state so that
+		// StoppingCommands never reports a command that has already finished.
+		e.mu.Lock()
+		c.stopStartedAt = time.Time{}
+		e.mu.Unlock()
 		e.setCmdState(c.cfg.Name, CmdStopped, nil)
 	}
-
-	// Clear the stop timer so the command no longer appears in StoppingCommands
-	// once teardown is complete.
-	e.mu.Lock()
-	c.stopStartedAt = time.Time{}
-	e.mu.Unlock()
 }
 
 // terminate sends SIGINT to a service's process group, waits up to GracePeriod
-// for it to exit, then SIGKILLs it.
+// for it to exit, then SIGKILLs it. The supervisor is prevented from flipping
+// the state to CmdError by the userStopped flag, which is set before terminate
+// is called.
 func (e *Engine) terminate(c *command) {
 	if c.cmd == nil || c.cmd.Process == nil {
 		return
 	}
-
-	// Mark stopped first so the exit watcher does not flip the state to error.
-	e.mu.Lock()
-	if c.state == CmdHealthy || c.state == CmdStopping {
-		c.state = CmdStopped
-	}
-	e.mu.Unlock()
 
 	_ = interruptProcess(c.cmd)
 
