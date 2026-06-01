@@ -28,6 +28,11 @@ type fakeController struct {
 	startedEnvs    []string
 	stoppedEnvs    []string
 	shutdownCalled bool
+
+	// hot-reload stubs
+	configChanged bool
+	reloadCalled  bool
+	reloadErr     error
 }
 
 func newFakeController() *fakeController {
@@ -101,6 +106,13 @@ func (f *fakeController) Events() <-chan engine.Event { return f.events }
 func (f *fakeController) StoppingCommands() []engine.StoppingCommand { return f.stopping }
 
 func (f *fakeController) Shutdown(_ context.Context) { f.shutdownCalled = true }
+
+func (f *fakeController) ConfigChanged() bool { return f.configChanged }
+
+func (f *fakeController) Reload(_ context.Context) error {
+	f.reloadCalled = true
+	return f.reloadErr
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -982,5 +994,223 @@ func TestRenderCmdPane_whenErrorWithNoRetries_showsNoSuffix(t *testing.T) {
 	stripped := ansi.Strip(pane)
 	if strings.Contains(stripped, "(failed") || strings.Contains(stripped, "(retry") {
 		t.Errorf("expected no retry suffix for error with 0 retries, got: %q", stripped)
+	}
+}
+
+// ── Config hot-reload model tests ─────────────────────────────────────────────
+
+func TestRenderFooter_static_showsRefreshLogsLabel(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if !strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected footer to contain 'r refresh logs', got %q", footer)
+	}
+	if strings.Contains(footer, "(c)") {
+		t.Errorf("expected '(c)' not to appear in the normal footer, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigDirty_showsBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — static shortcuts must be suppressed; banner must show.
+	if !strings.Contains(footer, "Press (c) to reload config") {
+		t.Errorf("expected footer to contain 'Press (c) to reload config', got %q", footer)
+	}
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected static shortcuts to be suppressed while banner is shown, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigDirtyWithReloadErr_showsErrorInBanner(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.reloadErr = "syntax error on line 5"
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — both the banner and the error must be present.
+	if !strings.Contains(footer, "Press (c) to reload config") {
+		t.Errorf("expected footer to contain reload prompt, got %q", footer)
+	}
+	if !strings.Contains(footer, "syntax error on line 5") {
+		t.Errorf("expected footer to contain reload error, got %q", footer)
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andChanged_setsDirty(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.configChanged = true
+	m := seed(New(ctrl))
+	if m.configDirty {
+		t.Fatal("expected configDirty to start false")
+	}
+
+	// When
+	updated, cmd := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — dirty flag set; scan re-armed.
+	if !m.configDirty {
+		t.Error("expected configDirty to be set after configScanMsg with change detected")
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil cmd (re-arm configScanCmd) from configScanMsg")
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andNotChanged_staysClean(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.configChanged = false
+	m := seed(New(ctrl))
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.configDirty {
+		t.Error("expected configDirty to remain false when no change detected")
+	}
+}
+
+func TestUpdate_whenConfigScanMsg_andAlreadyDirty_remainsDirty(t *testing.T) {
+	// Given — already dirty; ConfigChanged should not be queried again.
+	ctrl := newFakeController()
+	ctrl.configChanged = false // would return false if queried
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — dirty must remain; controller is not queried unnecessarily.
+	if !m.configDirty {
+		t.Error("expected configDirty to remain true once latched")
+	}
+}
+
+func TestKeyC_whenNotDirty_isNoop(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = false
+
+	// When
+	updated, cmd := m.Update(keyMsg("c"))
+	m = updated.(Model)
+
+	// Then — Reload must not be invoked; no cmd returned.
+	if ctrl.reloadCalled {
+		t.Error("expected Reload not to be called when configDirty is false")
+	}
+	_ = m
+	_ = cmd
+}
+
+func TestKeyC_whenDirty_invokesReloadAndReturnsCmd(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	_, cmd := m.Update(keyMsg("c"))
+
+	// Then — a background cmd must be returned (it will call Reload).
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd from pressing 'c' when dirty")
+	}
+	// Execute the cmd to simulate the background goroutine completing.
+	result := cmd()
+	if _, ok := result.(reloadDoneMsg); !ok {
+		t.Errorf("expected reloadDoneMsg from the reload cmd, got %T", result)
+	}
+	if !ctrl.reloadCalled {
+		t.Error("expected Reload to have been called by the cmd")
+	}
+}
+
+func TestUpdate_whenReloadDoneMsg_success_clearsDirty(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+	m.reloadErr = "old error"
+
+	// When
+	updated, cmd := m.Update(reloadDoneMsg{err: nil})
+	m = updated.(Model)
+
+	// Then — dirty and error cleared; event listener re-armed.
+	if m.configDirty {
+		t.Error("expected configDirty to be cleared after successful reload")
+	}
+	if m.reloadErr != "" {
+		t.Errorf("expected reloadErr to be cleared, got %q", m.reloadErr)
+	}
+	if cmd == nil {
+		t.Error("expected a non-nil cmd (re-arm waitForEvent) after successful reload")
+	}
+}
+
+func TestUpdate_whenReloadDoneMsg_error_keepsDirtyAndSetsErr(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configDirty = true
+
+	// When
+	updated, _ := m.Update(reloadDoneMsg{err: fmt.Errorf("parse error")})
+	m = updated.(Model)
+
+	// Then — dirty remains; error text captured for the banner.
+	if !m.configDirty {
+		t.Error("expected configDirty to remain true after failed reload")
+	}
+	if !strings.Contains(m.reloadErr, "parse error") {
+		t.Errorf("expected reloadErr to contain 'parse error', got %q", m.reloadErr)
+	}
+}
+
+func TestClampCursors_whenCursorsOutOfRange_clampsToLast(t *testing.T) {
+	// Given — controller with 1 env and 1 command; cursors pointing past end.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{{Name: "solo"}}
+	ctrl.commands = map[string][]string{"solo": {"cmd-a"}}
+	ctrl.envState = map[string]engine.EnvState{"solo": engine.EnvStopped}
+	ctrl.cmdState = map[string]engine.CmdState{"cmd-a": engine.CmdPending}
+
+	m := seed(New(ctrl))
+	m.envCursor = 5
+	m.cmdCursor = 5
+
+	// When
+	m = m.clampCursors()
+
+	// Then — both clamp to 0 (last valid index in a 1-element list).
+	if m.envCursor != 0 {
+		t.Errorf("expected envCursor clamped to 0, got %d", m.envCursor)
+	}
+	if m.cmdCursor != 0 {
+		t.Errorf("expected cmdCursor clamped to 0, got %d", m.cmdCursor)
 	}
 }

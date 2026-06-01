@@ -8,7 +8,6 @@ import (
 )
 
 // Controller is the subset of the engine API that the UI requires.
-// *engine.Engine satisfies this interface.
 type Controller interface {
 	Environments() []engine.EnvInfo
 	WorkflowCommands(env string) []string
@@ -30,4 +29,12 @@ type Controller interface {
 	// overall deadline. It is invoked from the TUI so the "shutting down" screen
 	// stays visible while teardown runs.
 	Shutdown(ctx context.Context)
+	// ConfigChanged reports whether the on-disk config file(s) differ semantically
+	// from the config the running engine was built from. Once true it latches until
+	// a successful Reload.
+	ConfigChanged() bool
+	// Reload tears down the running engine, re-loads config from disk, and builds a
+	// fresh engine. Returns an error without teardown when loading or building the
+	// new engine fails, leaving the current engine running.
+	Reload(ctx context.Context) error
 }
