@@ -177,8 +177,10 @@ Clone or pull a GitHub repository.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `repo` | string | yes | — | Repository in `owner/name` form, e.g. `acme/infra`. |
-| `branch` | string | no | `main` | Branch to check out. |
+| `branch` | string | no | `main` | Branch **or tag** to check out. |
 | `method` | string | no | auto | Transport: `ssh`, `https`, or `gh`. When unset, tries `ssh` → `gh` → `https` in order. |
+
+Commands that share the same `repo` and `branch` reuse a single cached clone (safe for concurrent startup). Commands that share the same `repo` but use different values for `branch` each get their own separate clone.
 
 ```yaml
 source:

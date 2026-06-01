@@ -95,11 +95,15 @@ func httpsCloneURL(repo string) string {
 }
 
 // Fetch clones or pulls the repository and returns the target directory.
+// Concurrent Fetch calls for the same repo+ref serialize so that only the
+// first caller clones; subsequent callers pull once the clone is done.
 func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 	dir, err := g.cacheDir()
 	if err != nil {
 		return "", err
 	}
+
+	defer lockPath(dir)()
 
 	runGit := g.runGit
 	if runGit == nil {
@@ -141,7 +145,9 @@ func (g *GitHub) clone(ctx context.Context, dir string, runGit func(context.Cont
 		return runGit(ctx, "clone", "--branch", branch, sshCloneURL(g.Repo), dir)
 	}
 	doGh := func() error {
-		return runGh(ctx, "repo", "clone", g.Repo, dir)
+		// Pass -- to separate gh flags from git clone flags, then --branch so the
+		// cloned content matches the ref encoded in the cache directory name.
+		return runGh(ctx, "repo", "clone", g.Repo, dir, "--", "--branch", branch)
 	}
 	doHTTPS := func() error {
 		return runGit(ctx, "clone", "--branch", branch, httpsCloneURL(g.Repo), dir)

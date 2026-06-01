@@ -3,7 +3,10 @@ package source
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -197,4 +200,125 @@ func TestGitHub_Fetch_branchDefaultsToMain(t *testing.T) {
 // mkdirAll is a test helper to create a directory hierarchy.
 func mkdirAll(path string) error {
 	return makeDir(path, 0o750)
+}
+
+func TestGitHub_Fetch_whenConcurrentSameRef_clonesOnce(t *testing.T) {
+	// Given
+	cacheBase := t.TempDir()
+
+	var cloneCount, pullCount atomic.Int32
+	fakeGit := func(_ context.Context, args ...string) error {
+		if args[0] == "clone" {
+			// Create the target directory (last arg) so subsequent Fetch calls see it.
+			if err := os.MkdirAll(args[len(args)-1], 0o750); err != nil {
+				return err
+			}
+			cloneCount.Add(1)
+		} else {
+			// pull: -C <dir> pull --ff-only
+			pullCount.Add(1)
+		}
+		return nil
+	}
+
+	const n = 5
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	// When – launch n goroutines all fetching the same repo+branch concurrently.
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gh := newGitHub(cacheBase, "owner/repo", "main", "ssh", "")
+			gh.runGit = fakeGit
+			_, errs[i] = gh.Fetch(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	// Then
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d got unexpected error: %v", i, err)
+		}
+	}
+	if got := cloneCount.Load(); got != 1 {
+		t.Errorf("clone count = %d, want 1 (shared clones should not race)", got)
+	}
+	if got := pullCount.Load(); got != int32(n-1) {
+		t.Errorf("pull count = %d, want %d", got, n-1)
+	}
+}
+
+func TestGitHub_Fetch_whenConcurrentDifferentRefs_clonesEach(t *testing.T) {
+	// Given – three branches; each should get its own clone in parallel.
+	cacheBase := t.TempDir()
+	branches := []string{"main", "staging", "dev"}
+
+	var cloneCount atomic.Int32
+	fakeGit := func(_ context.Context, args ...string) error {
+		if args[0] == "clone" {
+			if err := os.MkdirAll(args[len(args)-1], 0o750); err != nil {
+				return err
+			}
+			cloneCount.Add(1)
+		}
+		return nil
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(branches))
+
+	// When
+	for i, br := range branches {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gh := newGitHub(cacheBase, "owner/repo", br, "ssh", "")
+			gh.runGit = fakeGit
+			_, errs[i] = gh.Fetch(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	// Then
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("branch %s: unexpected error: %v", branches[i], err)
+		}
+	}
+	if got := cloneCount.Load(); got != int32(len(branches)) {
+		t.Errorf("clone count = %d, want %d (one clone per distinct ref)", got, len(branches))
+	}
+}
+
+func TestGitHub_Fetch_whenMethodGh_includesBranchArg(t *testing.T) {
+	// Given
+	cacheBase := t.TempDir()
+	gh := &callRecorder{}
+
+	g := newGitHub(cacheBase, "owner/repo", "feature-x", "gh", "")
+	g.runGh = gh.successRunner
+
+	// When
+	_, err := g.Fetch(context.Background())
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gh.calls) == 0 {
+		t.Fatal("expected gh call, got none")
+	}
+	call := gh.calls[0]
+	foundBranch := false
+	for i, a := range call {
+		if a == "--branch" && i+1 < len(call) && call[i+1] == "feature-x" {
+			foundBranch = true
+		}
+	}
+	if !foundBranch {
+		t.Errorf("expected --branch feature-x in gh call args, got %v", call)
+	}
 }

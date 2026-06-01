@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -100,6 +101,42 @@ func TestURL_Fetch_withMismatchedChecksum_returnsErrorAndRemovesFile(t *testing.
 	dest := filepath.Join(dir, "archive.tar.gz")
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Errorf("bad file was not removed: %s", dest)
+	}
+}
+
+func TestURL_Fetch_whenConcurrentSameURL_noError(t *testing.T) {
+	// Given – multiple goroutines downloading the same URL concurrently should not
+	// collide on the destination file.
+	content := []byte("concurrent content")
+	getter := func(_ context.Context, _ string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(string(content))), nil
+	}
+
+	const n = 5
+	cacheBase := t.TempDir()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	// When
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u := &URL{
+				URL:       "http://example.com/file.tar.gz",
+				cacheBase: cacheBase,
+				httpGet:   getter,
+			}
+			_, errs[i] = u.Fetch(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	// Then
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d got unexpected error: %v", i, err)
+		}
 	}
 }
 

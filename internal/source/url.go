@@ -64,11 +64,16 @@ func defaultHTTPGet(_ context.Context, url string) (io.ReadCloser, error) {
 }
 
 // Fetch downloads the URL into the cache and returns the cache directory.
+// Concurrent Fetch calls for the same URL serialize so that writes to the
+// destination file do not interleave.
 func (u *URL) Fetch(ctx context.Context) (string, error) {
 	dir, err := u.cacheDir()
 	if err != nil {
 		return "", err
 	}
+
+	defer lockPath(dir)()
+
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return "", fmt.Errorf("cannot create cache dir %s: %w", dir, err)
 	}
