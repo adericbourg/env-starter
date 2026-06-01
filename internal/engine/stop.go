@@ -27,27 +27,25 @@ func (e *Engine) StopEnvironment(env string) error {
 	return nil
 }
 
-// releaseWorkflow releases every command in an environment's workflow once,
-// decrementing reference counts and tearing down commands whose count reaches zero.
+// releaseWorkflow removes envCfg's hold on every command in its workflow,
+// tearing down commands that have no remaining holders.
 func (e *Engine) releaseWorkflow(envCfg config.Environment) {
 	for _, step := range envCfg.Workflow {
-		e.releaseCommand(step.Command)
+		e.releaseCommand(envCfg.Name, step.Command)
 	}
 }
 
-// releaseCommand decrements a command's refcount and stops it when it reaches
-// zero.
-func (e *Engine) releaseCommand(name string) {
+// releaseCommand removes envName's hold on command name and tears the command
+// down when no holders remain.
+func (e *Engine) releaseCommand(envName, name string) {
 	e.mu.Lock()
 	c, ok := e.commands[name]
 	if !ok {
 		e.mu.Unlock()
 		return
 	}
-	if c.refcount > 0 {
-		c.refcount--
-	}
-	shouldStop := c.refcount == 0
+	delete(c.holders, envName)
+	shouldStop := len(c.holders) == 0
 	e.mu.Unlock()
 
 	if !shouldStop {
@@ -194,8 +192,64 @@ func (e *Engine) runTeardown(c *command) {
 	_ = cmd.Run()
 }
 
+// resetForRetry prepares a previously-failed environment for a re-run.
+// Commands in a healthy or terminal-success state (Healthy, Done, Starting,
+// Restarting, Stopping) are left running untouched. Commands in a terminal-
+// failure state (Error, Timeout, Stopped) are either released when this env is
+// the sole holder — so acquireAndStart recreates them fresh — or restarted
+// in-place when another env still holds them.
+func (e *Engine) resetForRetry(envCfg config.Environment) {
+	for _, step := range envCfg.Workflow {
+		e.mu.Lock()
+		c, ok := e.commands[step.Command]
+		if !ok {
+			// Never started (pending) — runEnvironment will start it fresh.
+			e.mu.Unlock()
+			continue
+		}
+		state := c.state
+		holders := len(c.holders)
+		e.mu.Unlock()
+
+		switch state {
+		case CmdHealthy, CmdDone, CmdStarting, CmdRestarting, CmdStopping:
+			// Leave running: healthy, successfully-done, or in-progress commands
+			// are re-acquired idempotently by runEnvironment.
+		case CmdError, CmdTimeout, CmdStopped:
+			if holders <= 1 {
+				// Sole holder: release so acquireAndStart recreates the command fresh.
+				e.releaseCommand(envCfg.Name, step.Command)
+			} else {
+				// Shared with another running env: restart in place so it recovers
+				// for all holders without recreating the struct.
+				e.restartInPlace(c)
+			}
+		}
+	}
+}
+
+// restartInPlace recovers a down command that is still held by another
+// environment, without recreating the command struct. The command's supervisor
+// goroutine has already exited (it set CmdError), so this relaunches the process
+// and re-establishes monitoring. Runs synchronously so startDone is closed
+// before the subsequent acquireAndStart in runEnvironment observes the command.
+func (e *Engine) restartInPlace(c *command) {
+	e.mu.Lock()
+	c.retries = 0
+	e.mu.Unlock()
+
+	e.setCmdState(c.cfg.Name, CmdRestarting, nil)
+	if e.relaunch(c) {
+		e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+		e.startMonitor(c)
+	}
+	// Recompute state for every env sharing this command (including the retrying
+	// env and any other holder) so their states reflect the restart outcome.
+	e.recomputeEnvsFor(c.cfg.Name)
+}
+
 // Shutdown stops every currently-running command gracefully, respecting ctx as
-// an overall deadline. Reference counts are reset.
+// an overall deadline. All holders are cleared.
 func (e *Engine) Shutdown(ctx context.Context) {
 	e.mu.Lock()
 	names := make([]string, 0, len(e.commands))

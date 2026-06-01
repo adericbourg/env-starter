@@ -1,13 +1,12 @@
 // Package engine is the orchestration core of env-starter: a foreground
-// supervisor that starts and stops environments made of reference-counted
+// supervisor that starts and stops environments made of globally-shared
 // commands, respecting the dependency graph declared in each environment's
 // workflow.
 //
 // A command is identified by its name and runs once globally. Starting an
-// environment that needs an already-running command just increments its
-// reference count (and waits for it to be healthy). Stopping an environment
-// decrements reference counts; a command is actually torn down only when its
-// reference count reaches zero.
+// environment records that environment as a holder of the command (and waits
+// for it to be healthy if already running). Stopping an environment removes
+// its hold; a command is actually torn down only when no environment holds it.
 package engine
 
 import (
@@ -138,7 +137,7 @@ type StoppingCommand struct {
 	Grace   time.Duration
 }
 
-// command is the runtime state of a single (global, reference-counted) command.
+// command is the runtime state of a single (globally-shared) command.
 // All fields are guarded by Engine.mu — the command struct has no own mutex.
 type command struct {
 	cfg    config.Command
@@ -147,7 +146,11 @@ type command struct {
 	state CmdState
 	err   error
 
-	refcount int
+	// holders is the set of environment names currently referencing this command.
+	// The command is torn down only when it becomes empty. Per-env tracking makes
+	// acquire/release idempotent, so a retry can skip healthy commands without
+	// double-counting or restarting them.
+	holders map[string]struct{}
 
 	// restart tracking
 	retries     int  // restart attempts consumed in the current cycle; reset to 0 on success

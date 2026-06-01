@@ -34,11 +34,12 @@ func (e *Engine) StartEnvironment(env string) error {
 	e.setEnvState(env, EnvStarting)
 
 	go func() {
-		// A previously failed env holds errored commands whose refcount was never
-		// decremented (only StopEnvironment does that). Release them first so
-		// acquireAndStart can recreate them with a fresh process and log ring.
+		// A previously failed env may hold commands in terminal states. Selectively
+		// reset them: failed/timed-out/stopped commands are released (or restarted
+		// in place when shared) so runEnvironment can bring them up; healthy/done
+		// commands are left running untouched.
 		if prev == EnvError || prev == EnvDegraded {
-			e.releaseWorkflow(envCfg)
+			e.resetForRetry(envCfg)
 		}
 		e.runEnvironment(envCfg)
 	}()
@@ -106,18 +107,19 @@ func (e *Engine) runEnvironment(envCfg config.Environment) {
 	e.recomputeEnvState(envCfg)
 }
 
-// acquireAndStart increments the refcount for command name and, if it is the
-// first reference, starts it. For subsequent references it waits for the
-// already-running command to be healthy. Returns true if the command is
-// healthy/done.
+// acquireAndStart records envName as a holder of command name and, if this is
+// the first holder, starts the command. For subsequent holders it waits for the
+// already-running command to be healthy. The add is idempotent: re-acquiring a
+// command that envName already holds (e.g. on retry) is a no-op that simply
+// reports the current health. Returns true if the command is healthy/done.
 func (e *Engine) acquireAndStart(envName, name string) bool {
 	cmdCfg := e.cmdOf[name]
 
 	e.mu.Lock()
 	c, exists := e.commands[name]
-	// A previously stopped/errored command (refcount 0) is recreated fresh so a
-	// re-start gets a new process, channels and log ring.
-	if exists && c.refcount == 0 && (c.state == CmdStopped || c.state == CmdError || c.state == CmdTimeout || c.state == CmdDone) {
+	// A previously stopped/errored command with no remaining holders is recreated
+	// fresh so a re-start gets a new process, channels and log ring.
+	if exists && len(c.holders) == 0 && (c.state == CmdStopped || c.state == CmdError || c.state == CmdTimeout || c.state == CmdDone) {
 		exists = false
 	}
 	if !exists {
@@ -128,17 +130,19 @@ func (e *Engine) acquireAndStart(envName, name string) bool {
 			ring:      logbuf.NewRing(logRingCapacity),
 			startDone: make(chan struct{}),
 			exited:    make(chan struct{}),
+			holders:   make(map[string]struct{}),
 		}
 		e.commands[name] = c
 	}
-	c.refcount++
+	c.holders[envName] = struct{}{} // idempotent: re-acquiring an already-held command is a no-op
 	first := !exists
 	startDone := c.startDone
 	e.mu.Unlock()
 
 	if !first {
-		// Another environment already started (or is starting) this command.
-		// Wait for it to settle, then report its health.
+		// Another environment already started (or is starting) this command, or
+		// envName already holds it (retry of a still-healthy command). Wait for it
+		// to settle, then report its health.
 		<-startDone
 		return e.isHealthy(name)
 	}
