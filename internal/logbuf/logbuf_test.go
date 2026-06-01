@@ -231,6 +231,35 @@ func TestOpenFileAppend_appendsWithoutTruncating(t *testing.T) {
 	}
 }
 
+func TestOpenFile_whenFileHasContent_truncatesIt(t *testing.T) {
+	// Given — a file with pre-existing content.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.log")
+
+	wc, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile (first): %v", err)
+	}
+	wc.Write([]byte("previous run output\n"))
+	wc.Close()
+
+	// When — opening the same file again via OpenFile.
+	wc2, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile (second): %v", err)
+	}
+	wc2.Close()
+
+	// Then — the previous content is gone (file is empty).
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty file after re-open, got %q", string(got))
+	}
+}
+
 func TestOpenFile_createsMissingDirsAndFile(t *testing.T) {
 	// Given
 	dir := t.TempDir()

@@ -64,6 +64,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	if removed, err := eng.PurgeOldLogs(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: purging old logs: %v\n", err)
+	} else if len(removed) > 0 {
+		fmt.Fprintf(os.Stderr, "purged %d old log file(s)\n", len(removed))
+	}
+
 	ctrl := tui.NewReloadController(eng, cfg, watchPaths, loadFn)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

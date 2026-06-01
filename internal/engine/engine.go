@@ -331,6 +331,13 @@ func (e *Engine) LogPath(command string) string {
 	return e.logPath(command)
 }
 
+// PurgeOldLogs removes log files older than logbuf.LogRetention from the logs
+// directory. It is safe to call before any command starts. A missing directory
+// is not an error. Returns the base names of removed files.
+func (e *Engine) PurgeOldLogs() ([]string, error) {
+	return logbuf.PurgeOlderThan(e.logsDir(), logbuf.LogRetention)
+}
+
 // StoppingCommands returns the commands currently being torn down, in config
 // order. Each entry carries the time elapsed since stopping began and the
 // per-process SIGINT→SIGKILL grace budget. Returns an empty slice when nothing
