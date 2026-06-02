@@ -407,6 +407,40 @@ func TestWaitForEnvSettled_whenStartingThenRunning_returnsTrue(t *testing.T) {
 	}
 }
 
+func TestWaitForEnvSettled_whenStoppedThenStarted_waitsForEvents(t *testing.T) {
+	// Given — daemon just started: env=Stopped, commands not yet in the mirror.
+	// This simulates the race where StartEnvironment is called but the EnvStarting
+	// event has not yet arrived at the client when WaitForEnvSettled runs.
+	snap := Snapshot{
+		EnvStates:    map[string]engine.EnvState{"dev": engine.EnvStopped},
+		CmdStates:    map[string]engine.CmdState{},
+		CmdRetries:   map[string][2]int{},
+		Environments: []engine.EnvInfo{{Name: "dev"}},
+		WorkflowCmds: map[string][]string{"dev": {"api"}},
+		LogPaths:     map[string]string{},
+	}
+	extraEvents := []WireEvent{
+		{Kind: "environment", Environment: "dev", EnvState: engine.EnvStarting},
+		{Kind: "command", Command: "api", CmdState: engine.CmdStarting},
+		{Kind: "command", Command: "api", CmdState: engine.CmdHealthy},
+		{Kind: "environment", Environment: "dev", EnvState: engine.EnvRunning},
+	}
+	ctrl := buildSettledCtrl(t, snap, extraEvents)
+
+	// When
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	running, err := WaitForEnvSettled(ctx, ctrl, "dev")
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !running {
+		t.Error("want running=true, got false — initial check must not short-circuit on EnvStopped")
+	}
+}
+
 func TestWaitForEnvSettled_whenFailsAfterRetries_returnsFalse(t *testing.T) {
 	// Given — env starts, command cycles through restarting then error.
 	snap := Snapshot{

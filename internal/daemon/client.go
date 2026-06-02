@@ -417,9 +417,11 @@ func WaitForEnvSettled(ctx context.Context, ctrl *ClientController, envName stri
 		return true, envState == engine.EnvRunning
 	}
 
-	// 1. Check the current mirror state — return immediately if already settled.
-	if isSettled, isRunning := settled(); isSettled {
-		return isRunning, nil
+	// 1. Return immediately only when the env is already running. For other
+	// settled states (Stopped, Error, Degraded), the mirror may not yet reflect
+	// a concurrent StartEnvironment call — wait for events before concluding.
+	if isSettled, isRunning := settled(); isSettled && isRunning {
+		return true, nil
 	}
 
 	// 2. Subscribe to the events channel and loop until settled or cancelled.
