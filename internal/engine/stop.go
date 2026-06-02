@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
@@ -257,35 +258,52 @@ func (e *Engine) restartInPlace(c *command) {
 // an overall deadline. All holders are cleared.
 func (e *Engine) Shutdown(ctx context.Context) {
 	e.mu.Lock()
-	names := make([]string, 0, len(e.commands))
 	cmds := make([]*command, 0, len(e.commands))
-	for name, c := range e.commands {
-		names = append(names, name)
+	for _, c := range e.commands {
 		cmds = append(cmds, c)
 	}
 	e.mu.Unlock()
 
+	// Phase 1: stamp all stop times and cancel restart loops sequentially so
+	// that StoppingCommands() returns the full set from the very first tick.
+	type stopWork struct {
+		c         *command
+		startDone chan struct{}
+	}
+	works := make([]stopWork, 0, len(cmds))
+	for _, c := range cmds {
+		e.mu.Lock()
+		c.userStopped = true
+		if c.quit != nil {
+			c.quitOnce.Do(func() { close(c.quit) })
+		}
+		active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
+		if active {
+			c.stopStartedAt = time.Now()
+		}
+		startDone := c.startDone
+		e.mu.Unlock()
+		if active {
+			e.setCmdState(c.cfg.Name, CmdStopping, nil)
+		}
+		works = append(works, stopWork{c: c, startDone: startDone})
+	}
+
+	// Phase 2: stop all commands in parallel so the TUI shows all of them
+	// simultaneously instead of one at a time.
 	done := make(chan struct{})
 	go func() {
-		for _, c := range cmds {
-			// Cancel any in-flight restart/monitor cycle before stopping.
-			e.mu.Lock()
-			c.userStopped = true
-			if c.quit != nil {
-				c.quitOnce.Do(func() { close(c.quit) })
-			}
-			active := c.state == CmdHealthy || c.state == CmdStarting || c.state == CmdRestarting
-			if active {
-				c.stopStartedAt = time.Now()
-			}
-			startDone := c.startDone
-			e.mu.Unlock()
-			if active {
-				e.setCmdState(c.cfg.Name, CmdStopping, nil)
-			}
-			<-startDone
-			e.stopCommand(c)
+		var wg sync.WaitGroup
+		for _, w := range works {
+			w := w
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-w.startDone
+				e.stopCommand(w.c)
+			}()
 		}
+		wg.Wait()
 		close(done)
 	}()
 

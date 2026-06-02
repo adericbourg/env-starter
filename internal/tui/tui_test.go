@@ -452,16 +452,15 @@ func TestView_whenQuitting_showsShuttingDownMessage(t *testing.T) {
 	}
 }
 
-func TestRenderShutdown_withStoppingCommands_listsCommandWithEnvsSpinnerAndCountdown(t *testing.T) {
-	// Given — two envs, both referencing "mariadb"; it is currently stopping with
-	// 12 s elapsed out of a 30 s grace.
+func TestRenderShutdown_withStoppingCommands_showsEnvHeaderWithCommandChildrenAndCountdown(t *testing.T) {
+	// Given — "dev" has two stopping commands; "dev2" shares "mariadb" with "dev".
 	ctrl := newFakeController()
 	ctrl.envs = []engine.EnvInfo{
 		{Name: "dev", Description: "first"},
 		{Name: "dev2", Description: "second"},
 	}
 	ctrl.commands = map[string][]string{
-		"dev":  {"mariadb"},
+		"dev":  {"mariadb", "redis"},
 		"dev2": {"mariadb"},
 	}
 	ctrl.envState = map[string]engine.EnvState{
@@ -470,6 +469,7 @@ func TestRenderShutdown_withStoppingCommands_listsCommandWithEnvsSpinnerAndCount
 	}
 	ctrl.stopping = []engine.StoppingCommand{
 		{Command: "mariadb", Elapsed: 12 * time.Second, Grace: 30 * time.Second},
+		{Command: "redis", Elapsed: 12 * time.Second, Grace: 30 * time.Second},
 	}
 
 	m := seed(New(ctrl))
@@ -478,20 +478,23 @@ func TestRenderShutdown_withStoppingCommands_listsCommandWithEnvsSpinnerAndCount
 	// When
 	view := ansi.Strip(m.render())
 
-	// Then — env group, command name, and countdown must all appear.
-	if !strings.Contains(view, "[dev, dev2]") {
-		t.Errorf("expected env group '[dev, dev2]', got:\n%s", view)
+	// Then — each env appears as a header, commands appear indented under it.
+	if !strings.Contains(view, "dev") {
+		t.Errorf("expected env name 'dev', got:\n%s", view)
 	}
-	if !strings.Contains(view, "mariadb") {
-		t.Errorf("expected command name 'mariadb', got:\n%s", view)
+	if !strings.Contains(view, "Stopping mariadb") {
+		t.Errorf("expected 'Stopping mariadb', got:\n%s", view)
+	}
+	if !strings.Contains(view, "Stopping redis") {
+		t.Errorf("expected 'Stopping redis', got:\n%s", view)
 	}
 	if !strings.Contains(view, "12s / 30s") {
 		t.Errorf("expected countdown '12s / 30s', got:\n%s", view)
 	}
 }
 
-func TestRenderShutdown_whenStoppingCommandBelongsToSingleEnv_showsSingleEnvGroup(t *testing.T) {
-	// Given — only "dev" references "proxy".
+func TestRenderShutdown_whenStoppingCommandBelongsToSingleEnv_showsOnlyThatEnv(t *testing.T) {
+	// Given — only "dev" references "proxy"; "dev2" is already stopped.
 	ctrl := newFakeController()
 	ctrl.envs = []engine.EnvInfo{
 		{Name: "dev", Description: "first"},
@@ -516,14 +519,52 @@ func TestRenderShutdown_whenStoppingCommandBelongsToSingleEnv_showsSingleEnvGrou
 	view := ansi.Strip(m.render())
 
 	// Then
-	if !strings.Contains(view, "[dev]") {
-		t.Errorf("expected env group '[dev]', got:\n%s", view)
+	if !strings.Contains(view, "dev") {
+		t.Errorf("expected env name 'dev', got:\n%s", view)
 	}
-	if !strings.Contains(view, "proxy") {
-		t.Errorf("expected command name 'proxy', got:\n%s", view)
+	if strings.Contains(view, "dev2") {
+		t.Errorf("expected 'dev2' to be absent (already stopped), got:\n%s", view)
+	}
+	if !strings.Contains(view, "Stopping proxy") {
+		t.Errorf("expected 'Stopping proxy', got:\n%s", view)
 	}
 	if !strings.Contains(view, "9s / 30s") {
 		t.Errorf("expected countdown '9s / 30s', got:\n%s", view)
+	}
+}
+
+func TestRenderShutdown_withTwoDistinctEnvs_showsEachEnvBlock(t *testing.T) {
+	// Given — two envs with distinct commands, both stopping simultaneously.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{
+		{Name: "env1", Description: "first"},
+		{Name: "env2", Description: "second"},
+	}
+	ctrl.commands = map[string][]string{
+		"env1": {"cmd-a", "cmd-b"},
+		"env2": {"cmd-c"},
+	}
+	ctrl.envState = map[string]engine.EnvState{
+		"env1": engine.EnvStopping,
+		"env2": engine.EnvStopping,
+	}
+	ctrl.stopping = []engine.StoppingCommand{
+		{Command: "cmd-a", Elapsed: 5 * time.Second, Grace: 30 * time.Second},
+		{Command: "cmd-b", Elapsed: 5 * time.Second, Grace: 30 * time.Second},
+		{Command: "cmd-c", Elapsed: 5 * time.Second, Grace: 30 * time.Second},
+	}
+
+	m := seed(New(ctrl))
+	m.quitting = true
+
+	// When
+	view := ansi.Strip(m.render())
+
+	// Then — both env blocks appear with their respective commands.
+	for _, want := range []string{"env1", "env2", "Stopping cmd-a", "Stopping cmd-b", "Stopping cmd-c", "5s / 30s"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("expected %q in shutdown view, got:\n%s", want, view)
+		}
 	}
 }
 

@@ -748,58 +748,69 @@ func (m Model) renderFooter() string {
 func (m Model) renderShutdown() string {
 	title := shutdownStyle.Render("Env shutting down")
 
+	// Index stopping commands by name for O(1) lookup.
 	stopping := m.ctrl.StoppingCommands()
-	if len(stopping) == 0 {
+	cmdMap := make(map[string]engine.StoppingCommand, len(stopping))
+	for _, sc := range stopping {
+		cmdMap[sc.Command] = sc
+	}
+
+	// Build one block per env that still has stopping commands.
+	type envBlock struct {
+		name    string
+		elapsed int
+		grace   int
+		cmds    []string
+	}
+	var blocks []envBlock
+	for _, env := range m.ctrl.Environments() {
+		if m.ctrl.EnvState(env.Name) == engine.EnvStopped {
+			continue
+		}
+		var stoppingCmds []string
+		maxElapsed, grace := 0, 30
+		for _, cmd := range m.ctrl.WorkflowCommands(env.Name) {
+			sc, ok := cmdMap[cmd]
+			if !ok {
+				continue
+			}
+			stoppingCmds = append(stoppingCmds, cmd)
+			if e := int(sc.Elapsed.Seconds()); e > maxElapsed {
+				maxElapsed = e
+			}
+			grace = int(sc.Grace.Seconds())
+		}
+		if len(stoppingCmds) == 0 {
+			continue
+		}
+		if maxElapsed > grace {
+			maxElapsed = grace
+		}
+		blocks = append(blocks, envBlock{name: env.Name, elapsed: maxElapsed, grace: grace, cmds: stoppingCmds})
+	}
+
+	if len(blocks) == 0 {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, title)
 	}
 
-	// Inner width for command rows: leave a small margin so lines don't hug the edge.
 	const innerWidth = 40
-
 	var rows []string
 	rows = append(rows, title, "")
-	for _, sc := range stopping {
-		// Env group header.
-		envNames := m.commandEnvs(sc.Command)
-		if len(envNames) > 0 {
-			rows = append(rows, "["+strings.Join(envNames, ", ")+"]")
-		}
-
-		// Command line: spinner on the left, countdown on the right.
-		elapsed := int(sc.Elapsed.Seconds())
-		grace := int(sc.Grace.Seconds())
-		if elapsed > grace {
-			elapsed = grace
-		}
-		left := fmt.Sprintf("%s %s", sc.Command, spinnerChar(m.spinnerFrame))
-		right := fmt.Sprintf("%ds / %ds", elapsed, grace)
+	for _, b := range blocks {
+		left := fmt.Sprintf("%s %s", spinnerChar(m.spinnerFrame), b.name)
+		right := fmt.Sprintf("%ds / %ds", b.elapsed, b.grace)
 		gap := innerWidth - len(left) - len(right)
 		if gap < 1 {
 			gap = 1
 		}
 		rows = append(rows, left+strings.Repeat(" ", gap)+right)
+		for _, cmd := range b.cmds {
+			rows = append(rows, "  Stopping "+cmd)
+		}
 	}
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-}
-
-// commandEnvs returns the names of environments (in Environments() order) that
-// reference cmd in their workflow and are not yet stopped.
-func (m Model) commandEnvs(cmd string) []string {
-	var names []string
-	for _, env := range m.ctrl.Environments() {
-		if m.ctrl.EnvState(env.Name) == engine.EnvStopped {
-			continue
-		}
-		for _, c := range m.ctrl.WorkflowCommands(env.Name) {
-			if c == cmd {
-				names = append(names, env.Name)
-				break
-			}
-		}
-	}
-	return names
 }
 
 // ── State indicators ──────────────────────────────────────────────────────────
