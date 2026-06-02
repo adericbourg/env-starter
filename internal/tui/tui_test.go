@@ -117,6 +117,8 @@ func (f *fakeController) Reload(_ context.Context) error {
 	return f.reloadErr
 }
 
+func (f *fakeController) Detach() {}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // seed gives the model a non-zero terminal size so View() renders real content.
@@ -157,8 +159,8 @@ func TestView_initial_rendersEnvNameAndFooterShortcut(t *testing.T) {
 	if !strings.Contains(view, "alpha") {
 		t.Error("expected view to contain environment name 'alpha'")
 	}
-	if !strings.Contains(view, "quit") {
-		t.Error("expected view to contain footer shortcut hint 'quit'")
+	if !strings.Contains(view, "shutdown") {
+		t.Error("expected view to contain footer shortcut hint 'shutdown'")
 	}
 }
 
@@ -424,11 +426,14 @@ func TestRenderFooter_whenConfirmingQuit_showsPressAgainMessage(t *testing.T) {
 	footer := m.renderFooter()
 
 	// Then
-	if !strings.Contains(footer, "Ctrl+C") {
-		t.Errorf("expected footer to contain 'Ctrl+C' during confirmation, got %q", footer)
+	if !strings.Contains(footer, "^C") {
+		t.Errorf("expected footer to contain '^C' during confirmation, got %q", footer)
 	}
 	if !strings.Contains(footer, "again") {
 		t.Errorf("expected footer to contain 'again' during confirmation, got %q", footer)
+	}
+	if !strings.Contains(footer, "shutdown daemon") {
+		t.Errorf("expected footer to contain 'shutdown daemon' during confirmation, got %q", footer)
 	}
 }
 
@@ -1319,5 +1324,48 @@ func TestClampCursors_whenCursorsOutOfRange_clampsToLast(t *testing.T) {
 	}
 	if m.cmdCursor != 0 {
 		t.Errorf("expected cmdCursor clamped to 0, got %d", m.cmdCursor)
+	}
+}
+
+func TestModel_ctrlD_setsDetachingAndQuits(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: 'd', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	// Then — detaching flag set, quit command emitted.
+	if !m.detaching {
+		t.Error("expected detaching to be true after Ctrl+D")
+	}
+	if m.quitting {
+		t.Error("expected quitting to remain false after Ctrl+D (detach does not shut down daemon)")
+	}
+	if cmd == nil {
+		t.Fatal("expected a non-nil cmd (tea.Quit) from Ctrl+D")
+	}
+	msg := cmd()
+	if _, ok := msg.(tea.QuitMsg); !ok {
+		t.Errorf("expected tea.QuitMsg from Ctrl+D, got %T", msg)
+	}
+}
+
+func TestModel_ctrlC_confirmText_showsShutdownDaemon(t *testing.T) {
+	// Given — model with confirmingQuit already set (first Ctrl+C pressed).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.confirmingQuit = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — updated wording shown, not the old "Press Ctrl+C again to quit".
+	if !strings.Contains(footer, "^C again to shutdown daemon") {
+		t.Errorf("expected footer to contain '^C again to shutdown daemon', got %q", footer)
+	}
+	if strings.Contains(footer, "quit") {
+		t.Errorf("expected footer not to contain old 'quit' wording, got %q", footer)
 	}
 }

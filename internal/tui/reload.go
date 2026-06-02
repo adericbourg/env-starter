@@ -46,6 +46,10 @@ type reloadController struct {
 	// and preserved across scans while the file remains unmodified (so callers
 	// see the error without re-reading the file on every tick).
 	parseErr error
+
+	// onSwap is called after a successful engine swap in Reload. It is used by
+	// the daemon event hub to re-subscribe to the new engine's Events() channel.
+	onSwap func()
 }
 
 // NewReloadController returns a Controller that wraps eng and supports
@@ -161,24 +165,33 @@ func (c *reloadController) Reload(ctx context.Context) error {
 		return err
 	}
 
-	// Snapshot the current engine pointer before acquiring the write lock so we
-	// can call Shutdown (which can be slow) without holding the lock.
-	c.mu.RLock()
-	old := c.eng
-	c.mu.RUnlock()
-
-	old.Shutdown(ctx)
-
 	c.mu.Lock()
-	c.eng = newEng
+	old := c.eng   // capture old engine
+	c.eng = newEng // swap in new engine first so clients use it immediately
 	c.cfg = fresh
 	c.dirty = false
 	// Reset the baseline to the just-loaded file so a subsequent scan does not
 	// immediately re-trigger.
 	c.lastMod, c.lastSize, _ = statNewest(c.watchPaths)
+	snap := c.onSwap // capture onSwap while holding lock
 	c.mu.Unlock()
 
+	old.Shutdown(ctx) // shutdown old engine AFTER swap (clients now use new engine)
+
+	if snap != nil {
+		snap() // notify hub to re-subscribe to new engine
+	}
+
 	return nil
+}
+
+// SetOnSwap sets a callback that will be invoked after a successful engine
+// swap in Reload. This is used by the daemon event hub to re-subscribe to the
+// new engine's Events() channel.
+func (c *reloadController) SetOnSwap(fn func()) {
+	c.mu.Lock()
+	c.onSwap = fn
+	c.mu.Unlock()
 }
 
 // ── Controller delegation ─────────────────────────────────────────────────────
@@ -257,3 +270,7 @@ func (c *reloadController) Shutdown(ctx context.Context) {
 	c.mu.RUnlock()
 	e.Shutdown(ctx)
 }
+
+// Detach is a no-op for reloadController: it owns the engine directly and has
+// no client-side resources to release.
+func (c *reloadController) Detach() {}

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
+	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
@@ -29,11 +30,47 @@ var version = "dev"
 func main() {
 	// Subcommand dispatch must happen before flag.Parse because stdlib flag
 	// does not support subcommands natively.
-	if len(os.Args) > 1 && os.Args[1] == "update" {
-		runUpdate()
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "__daemon":
+			// Hidden subcommand: build engine + reloadController from flags, then
+			// serve on socket. This is the process spawned by EnsureDaemon.
+			runDaemon()
+			return
+		case "update":
+			runUpdate()
+			return
+		case "run":
+			runRun(os.Args[2:])
+			return
+		case "stop":
+			runStop(os.Args[2:])
+			return
+		case "list":
+			runList(os.Args[2:])
+			return
+		case "ps":
+			runPs()
+			return
+		case "shutdown":
+			runShutdown()
+			return
+		case "help", "-h", "--help":
+			printHelp(os.Stdout)
+			return
+		}
 	}
 
+	// Check for -h/--help in position 1 already handled above.
+	// Check for unknown subcommands: anything that looks like a subcommand
+	// (non-flag argument) that wasn't matched above is an error.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		fmt.Fprintf(os.Stderr, "unknown subcommand: %q\n\n", os.Args[1])
+		printHelp(os.Stderr)
+		os.Exit(2)
+	}
+
+	// Default TUI path.
 	var (
 		showVersion   bool
 		configFile    string
@@ -52,7 +89,60 @@ func main() {
 
 	maybeSuggestUpdate()
 
-	cfg, loadFn, watchPaths, err := resolveConfig(configFile, configOverlay)
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	lockPath, err := daemon.LockPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	client, err := daemon.EnsureDaemon(ctx, socketPath, lockPath, configFile, configOverlay)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	detached, tuiErr := tui.Run(client)
+	if detached {
+		fmt.Println("Detached. Your environments keep running in the background — run `env-starter` again to resume this session, or `env-starter shutdown` to stop everything.")
+		// On detach: release client resources without shutting down the daemon.
+		client.Detach()
+		return
+	}
+
+	// If the OS signal fired before TUI exited, detach instead of shutting down —
+	// one client being killed should not tear down the shared daemon.
+	select {
+	case <-ctx.Done():
+		stop()
+		client.Detach()
+		return
+	default:
+	}
+
+	if tuiErr != nil {
+		fmt.Fprintf(os.Stderr, "error: tui: %v\n", tuiErr)
+		os.Exit(1)
+	}
+}
+
+// runDaemon is the hidden __daemon subcommand. It parses its own --config and
+// --config-overlay flags, builds the engine and reloadController, then serves
+// on the daemon socket until shutdown.
+func runDaemon() {
+	fs := flag.NewFlagSet("__daemon", flag.ExitOnError)
+	configFile := fs.String("config", "", "use FILE as the configuration")
+	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
+	_ = fs.Parse(os.Args[2:])
+
+	cfg, loadFn, watchPaths, err := resolveConfig(*configFile, *configOverlay)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -72,37 +162,295 @@ func main() {
 
 	ctrl := tui.NewReloadController(eng, cfg, watchPaths, loadFn)
 
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// tuiDone receives the error (or nil) from tui.Run once it returns.
-	tuiDone := make(chan error, 1)
-	go func() {
-		tuiDone <- tui.Run(ctrl)
-	}()
-
-	// Wait for either the TUI to finish or a signal to arrive.
-	var tuiErr error
-	select {
-	case tuiErr = <-tuiDone:
-		stop() // release signal resources
-	case <-ctx.Done():
-		stop()
-		// Drain: wait for TUI to exit after the signal interrupts it.
-		tuiErr = <-tuiDone
-	}
-
-	fmt.Fprintln(os.Stderr, "shutting down…")
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
-	defer cancel()
-	// Use ctrl.Shutdown (not eng.Shutdown) so that post-reload engines are also
-	// torn down correctly. eng may no longer be the active engine after a reload.
-	ctrl.Shutdown(shutdownCtx)
-
-	if tuiErr != nil {
-		fmt.Fprintf(os.Stderr, "error: tui: %v\n", tuiErr)
+	if err := daemon.Serve(ctx, socketPath, ctrl); err != nil {
+		fmt.Fprintln(os.Stderr, "daemon error:", err)
 		os.Exit(1)
 	}
+}
+
+// runRun implements the "env-starter run <env>" subcommand. It ensures the
+// daemon is running, starts the named environment, then waits until the
+// environment has settled (running or failed) and exits accordingly.
+//
+// Exit codes:
+//
+//	0 — env is running (EnvRunning)
+//	1 — env failed to start (EnvError/EnvDegraded)
+//	2 — wrong usage (missing arg, unknown env)
+//	3 — timed out waiting for env to settle
+func runRun(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	timeout := fs.Duration("timeout", 5*time.Minute, "maximum time to wait for env to start")
+	configFile := fs.String("config", "", "use FILE as the configuration")
+	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: env-starter run <env>")
+		os.Exit(2)
+	}
+	envName := fs.Arg(0)
+
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	lockPath, err := daemon.LockPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+
+	fmt.Fprintf(os.Stderr, "Starting environment %q…\n", envName)
+
+	client, err := daemon.EnsureDaemon(timeoutCtx, socketPath, lockPath, *configFile, *configOverlay)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	// Validate env name against configured environments before calling StartEnvironment.
+	envs := client.Environments()
+	found := false
+	for _, e := range envs {
+		if e.Name == envName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		fmt.Fprintf(os.Stderr, "error: unknown environment %q\n", envName)
+		client.Detach()
+		os.Exit(2)
+	}
+
+	if err := client.StartEnvironment(envName); err != nil {
+		fmt.Fprintf(os.Stderr, "error: start environment %q: %v\n", envName, err)
+		os.Exit(1)
+	}
+
+	running, err := daemon.WaitForEnvSettled(timeoutCtx, client, envName)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "interrupted")
+			os.Exit(1)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "timed out waiting for environment %q to start\n", envName)
+			os.Exit(3)
+		}
+		fmt.Fprintf(os.Stderr, "error waiting for environment %q: %v\n", envName, err)
+		os.Exit(1)
+	}
+
+	if running {
+		fmt.Fprintf(os.Stderr, "Environment %q is running.\n", envName)
+		os.Exit(0)
+	}
+	fmt.Fprintf(os.Stderr, "Environment %q failed to start.\n", envName)
+	os.Exit(1)
+}
+
+// runStop implements the "env-starter stop <env>" subcommand. It dials an
+// existing daemon, sends a StopEnvironment RPC, then waits for the environment
+// to reach EnvStopped before exiting.
+func runStop(args []string) {
+	fs := flag.NewFlagSet("stop", flag.ExitOnError)
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: env-starter stop <env>")
+		os.Exit(2)
+	}
+	envName := fs.Arg(0)
+
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	client, err := daemon.DialOnly(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if client == nil {
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	if err := client.StopEnvironment(envName); err != nil {
+		fmt.Fprintf(os.Stderr, "error: stop environment %q: %v\n", envName, err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Stopping environment %q…\n", envName)
+
+	// Wait until the env reaches EnvStopped.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	startTime := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "interrupted")
+			os.Exit(1)
+		case ev, ok := <-client.Events():
+			if !ok {
+				// Daemon closed the stream — check final state.
+				if client.EnvState(envName) == engine.EnvStopped {
+					os.Exit(0)
+				}
+				fmt.Fprintf(os.Stderr, "event stream closed before %q stopped\n", envName)
+				os.Exit(1)
+			}
+			_ = ev // state is reflected in the mirror; read it directly
+			fmt.Fprintf(os.Stderr, "\rstopping %s… %ds", envName, int(time.Since(startTime).Seconds()))
+			if client.EnvState(envName) == engine.EnvStopped {
+				fmt.Fprintln(os.Stderr)
+				os.Exit(0)
+			}
+		}
+	}
+}
+
+// runList implements the "env-starter list" subcommand. It loads the config
+// locally (no daemon needed) and prints each environment name and description.
+func runList(args []string) {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	configFile := fs.String("config", "", "use FILE as the configuration")
+	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
+	_ = fs.Parse(args)
+
+	cfg, _, _, err := resolveConfig(*configFile, *configOverlay)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	// Determine the column width for alignment.
+	maxLen := 0
+	for _, env := range cfg.Environments {
+		if len(env.Name) > maxLen {
+			maxLen = len(env.Name)
+		}
+	}
+
+	for _, env := range cfg.Environments {
+		fmt.Printf("%-*s  %s\n", maxLen, env.Name, env.Description)
+	}
+}
+
+// runPs implements the "env-starter ps" subcommand. It dials an existing daemon
+// and prints the non-stopped environments with their state and command states.
+func runPs() {
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	client, err := daemon.DialOnly(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if client == nil {
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	envs := client.Environments()
+	printed := 0
+	for _, env := range envs {
+		state := client.EnvState(env.Name)
+		if state == engine.EnvStopped {
+			continue
+		}
+		cmds := client.WorkflowCommands(env.Name)
+		cmdParts := make([]string, 0, len(cmds))
+		for _, cmd := range cmds {
+			cmdParts = append(cmdParts, fmt.Sprintf("%s:%s", cmd, client.CmdState(cmd)))
+		}
+		if len(cmdParts) > 0 {
+			fmt.Printf("%-20s %-10s (%s)\n", env.Name, string(state), strings.Join(cmdParts, "  "))
+		} else {
+			fmt.Printf("%-20s %s\n", env.Name, string(state))
+		}
+		printed++
+	}
+
+	if printed == 0 {
+		fmt.Println("No environments running.")
+	}
+}
+
+// runShutdown implements the "env-starter shutdown" subcommand. It dials an
+// existing daemon, sends a shutdown RPC, then waits until the event stream
+// closes (daemon fully gone).
+func runShutdown() {
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	client, err := daemon.DialOnly(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if client == nil {
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	fmt.Fprintln(os.Stderr, "Shutting down…")
+	client.Shutdown(ctx)
+}
+
+// printHelp prints usage information for all subcommands to w.
+func printHelp(w *os.File) {
+	fmt.Fprintf(w, `Usage: env-starter [command] [flags]
+
+Commands:
+  (default)  Open the TUI to manage environments
+  run        Start an environment and wait for it to be ready
+  stop       Stop a running environment
+  list       List configured environments
+  ps         Show running environments
+  shutdown   Stop all environments and shut down the daemon
+  update     Update env-starter to the latest version
+  help       Show this help message
+
+Flags (default TUI and run):
+  --config FILE         Use FILE as the configuration
+  --config-overlay FILE Apply FILE as overlay on top of base config
+
+run flags:
+  --timeout DURATION    Maximum time to wait for env to start (default: %s)
+`, 5*time.Minute)
 }
 
 // runUpdate implements the "env-starter update" subcommand. It checks whether
@@ -183,9 +531,6 @@ func maybeSuggestUpdate() {
 	}
 }
 
-// resolveConfig loads the effective *config.Config from the flag values.
-// baseFile is the --config flag; overlayFile is the --config-overlay flag.
-// When neither flag is set, the XDG default path is used as the base.
 // resolveConfig loads the configuration from disk and returns:
 //   - the initially parsed *config.Config
 //   - a loadFn closure that re-runs the same load+merge logic for hot-reload

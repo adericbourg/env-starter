@@ -46,6 +46,10 @@ type noticeResetMsg struct{}
 // for on-disk changes.
 type configScanMsg struct{}
 
+// daemonGoneMsg is sent when the event stream from the daemon closes unexpectedly,
+// meaning the daemon was killed or crashed.
+type daemonGoneMsg struct{}
+
 // reloadDoneMsg is sent once the background config reload (triggered by pressing
 // "c") has completed. err is nil on success.
 type reloadDoneMsg struct{ err error }
@@ -91,6 +95,7 @@ type Model struct {
 	// quit flow
 	confirmingQuit bool // first Ctrl+C seen; awaiting a confirming second press
 	quitting       bool // confirmed: engine teardown in progress, shutdown screen shown
+	detaching      bool // Ctrl+D pressed: exit without daemon shutdown
 
 	// transient footer notice (e.g. "opened …" after ^L); cleared by noticeResetMsg
 	notice string
@@ -135,7 +140,10 @@ func (m Model) Init() tea.Cmd {
 // that every subsequent event is also delivered.
 func waitForEvent(ctrl Controller) tea.Cmd {
 	return func() tea.Msg {
-		ev := <-ctrl.Events()
+		ev, ok := <-ctrl.Events()
+		if !ok {
+			return daemonGoneMsg{}
+		}
 		return eventMsg(ev)
 	}
 }
@@ -242,6 +250,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case shutdownDoneMsg:
 		return m, tea.Quit
 
+	case daemonGoneMsg:
+		// The daemon was killed externally. Show a message and exit.
+		m.notice = "Daemon stopped — press any key to exit"
+		return m, tea.Quit
+
 	case eventMsg:
 		// Re-arm so the next engine event is also delivered.
 		m = m.refreshLogView()
@@ -258,6 +271,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// While the shutdown screen is shown, all input is ignored.
 	if m.quitting {
 		return m, nil
+	}
+
+	if msg.String() == "ctrl+d" {
+		m.detaching = true
+		m.ctrl.Detach()
+		return m, tea.Quit
 	}
 
 	if msg.String() == "ctrl+c" {
@@ -703,7 +722,7 @@ func (m Model) renderLogPath() string {
 
 func (m Model) renderFooter() string {
 	if m.confirmingQuit {
-		return quitConfirmStyle.Render("Press Ctrl+C again to quit")
+		return quitConfirmStyle.Render("Press ^C again to shutdown daemon")
 	}
 	if m.configParseErr != "" {
 		return configDirtyStyle.Render("Updated configuration cannot be parsed — fix errors to reload")
@@ -718,7 +737,7 @@ func (m Model) renderFooter() string {
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh logs  ^L open  ^C quit"
+	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh logs  ^L open  ^D detach  ^C shutdown"
 	return footerStyle.Render(shortcuts)
 }
 

@@ -2,11 +2,14 @@ package tui
 
 import tea "charm.land/bubbletea/v2"
 
-// Run starts the Bubble Tea program. It is the only place a real tea.Program
-// is created; all other code is pure model logic testable without a TTY.
-func Run(ctrl Controller) error {
+// Run starts the Bubble Tea program and returns whether the exit was a detach
+// (Ctrl+D) rather than a shutdown. A detach exit leaves the daemon running.
+func Run(ctrl Controller) (detached bool, err error) {
 	m := New(ctrl)
 	p := tea.NewProgram(m)
-	_, err := p.Run()
-	return err
+	final, err := p.Run()
+	if finalModel, ok := final.(Model); ok {
+		detached = finalModel.detaching
+	}
+	return detached, err
 }

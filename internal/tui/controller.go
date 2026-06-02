@@ -41,4 +41,8 @@ type Controller interface {
 	// fresh engine. Returns an error without teardown when loading or building the
 	// new engine fails, leaving the current engine running.
 	Reload(ctx context.Context) error
+	// Detach signals the controller to release any client-side resources (e.g.
+	// close the socket connection to the daemon). It is a no-op for controllers
+	// that own the engine directly.
+	Detach()
 }
