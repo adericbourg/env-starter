@@ -9,10 +9,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -22,6 +24,81 @@ import (
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
 )
+
+// logSource is the subset of daemon.ClientController used by tailStartupLogs.
+// Defined here so the function can be tested with a stub.
+type logSource interface {
+	WorkflowCommands(env string) []string
+	Logs(command string) []string
+}
+
+// cmdColorCodes is the cycling ANSI color palette used to distinguish command
+// prefixes in the startup log stream (same spirit as docker compose).
+var cmdColorCodes = []string{
+	"\033[36m", // cyan
+	"\033[33m", // yellow
+	"\033[32m", // green
+	"\033[35m", // magenta
+	"\033[34m", // blue
+	"\033[96m", // bright cyan
+	"\033[93m", // bright yellow
+	"\033[92m", // bright green
+	"\033[95m", // bright magenta
+	"\033[94m", // bright blue
+}
+
+const ansiReset = "\033[0m"
+
+// buildPrefixes returns a map from command name to its colored "[name]" prefix.
+func buildPrefixes(cmds []string) map[string]string {
+	prefixes := make(map[string]string, len(cmds))
+	for i, cmd := range cmds {
+		color := cmdColorCodes[i%len(cmdColorCodes)]
+		prefixes[cmd] = color + "[" + cmd + "]" + ansiReset
+	}
+	return prefixes
+}
+
+// tailStartupLogs polls log lines for all commands in envName every 200 ms and
+// writes new lines to out with a colored [cmdname] prefix. It stops when
+// stopCh is closed or ctx is done, performing a final flush in either case.
+func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.Writer, stopCh <-chan struct{}) {
+	cmds := src.WorkflowCommands(envName)
+	if len(cmds) == 0 {
+		return
+	}
+
+	prefixes := buildPrefixes(cmds)
+	seenLines := make(map[string]int, len(cmds))
+
+	flush := func() {
+		for _, cmd := range cmds {
+			lines := src.Logs(cmd)
+			start := seenLines[cmd]
+			prefix := prefixes[cmd]
+			for _, line := range lines[start:] {
+				fmt.Fprintf(out, "%s %s\n", prefix, line)
+			}
+			seenLines[cmd] = len(lines)
+		}
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			flush()
+			return
+		case <-stopCh:
+			flush()
+			return
+		case <-ticker.C:
+			flush()
+		}
+	}
+}
 
 // version is the build version, overridden at release time via -ldflags
 // "-X main.version=...".
@@ -245,7 +322,17 @@ func runRun(args []string) {
 		os.Exit(1)
 	}
 
+	stopTail := make(chan struct{})
+	var tailWg sync.WaitGroup
+	tailWg.Add(1)
+	go func() {
+		defer tailWg.Done()
+		tailStartupLogs(timeoutCtx, client, envName, os.Stdout, stopTail)
+	}()
+
 	running, err := daemon.WaitForEnvSettled(timeoutCtx, client, envName)
+	close(stopTail)
+	tailWg.Wait()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			fmt.Fprintln(os.Stderr, "interrupted")

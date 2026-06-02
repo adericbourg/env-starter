@@ -1,11 +1,131 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// stubLogSource implements logSource for tests.
+type stubLogSource struct {
+	commands []string
+	logs     map[string][]string
+}
+
+func (s *stubLogSource) WorkflowCommands(_ string) []string { return s.commands }
+func (s *stubLogSource) Logs(cmd string) []string           { return s.logs[cmd] }
+
+func TestBuildPrefixes_assignsDistinctColoredPrefixes(t *testing.T) {
+	// Given
+	cmds := []string{"alpha", "beta", "gamma"}
+
+	// When
+	prefixes := buildPrefixes(cmds)
+
+	// Then
+	seen := make(map[string]bool)
+	for _, cmd := range cmds {
+		p, ok := prefixes[cmd]
+		if !ok {
+			t.Fatalf("buildPrefixes: no prefix for %q", cmd)
+		}
+		if !strings.Contains(p, cmd) {
+			t.Errorf("buildPrefixes(%q): prefix %q does not contain command name", cmd, p)
+		}
+		if !strings.Contains(p, "\033[") {
+			t.Errorf("buildPrefixes(%q): prefix %q contains no ANSI escape", cmd, p)
+		}
+		if seen[p] {
+			t.Errorf("buildPrefixes: duplicate prefix %q", p)
+		}
+		seen[p] = true
+	}
+}
+
+func TestBuildPrefixes_cyclesColorsWhenMoreCommandsThanColors(t *testing.T) {
+	// Given: more commands than the color palette size
+	cmds := make([]string, len(cmdColorCodes)+3)
+	for i := range cmds {
+		cmds[i] = fmt.Sprintf("cmd%d", i)
+	}
+
+	// When
+	prefixes := buildPrefixes(cmds)
+
+	// Then: all commands get a prefix, even if colors repeat
+	for _, cmd := range cmds {
+		if _, ok := prefixes[cmd]; !ok {
+			t.Errorf("buildPrefixes: no prefix for %q", cmd)
+		}
+	}
+}
+
+func TestTailStartupLogs_printsNewLines(t *testing.T) {
+	// Given
+	src := &stubLogSource{
+		commands: []string{"svc"},
+		logs:     map[string][]string{"svc": {"line1", "line2"}},
+	}
+
+	var out bytes.Buffer
+	stopCh := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tailStartupLogs(context.Background(), src, "myenv", &out, stopCh)
+	}()
+
+	// When: stop immediately — the final flush on stopCh must capture all lines
+	close(stopCh)
+	wg.Wait()
+
+	// Then
+	output := out.String()
+	for _, line := range []string{"line1", "line2"} {
+		if !strings.Contains(output, line) {
+			t.Errorf("tailStartupLogs: output missing %q; got:\n%s", line, output)
+		}
+	}
+	if !strings.Contains(output, "svc") {
+		t.Errorf("tailStartupLogs: output missing command name %q; got:\n%s", "svc", output)
+	}
+}
+
+func TestTailStartupLogs_performsFinalFlushOnStop(t *testing.T) {
+	// Given: initial logs present when the goroutine starts
+	src := &stubLogSource{
+		commands: []string{"worker"},
+		logs:     map[string][]string{"worker": {"first"}},
+	}
+
+	var out bytes.Buffer
+	stopCh := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tailStartupLogs(context.Background(), src, "e", &out, stopCh)
+	}()
+
+	// Add a line and then stop — the final flush must capture it
+	src.logs["worker"] = append(src.logs["worker"], "second")
+	close(stopCh)
+	wg.Wait()
+
+	// Then
+	output := out.String()
+	if !strings.Contains(output, "second") {
+		t.Errorf("tailStartupLogs: final flush missed late line; got:\n%s", output)
+	}
+}
 
 func TestDefaultConfigPath_withXDGConfigHome(t *testing.T) {
 	// Given
