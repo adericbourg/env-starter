@@ -1410,3 +1410,124 @@ func TestModel_ctrlC_confirmText_showsShutdownDaemon(t *testing.T) {
 		t.Errorf("expected footer not to contain old 'quit' wording, got %q", footer)
 	}
 }
+
+// ── Shutdown log panel tests ──────────────────────────────────────────────────
+
+func TestInitShutdownLog_buildsColorPrefixesForAllCommands(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	m = m.initShutdownLog()
+
+	// Then — every command in the fake controller gets a non-empty ANSI prefix
+	wantCmds := []string{"svc-a", "svc-b", "svc-c"}
+	for _, cmd := range wantCmds {
+		prefix, ok := m.shutdownPrefixes[cmd]
+		if !ok {
+			t.Errorf("initShutdownLog: no prefix for command %q", cmd)
+			continue
+		}
+		if !strings.Contains(prefix, "["+cmd+"]") {
+			t.Errorf("initShutdownLog: prefix for %q missing command name, got %q", cmd, prefix)
+		}
+		if !strings.Contains(prefix, "\033[") {
+			t.Errorf("initShutdownLog: prefix for %q contains no ANSI escape, got %q", cmd, prefix)
+		}
+	}
+}
+
+func TestInitShutdownLog_deduplicatesSharedCommands(t *testing.T) {
+	// Given — two envs sharing a command
+	ctrl := newFakeController()
+	ctrl.commands = map[string][]string{
+		"alpha": {"shared", "only-alpha"},
+		"beta":  {"shared", "only-beta"},
+	}
+	m := seed(New(ctrl))
+
+	// When
+	m = m.initShutdownLog()
+
+	// Then — "shared" appears exactly once
+	count := 0
+	for _, cmd := range m.shutdownCmds {
+		if cmd == "shared" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("initShutdownLog: expected 'shared' once in shutdownCmds, got %d times", count)
+	}
+}
+
+func TestRefreshShutdownLogs_whenNewLines_appendsPrefixedLines(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {"line one", "line two"},
+	}
+	m := seed(New(ctrl))
+	m = m.initShutdownLog()
+
+	// When
+	m = m.refreshShutdownLogs()
+
+	// Then — both lines appear with the [svc-a] prefix
+	joined := strings.Join(m.shutdownLogLines, "\n")
+	if !strings.Contains(joined, "[svc-a]") {
+		t.Errorf("refreshShutdownLogs: expected [svc-a] prefix, got: %q", joined)
+	}
+	if !strings.Contains(joined, "line one") {
+		t.Errorf("refreshShutdownLogs: expected 'line one', got: %q", joined)
+	}
+	if !strings.Contains(joined, "line two") {
+		t.Errorf("refreshShutdownLogs: expected 'line two', got: %q", joined)
+	}
+}
+
+func TestRefreshShutdownLogs_whenCalledTwice_doesNotDuplicateLines(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {"only once"},
+	}
+	m := seed(New(ctrl))
+	m = m.initShutdownLog()
+
+	// When — refresh twice with the same log state
+	m = m.refreshShutdownLogs()
+	m = m.refreshShutdownLogs()
+
+	// Then — "only once" appears exactly once
+	count := 0
+	for _, line := range m.shutdownLogLines {
+		if strings.Contains(line, "only once") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("refreshShutdownLogs: expected 'only once' exactly once, got %d times", count)
+	}
+}
+
+func TestRenderShutdown_whenQuitting_containsLogPanel(t *testing.T) {
+	// Given — a command with log output, model in quitting state
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {"shutdown output line"},
+	}
+	m := seed(New(ctrl))
+	m.quitting = true
+	m = m.initShutdownLog()
+	m = m.refreshShutdownLogs()
+
+	// When
+	view := ansi.Strip(m.render())
+
+	// Then — log content appears somewhere in the shutdown view
+	if !strings.Contains(view, "shutdown output line") {
+		t.Errorf("renderShutdown: expected log line in shutdown view, got:\n%s", view)
+	}
+}

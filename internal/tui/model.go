@@ -15,6 +15,24 @@ import (
 	"github.com/adericbourg/env-starter/internal/openfile"
 )
 
+// shutdownCmdColors is the cycling ANSI color palette used to prefix command
+// names in the shutdown log panel — the same palette the run subcommand uses,
+// so the visual language is consistent across TUI and CLI.
+var shutdownCmdColors = []string{
+	"\033[36m", // cyan
+	"\033[33m", // yellow
+	"\033[32m", // green
+	"\033[35m", // magenta
+	"\033[34m", // blue
+	"\033[96m", // bright cyan
+	"\033[93m", // bright yellow
+	"\033[92m", // bright green
+	"\033[95m", // bright magenta
+	"\033[94m", // bright blue
+}
+
+const ansiReset = "\033[0m"
+
 // focus tracks which pane currently has keyboard focus.
 type focus int
 
@@ -89,6 +107,13 @@ type Model struct {
 	// log viewport
 	logView viewport.Model
 
+	// shutdown log panel
+	shutdownLogView   viewport.Model
+	shutdownLogLines  []string
+	shutdownSeenLines map[string]int
+	shutdownCmds      []string
+	shutdownPrefixes  map[string]string
+
 	// spinner advances on every tickMsg to animate starting-state indicators
 	spinnerFrame int
 
@@ -123,9 +148,10 @@ type Model struct {
 // New creates a TUI model driven by the given controller.
 func New(ctrl Controller) Model {
 	return Model{
-		ctrl:     ctrl,
-		logView:  viewport.New(),
-		openFile: openfile.Open,
+		ctrl:            ctrl,
+		logView:         viewport.New(),
+		shutdownLogView: viewport.New(),
+		openFile:        openfile.Open,
 	}
 }
 
@@ -212,6 +238,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.spinnerFrame++
 		m = m.refreshLogView()
+		if m.quitting {
+			m = m.refreshShutdownLogs()
+		}
 		return m, tickCmd()
 
 	case quitResetMsg:
@@ -284,6 +313,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Second Ctrl+C within the window: start engine teardown.
 			m.confirmingQuit = false
 			m.quitting = true
+			m = m.initShutdownLog()
 			return m, shutdownCmd(m.ctrl)
 		}
 		// First Ctrl+C: arm the confirmation window; do NOT touch any environment.
@@ -539,6 +569,19 @@ func (m Model) resizePanes() Model {
 	}
 	m.logView.SetWidth(logWidth)
 	m.logView.SetHeight(logHeight)
+
+	// Shutdown log panel: bottom half of the shutdown screen, minus border.
+	shutdownLogPanelHeight := m.height / 2
+	shutdownLogWidth := m.width - 2
+	if shutdownLogWidth < 1 {
+		shutdownLogWidth = 1
+	}
+	shutdownLogHeight := shutdownLogPanelHeight - 2
+	if shutdownLogHeight < 1 {
+		shutdownLogHeight = 1
+	}
+	m.shutdownLogView.SetWidth(shutdownLogWidth)
+	m.shutdownLogView.SetHeight(shutdownLogHeight)
 	return m
 }
 
@@ -741,6 +784,68 @@ func (m Model) renderFooter() string {
 	return footerStyle.Render(shortcuts)
 }
 
+// initShutdownLog collects the ordered, deduplicated set of commands across all
+// environments and builds a colored "[name]" prefix for each one — the same
+// format the run subcommand uses. Called once when quitting begins.
+func (m Model) initShutdownLog() Model {
+	seen := make(map[string]bool)
+	var cmds []string
+	for _, env := range m.ctrl.Environments() {
+		for _, cmd := range m.ctrl.WorkflowCommands(env.Name) {
+			if !seen[cmd] {
+				seen[cmd] = true
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
+	prefixes := make(map[string]string, len(cmds))
+	for i, cmd := range cmds {
+		color := shutdownCmdColors[i%len(shutdownCmdColors)]
+		prefixes[cmd] = color + "[" + cmd + "]" + ansiReset
+	}
+
+	m.shutdownCmds = cmds
+	m.shutdownPrefixes = prefixes
+	m.shutdownSeenLines = make(map[string]int, len(cmds))
+	return m
+}
+
+// refreshShutdownLogs polls each command's ring buffer for new lines and
+// appends them (with their colored prefix) to shutdownLogLines. It then
+// rebuilds the viewport content and scrolls to the bottom.
+func (m Model) refreshShutdownLogs() Model {
+	if len(m.shutdownCmds) == 0 {
+		return m
+	}
+	for _, cmd := range m.shutdownCmds {
+		lines := m.ctrl.Logs(cmd)
+		start := m.shutdownSeenLines[cmd]
+		prefix := m.shutdownPrefixes[cmd]
+		for _, line := range lines[start:] {
+			m.shutdownLogLines = append(m.shutdownLogLines, prefix+" "+line)
+		}
+		m.shutdownSeenLines[cmd] = len(lines)
+	}
+
+	width := m.shutdownLogView.Width()
+	wrapped := make([]string, 0, len(m.shutdownLogLines))
+	for _, line := range m.shutdownLogLines {
+		wrapped = append(wrapped, wrapLogLine(line, width))
+	}
+	m.shutdownLogView.SetContent(strings.Join(wrapped, "\n"))
+	m.shutdownLogView.GotoBottom()
+	return m
+}
+
+// renderShutdownLogPanel renders the accumulated shutdown log lines in a
+// bordered viewport occupying the bottom half of the shutdown screen.
+func (m Model) renderShutdownLogPanel() string {
+	return borderNormal.
+		Width(m.width - 2).
+		Render(m.shutdownLogView.View())
+}
+
 // renderShutdown shows a full-screen "Env shutting down" notice while the
 // engine tears down running commands. It lists each stopping command grouped
 // by the environments that reference it, with a braille spinner and an
@@ -789,28 +894,33 @@ func (m Model) renderShutdown() string {
 		blocks = append(blocks, envBlock{name: env.Name, elapsed: maxElapsed, grace: grace, cmds: stoppingCmds})
 	}
 
+	logPanelHeight := m.height / 2
+	statusHeight := m.height - logPanelHeight
+
+	var statusContent string
 	if len(blocks) == 0 {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, title)
+		statusContent = title
+	} else {
+		const innerWidth = 40
+		var rows []string
+		rows = append(rows, title, "")
+		for _, b := range blocks {
+			left := fmt.Sprintf("%s %s", spinnerChar(m.spinnerFrame), b.name)
+			right := fmt.Sprintf("%ds / %ds", b.elapsed, b.grace)
+			gap := innerWidth - len(left) - len(right)
+			if gap < 1 {
+				gap = 1
+			}
+			rows = append(rows, left+strings.Repeat(" ", gap)+right)
+			for _, cmd := range b.cmds {
+				rows = append(rows, "  Stopping "+cmd)
+			}
+		}
+		statusContent = lipgloss.JoinVertical(lipgloss.Left, rows...)
 	}
 
-	const innerWidth = 40
-	var rows []string
-	rows = append(rows, title, "")
-	for _, b := range blocks {
-		left := fmt.Sprintf("%s %s", spinnerChar(m.spinnerFrame), b.name)
-		right := fmt.Sprintf("%ds / %ds", b.elapsed, b.grace)
-		gap := innerWidth - len(left) - len(right)
-		if gap < 1 {
-			gap = 1
-		}
-		rows = append(rows, left+strings.Repeat(" ", gap)+right)
-		for _, cmd := range b.cmds {
-			rows = append(rows, "  Stopping "+cmd)
-		}
-	}
-
-	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+	status := lipgloss.Place(m.width, statusHeight, lipgloss.Center, lipgloss.Center, statusContent)
+	return lipgloss.JoinVertical(lipgloss.Left, status, m.renderShutdownLogPanel())
 }
 
 // ── State indicators ──────────────────────────────────────────────────────────
