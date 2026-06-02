@@ -41,6 +41,8 @@ type mockController struct {
 	onSwap func()
 
 	shutdownCalled bool
+	// shutdownFunc, if set, is called instead of the default Shutdown stub.
+	shutdownHook func(context.Context)
 }
 
 func newMockController() *mockController {
@@ -120,10 +122,14 @@ func (m *mockController) StoppingCommands() []engine.StoppingCommand {
 	return m.stoppingCmds
 }
 
-func (m *mockController) Shutdown(_ context.Context) {
+func (m *mockController) Shutdown(ctx context.Context) {
 	m.mu.Lock()
 	m.shutdownCalled = true
+	hook := m.shutdownHook
 	m.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
 }
 
 func (m *mockController) ConfigChanged() (bool, error) {
@@ -488,6 +494,44 @@ func TestServe_shutdown_closesServer(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("server still accepting connections after shutdown")
+}
+
+func TestServe_shutdown_rpcStillServedDuringTeardown(t *testing.T) {
+	// Given — a controller that takes a while to shut down, with a stopping command.
+	ctrl := newMockController()
+	ctrl.stoppingCmds = []engine.StoppingCommand{
+		{Command: "svc-a", Elapsed: 3 * time.Second, Grace: 30 * time.Second},
+	}
+
+	shutdownStarted := make(chan struct{})
+	shutdownBlock := make(chan struct{})
+	ctrl.shutdownHook = func(_ context.Context) {
+		close(shutdownStarted)
+		<-shutdownBlock // block until test unblocks it
+	}
+
+	socketPath, _ := startTestServer(t, ctrl)
+	_, scanner, enc := dialDaemon(t, socketPath)
+
+	// When — send shutdown, then immediately poll StoppingCommands on the same connection.
+	rpc(t, enc, scanner, Request{Method: MethodShutdown})
+	<-shutdownStarted // ensure engine teardown has begun
+
+	resp := rpc(t, enc, scanner, Request{Method: MethodStoppingCommands})
+
+	// Then — StoppingCommands response must be valid and contain the stopping command.
+	if resp.Error != "" {
+		t.Fatalf("StoppingCommands after shutdown RPC returned error: %s", resp.Error)
+	}
+	var result StoppingCommandsResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decode StoppingCommandsResult: %v", err)
+	}
+	if len(result.Commands) != 1 || result.Commands[0].Command != "svc-a" {
+		t.Errorf("expected stopping command 'svc-a', got %+v", result.Commands)
+	}
+
+	close(shutdownBlock) // let teardown finish
 }
 
 // ── Hub fan-out tests ─────────────────────────────────────────────────────────

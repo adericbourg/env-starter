@@ -218,25 +218,31 @@ func (s *server) handleConn(ctx context.Context, conn net.Conn, ln net.Listener)
 	switch req.Method {
 	case MethodSubscribe:
 		s.handleSubscribe(ctx, conn, enc)
+		return
 	case MethodShutdown:
 		writeResult(enc, nil)
-		s.shutdown(ctx, ln)
+		// Run teardown in the background so this connection keeps serving RPCs
+		// (e.g. StoppingCommands polls) while the engine tears down.
+		go s.shutdown(ctx, ln)
 	default:
 		s.handleRPC(ctx, req, enc)
-		// Serve additional RPC requests on the same connection.
-		for scanner.Scan() {
-			var next Request
-			if err := json.Unmarshal(scanner.Bytes(), &next); err != nil {
-				writeError(enc, "invalid request: "+err.Error())
-				continue
-			}
-			if next.Method == MethodShutdown {
-				writeResult(enc, nil)
-				s.shutdown(ctx, ln)
-				return
-			}
-			s.handleRPC(ctx, next, enc)
+	}
+
+	// Serve additional RPC requests on the same connection until the client
+	// disconnects. Shutdown runs concurrently in the background, so polls like
+	// StoppingCommands are answered normally during teardown.
+	for scanner.Scan() {
+		var next Request
+		if err := json.Unmarshal(scanner.Bytes(), &next); err != nil {
+			writeError(enc, "invalid request: "+err.Error())
+			continue
 		}
+		if next.Method == MethodShutdown {
+			writeResult(enc, nil)
+			go s.shutdown(ctx, ln) // idempotent via shutdownOnce
+			continue
+		}
+		s.handleRPC(ctx, next, enc)
 	}
 }
 
