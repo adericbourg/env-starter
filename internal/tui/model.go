@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/linkscan"
 	"github.com/adericbourg/env-starter/internal/openfile"
 )
 
@@ -106,6 +107,11 @@ type Model struct {
 
 	// log viewport
 	logView viewport.Model
+
+	// contextLinks holds the URLs extracted from the last contextLinksWindow log
+	// lines of every command in the selected environment. It is recomputed by
+	// refreshLogView on every render cycle and drives the contextual links overlay.
+	contextLinks []linkscan.Link
 
 	// shutdown log panel
 	shutdownLogView   viewport.Model
@@ -514,10 +520,64 @@ func (m Model) logsTitle() string {
 	}
 }
 
+// contextLinksWindow is the number of trailing log lines (per command) scanned
+// for URLs to surface in the contextual links overlay.
+const contextLinksWindow = 5
+
+// logAreaHeight returns the number of rows available inside the logs pane for
+// the viewport plus any contextual-links overlay combined. It accounts for the
+// pane border, title row, and path footer but not the overlay itself.
+func (m Model) logAreaHeight() int {
+	topHeight := m.height / 2
+	h := m.height - topHeight - footerHeight - 2 - 1 - logPathHeight
+	if h < 1 {
+		return 1
+	}
+	return h
+}
+
+// linksBlockHeight returns the number of rows the contextual-links overlay will
+// occupy: 0 when there are no links, or len(links)+3 (border top, title row,
+// one row per link, border bottom) otherwise.
+func linksBlockHeight(links []linkscan.Link) int {
+	if len(links) == 0 {
+		return 0
+	}
+	return len(links) + 3
+}
+
+// collectContextLinks scans the last contextLinksWindow log lines of each
+// command in the selected environment and returns the deduplicated set of URLs,
+// each tagged with the command that first emitted them.
+func (m Model) collectContextLinks() []linkscan.Link {
+	cmds := m.selectedEnvCommands()
+	var tagged []linkscan.TaggedLine
+	for _, cmd := range cmds {
+		lines := m.ctrl.Logs(cmd)
+		start := len(lines) - contextLinksWindow
+		if start < 0 {
+			start = 0
+		}
+		for _, line := range lines[start:] {
+			tagged = append(tagged, linkscan.TaggedLine{Command: cmd, Text: line})
+		}
+	}
+	return linkscan.Collect(tagged)
+}
+
 // refreshLogView populates the viewport with the latest log lines for the
 // currently selected command. Each line is pre-wrapped to the viewport width so
 // the viewport never truncates them.
 func (m Model) refreshLogView() Model {
+	// Recompute the contextual-links overlay for all commands in the env, then
+	// shrink the viewport by the overlay height so the pane total stays constant.
+	m.contextLinks = m.collectContextLinks()
+	viewportHeight := m.logAreaHeight() - linksBlockHeight(m.contextLinks)
+	if viewportHeight < 1 {
+		viewportHeight = 1
+	}
+	m.logView.SetHeight(viewportHeight)
+
 	cmd := m.selectedCommand()
 	if cmd == "" {
 		m.logView.SetContent("")
@@ -557,9 +617,11 @@ func wrapLogLine(line string, width int) string {
 // resizePanes recalculates the viewport size to fit the terminal.
 func (m Model) resizePanes() Model {
 	// Layout: top half split into env+cmd panes, bottom half is logs.
-	topHeight := m.height / 2
-	// 2 = log pane border (top+bottom); 1 = title row; logPathHeight = path line below viewport
-	logHeight := m.height - topHeight - footerHeight - 2 - 1 - logPathHeight
+	// logAreaHeight() provides the viewport+overlay budget; subtract the
+	// current overlay height to get the viewport's share. refreshLogView
+	// recomputes this after every event, so these initial values converge
+	// immediately once the first tick fires.
+	logHeight := m.logAreaHeight() - linksBlockHeight(m.contextLinks)
 	if logHeight < 1 {
 		logHeight = 1
 	}
@@ -743,10 +805,65 @@ func (m Model) renderCmdPane(width, height int) string {
 func (m Model) renderLogsPane() string {
 	title := logsTitleStyle.Render(m.logsTitle())
 	pathLine := m.renderLogPath()
-	content := lipgloss.JoinVertical(lipgloss.Left, title, m.logView.View(), pathLine)
+	parts := []string{title, m.logView.View()}
+	if block := m.renderContextLinks(); block != "" {
+		parts = append(parts, block)
+	}
+	parts = append(parts, pathLine)
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	style := paneStyle(m.focused == focusLogs).
 		Width(m.width - 2)
 	return style.Render(content)
+}
+
+// renderContextLinks renders the contextual-links block shown at the bottom of
+// the logs pane (above the path line) using the same bordered panel style as
+// every other pane. Returns an empty string when there are no links to display.
+func (m Model) renderContextLinks() string {
+	if len(m.contextLinks) == 0 {
+		return ""
+	}
+
+	// Content width inside this block's own border: subtract the log pane
+	// border (2) and this block's border (2).
+	contentWidth := m.width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	title := logsTitleStyle.Render("Contextual links")
+
+	// Find the widest "[cmd]" label so all rows can be right-aligned consistently.
+	maxLabelLen := 0
+	for _, link := range m.contextLinks {
+		if l := len("[" + link.Command + "]"); l > maxLabelLen {
+			maxLabelLen = l
+		}
+	}
+
+	// Build one row per link: right-aligned padded label + two spaces + clickable URL.
+	rows := make([]string, 0, len(m.contextLinks))
+	for i, link := range m.contextLinks {
+		label := "[" + link.Command + "]"
+		pad := strings.Repeat(" ", maxLabelLen-len(label))
+
+		color := shutdownCmdColors[i%len(shutdownCmdColors)]
+		coloredLabel := color + pad + label + ansiReset
+
+		urlWidth := contentWidth - maxLabelLen - 2
+		if urlWidth < 1 {
+			urlWidth = 1
+		}
+		displayURL := ansi.Truncate(link.URL, urlWidth, "…")
+		// Wrap in an OSC 8 hyperlink: visible text is truncated for display but
+		// the full URL remains the clickable target.
+		clickable := ansi.SetHyperlink(link.URL) + displayURL + ansi.ResetHyperlink()
+
+		rows = append(rows, coloredLabel+"  "+clickable)
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, append([]string{title}, rows...)...)
+	return borderNormal.Width(contentWidth).Render(content)
 }
 
 // renderLogPath renders the one-row on-disk path hint shown at the bottom of

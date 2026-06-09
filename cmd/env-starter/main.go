@@ -19,10 +19,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/term"
+
 	"github.com/adericbourg/env-starter/internal/completion"
 	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/linkscan"
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
 )
@@ -64,10 +67,19 @@ func buildPrefixes(cmds []string) map[string]string {
 	return prefixes
 }
 
+// cliLinksWindow is the number of recently-printed prefixed log lines scanned
+// for URLs to surface in the CLI contextual-links overlay.
+const cliLinksWindow = 5
+
 // tailStartupLogs polls log lines for all commands in envName every 200 ms and
-// writes new lines to out with a colored [cmdname] prefix. It stops when
-// stopCh is closed or ctx is done, performing a final flush in either case.
-func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.Writer, stopCh <-chan struct{}) {
+// writes new lines to out with a colored [cmdname] prefix. When interactive is
+// true (stdout is a terminal), a contextual-links overlay is kept pinned just
+// above the cursor, redrawing as new URLs appear or age out of the window.
+// When interactive is false the output is plain text — no ANSI cursor control —
+// so piped or redirected output is never corrupted.
+// It stops when stopCh is closed or ctx is done, performing a final flush in
+// either case (the overlay is cleared on exit).
+func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.Writer, interactive bool, stopCh <-chan struct{}) {
 	cmds := src.WorkflowCommands(envName)
 	if len(cmds) == 0 {
 		return
@@ -76,15 +88,65 @@ func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.
 	prefixes := buildPrefixes(cmds)
 	seenLines := make(map[string]int, len(cmds))
 
-	flush := func() {
+	// last5 is a ring of the cliLinksWindow most-recently printed tagged lines,
+	// used to compute the contextual-links overlay in interactive mode.
+	last5 := make([]linkscan.TaggedLine, 0, cliLinksWindow)
+	prevOverlayHeight := 0
+
+	// appendLast5 appends a tagged line to the sliding window, evicting the
+	// oldest entry once the window is full.
+	appendLast5 := func(cmd, text string) {
+		if len(last5) >= cliLinksWindow {
+			last5 = last5[1:]
+		}
+		last5 = append(last5, linkscan.TaggedLine{Command: cmd, Text: text})
+	}
+
+	// eraseOverlay writes the ANSI sequence to move the cursor up by
+	// prevOverlayHeight rows and clear from there to the end of the screen,
+	// effectively erasing the previously drawn overlay.
+	eraseOverlay := func() {
+		if prevOverlayHeight > 0 {
+			fmt.Fprintf(out, "\x1b[%dA\x1b[J", prevOverlayHeight)
+			prevOverlayHeight = 0
+		}
+	}
+
+	// drawOverlay renders the contextual-links block below the current cursor
+	// position and updates prevOverlayHeight with the number of rows written.
+	// Terminal width is sampled each call so the block adapts to window resizes.
+	drawOverlay := func() {
+		links := linkscan.Collect(last5)
+		termWidth := 80
+		if w, _, err := term.GetSize(os.Stdout.Fd()); err == nil && w > 0 {
+			termWidth = w
+		}
+		overlay := renderCLIOverlay(links, termWidth)
+		if overlay == "" {
+			return
+		}
+		fmt.Fprint(out, overlay)
+		prevOverlayHeight = strings.Count(overlay, "\n")
+	}
+
+	flush := func(final bool) {
+		if interactive {
+			eraseOverlay()
+		}
 		for _, cmd := range cmds {
 			lines := src.Logs(cmd)
 			start := seenLines[cmd]
 			prefix := prefixes[cmd]
 			for _, line := range lines[start:] {
 				fmt.Fprintf(out, "%s %s\n", prefix, line)
+				if interactive {
+					appendLast5(cmd, line)
+				}
 			}
 			seenLines[cmd] = len(lines)
+		}
+		if interactive && !final {
+			drawOverlay()
 		}
 	}
 
@@ -94,15 +156,98 @@ func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.
 	for {
 		select {
 		case <-ctx.Done():
-			flush()
+			flush(true)
 			return
 		case <-stopCh:
-			flush()
+			flush(true)
 			return
 		case <-ticker.C:
-			flush()
+			flush(false)
 		}
 	}
+}
+
+// Rounded-border characters matching Lipgloss's RoundedBorder, so the CLI
+// overlay looks consistent with the TUI panels.
+const (
+	borderTopLeft     = "╭"
+	borderTopRight    = "╮"
+	borderBottomLeft  = "╰"
+	borderBottomRight = "╯"
+	borderHoriz       = "─"
+	borderVert        = "│"
+	// borderColor is the same dim-grey used for borderNormal in the TUI (color 240).
+	borderColor = "\033[90m"
+)
+
+// titleInBorder embeds text into a top border line, e.g. "╭─── Title ───╮".
+func titleInBorder(title string, totalWidth int) string {
+	const pad = " " // one space on each side of the title
+	label := pad + title + pad
+	remaining := totalWidth - 2 - len(label) // 2 for corners
+	if remaining < 0 {
+		remaining = 0
+	}
+	left := remaining / 2
+	right := remaining - left
+	return borderTopLeft + strings.Repeat(borderHoriz, left) + label + strings.Repeat(borderHoriz, right) + borderTopRight
+}
+
+// renderCLIOverlay builds the contextual-links block for the CLI interactive
+// mode using a rounded border to match the TUI panel style. Returns an empty
+// string when there are no links. Each URL is clickable via OSC 8.
+func renderCLIOverlay(links []linkscan.Link, termWidth int) string {
+	if len(links) == 0 {
+		return ""
+	}
+	if termWidth < 10 {
+		termWidth = 10
+	}
+
+	// Content width = total width minus the two vertical border characters.
+	contentWidth := termWidth - 2
+
+	// Find the longest "[cmd]" label so rows can be right-aligned.
+	maxLabelLen := 0
+	for _, link := range links {
+		if l := len("[" + link.Command + "]"); l > maxLabelLen {
+			maxLabelLen = l
+		}
+	}
+
+	var b strings.Builder
+
+	// Top border with title embedded.
+	b.WriteString(borderColor + titleInBorder("Contextual links", termWidth) + ansiReset + "\n")
+
+	for i, link := range links {
+		label := "[" + link.Command + "]"
+		pad := strings.Repeat(" ", maxLabelLen-len(label))
+		color := cmdColorCodes[i%len(cmdColorCodes)]
+		coloredLabel := color + pad + label + ansiReset
+
+		urlWidth := contentWidth - maxLabelLen - 2 // 2 for the "  " separator
+		if urlWidth < 1 {
+			urlWidth = 1
+		}
+		displayURL := link.URL
+		if len(displayURL) > urlWidth {
+			displayURL = displayURL[:urlWidth-1] + "…"
+		}
+		// Right-pad to fill content width so the right border aligns.
+		rightPad := strings.Repeat(" ", urlWidth-len(displayURL))
+		// OSC 8 clickable hyperlink: full URL as target, display text as label.
+		clickable := "\x1b]8;;" + link.URL + "\x07" + displayURL + "\x1b]8;;\x07"
+
+		b.WriteString(borderColor + borderVert + ansiReset)
+		fmt.Fprintf(&b, "%s  %s%s", coloredLabel, clickable, rightPad)
+		b.WriteString(borderColor + borderVert + ansiReset + "\n")
+	}
+
+	// Bottom border.
+	b.WriteString(borderColor + borderBottomLeft + strings.Repeat(borderHoriz, contentWidth) + borderBottomRight + ansiReset + "\n")
+
+	return b.String()
 }
 
 // version is the build version, overridden at release time via -ldflags
@@ -335,12 +480,16 @@ func runRun(args []string) {
 		os.Exit(1)
 	}
 
+	// interactive is true when stdout is a terminal, enabling the sticky
+	// contextual-links overlay. When output is piped or redirected we stay plain.
+	interactive := term.IsTerminal(os.Stdout.Fd())
+
 	stopTail := make(chan struct{})
 	var tailWg sync.WaitGroup
 	tailWg.Add(1)
 	go func() {
 		defer tailWg.Done()
-		tailStartupLogs(timeoutCtx, client, envName, os.Stdout, stopTail)
+		tailStartupLogs(timeoutCtx, client, envName, os.Stdout, interactive, stopTail)
 	}()
 
 	running, err := daemon.WaitForEnvSettled(timeoutCtx, client, envName)

@@ -1531,3 +1531,96 @@ func TestRenderShutdown_whenQuitting_containsLogPanel(t *testing.T) {
 		t.Errorf("renderShutdown: expected log line in shutdown view, got:\n%s", view)
 	}
 }
+
+// ── Contextual links overlay ──────────────────────────────────────────────────
+
+func TestRender_whenLastLinesContainUrls_showsContextLinksBlock(t *testing.T) {
+	// Given — the selected env (alpha, first cursor pos) has commands svc-a and
+	// svc-b; add a URL in the last 5 lines of svc-a and a different one in svc-b.
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {"starting...", "Login at https://sso.example.com/auth"},
+		"svc-b": {"ready at http://localhost:8080"},
+	}
+	m := seed(New(ctrl))
+
+	// When
+	view := ansi.Strip(m.render())
+
+	// Then
+	if !strings.Contains(view, "Contextual links") {
+		t.Error("expected 'Contextual links' overlay in render output")
+	}
+	if !strings.Contains(view, "https://sso.example.com/auth") {
+		t.Error("expected sso URL in contextual links")
+	}
+	if !strings.Contains(view, "http://localhost:8080") {
+		t.Error("expected localhost URL in contextual links")
+	}
+	if !strings.Contains(view, "[svc-a]") {
+		t.Error("expected '[svc-a]' label in contextual links")
+	}
+	if !strings.Contains(view, "[svc-b]") {
+		t.Error("expected '[svc-b]' label in contextual links")
+	}
+}
+
+func TestRender_whenUrlAgesOutOfLast5Lines_dropsItFromOverlay(t *testing.T) {
+	// Given — URL is in position 0 (6 lines ago), followed by 5 plain lines that
+	// push it outside the contextLinksWindow. The URL may still appear in the
+	// viewport's scrolling log, but must not appear in the overlay.
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {
+			"Login at https://old.example.com",               // line 0 — outside window
+			"line 1", "line 2", "line 3", "line 4", "line 5", // 5 newer plain lines
+		},
+	}
+	m := seed(New(ctrl))
+
+	// When
+	view := ansi.Strip(m.render())
+
+	// Then — the URL aged out and the overlay header should be absent entirely
+	if strings.Contains(view, "Contextual links") {
+		t.Error("expected no 'Contextual links' overlay when URL is outside the window")
+	}
+}
+
+func TestRender_whenNoUrls_omitsContextLinksBlock(t *testing.T) {
+	// Given — default fake controller has plain log lines with no URLs
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	view := ansi.Strip(m.render())
+
+	// Then
+	if strings.Contains(view, "Contextual links") {
+		t.Error("expected no 'Contextual links' overlay when logs contain no URLs")
+	}
+}
+
+func TestRender_withContextLinks_doesNotExceedTerminalHeight(t *testing.T) {
+	// Given — multiple URLs so the overlay adds several rows; terminal is 40 rows.
+	ctrl := newFakeController()
+	ctrl.logs = map[string][]string{
+		"svc-a": {
+			"https://link1.example.com",
+			"https://link2.example.com",
+			"https://link3.example.com",
+		},
+	}
+	const termHeight = 40
+	m, _ := New(ctrl).Update(tea.WindowSizeMsg{Width: 120, Height: termHeight})
+
+	// When
+	view := m.(Model).render()
+
+	// Then — count rendered lines (the raw string, not stripped, so ANSI codes
+	// don't affect the split; what matters is the newline count).
+	lines := strings.Split(view, "\n")
+	if len(lines) > termHeight {
+		t.Errorf("render produced %d lines, exceeds terminal height %d", len(lines), termHeight)
+	}
+}

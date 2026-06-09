@@ -9,6 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/adericbourg/env-starter/internal/linkscan"
 )
 
 // stubLogSource implements logSource for tests.
@@ -65,7 +68,64 @@ func TestBuildPrefixes_cyclesColorsWhenMoreCommandsThanColors(t *testing.T) {
 	}
 }
 
-func TestTailStartupLogs_printsNewLines(t *testing.T) {
+// ── renderCLIOverlay ──────────────────────────────────────────────────────────
+
+func TestRenderCLIOverlay_ofEmptyLinks_returnsEmpty(t *testing.T) {
+	// Given / When
+	got := renderCLIOverlay(nil, 80)
+
+	// Then
+	if got != "" {
+		t.Errorf("renderCLIOverlay(nil) = %q, want empty", got)
+	}
+}
+
+func TestRenderCLIOverlay_ofSingleLink_containsBorderTitleAndUrl(t *testing.T) {
+	// Given
+	links := []linkscan.Link{{Command: "db", URL: "https://localhost:5432"}}
+
+	// When
+	got := renderCLIOverlay(links, 80)
+
+	// Then — rounded border corners, embedded title, command label, URL, OSC 8
+	if !strings.Contains(got, "╭") || !strings.Contains(got, "╰") {
+		t.Errorf("renderCLIOverlay: missing rounded border corners; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Contextual links") {
+		t.Errorf("renderCLIOverlay: missing title; got:\n%s", got)
+	}
+	if !strings.Contains(got, "[db]") {
+		t.Errorf("renderCLIOverlay: missing command label; got:\n%s", got)
+	}
+	if !strings.Contains(got, "https://localhost:5432") {
+		t.Errorf("renderCLIOverlay: missing URL; got:\n%s", got)
+	}
+	if !strings.Contains(got, "\x1b]8;;") {
+		t.Errorf("renderCLIOverlay: missing OSC 8 hyperlink; got:\n%s", got)
+	}
+}
+
+func TestRenderCLIOverlay_ofMultipleLinks_rendersAllRows(t *testing.T) {
+	// Given
+	links := []linkscan.Link{
+		{Command: "db", URL: "http://db.example.com"},
+		{Command: "proxy", URL: "https://proxy.example.com"},
+	}
+
+	// When
+	got := renderCLIOverlay(links, 80)
+
+	// Then — both commands and URLs appear
+	for _, want := range []string{"[db]", "[proxy]", "http://db.example.com", "https://proxy.example.com"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("renderCLIOverlay: missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+// ── tailStartupLogs ───────────────────────────────────────────────────────────
+
+func TestTailStartupLogs_whenNotInteractive_printsNewLines(t *testing.T) {
 	// Given
 	src := &stubLogSource{
 		commands: []string{"svc"},
@@ -79,7 +139,7 @@ func TestTailStartupLogs_printsNewLines(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tailStartupLogs(context.Background(), src, "myenv", &out, stopCh)
+		tailStartupLogs(context.Background(), src, "myenv", &out, false, stopCh)
 	}()
 
 	// When: stop immediately — the final flush on stopCh must capture all lines
@@ -98,7 +158,7 @@ func TestTailStartupLogs_printsNewLines(t *testing.T) {
 	}
 }
 
-func TestTailStartupLogs_performsFinalFlushOnStop(t *testing.T) {
+func TestTailStartupLogs_whenNotInteractive_performsFinalFlushOnStop(t *testing.T) {
 	// Given: initial logs present when the goroutine starts
 	src := &stubLogSource{
 		commands: []string{"worker"},
@@ -112,7 +172,7 @@ func TestTailStartupLogs_performsFinalFlushOnStop(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		tailStartupLogs(context.Background(), src, "e", &out, stopCh)
+		tailStartupLogs(context.Background(), src, "e", &out, false, stopCh)
 	}()
 
 	// Add a line and then stop — the final flush must capture it
@@ -124,6 +184,112 @@ func TestTailStartupLogs_performsFinalFlushOnStop(t *testing.T) {
 	output := out.String()
 	if !strings.Contains(output, "second") {
 		t.Errorf("tailStartupLogs: final flush missed late line; got:\n%s", output)
+	}
+}
+
+func TestTailStartupLogs_whenNotInteractive_printsPlainLinesNoAnsiOverlay(t *testing.T) {
+	// Given
+	src := &stubLogSource{
+		commands: []string{"svc"},
+		logs:     map[string][]string{"svc": {"Login at https://example.com/sso"}},
+	}
+
+	var out bytes.Buffer
+	stopCh := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tailStartupLogs(context.Background(), src, "e", &out, false, stopCh)
+	}()
+	close(stopCh)
+	wg.Wait()
+
+	// Then — no cursor-control sequences and no overlay header
+	output := out.String()
+	if strings.Contains(output, "\x1b[") && strings.Contains(output, "A\x1b[J") {
+		t.Errorf("tailStartupLogs(interactive=false): unexpected cursor-control sequence in output")
+	}
+	if strings.Contains(output, "Contextual links") {
+		t.Errorf("tailStartupLogs(interactive=false): unexpected overlay header in output")
+	}
+	// The URL itself should still appear as part of the plain log line
+	if !strings.Contains(output, "https://example.com/sso") {
+		t.Errorf("tailStartupLogs(interactive=false): expected URL in plain log line")
+	}
+}
+
+func TestTailStartupLogs_whenInteractiveAndUrlPresent_drawsStickyOverlay(t *testing.T) {
+	// Given
+	src := &stubLogSource{
+		commands: []string{"db"},
+		logs:     map[string][]string{"db": {"ready at https://localhost:5432/login"}},
+	}
+
+	var out bytes.Buffer
+	stopCh := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tailStartupLogs(context.Background(), src, "e", &out, true, stopCh)
+	}()
+	// Let one tick fire before stopping so the overlay is drawn
+	time.Sleep(300 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
+
+	// Then — overlay separators, the command label, the URL, and OSC 8 sequence
+	output := out.String()
+	if !strings.Contains(output, "Contextual links") {
+		t.Errorf("tailStartupLogs(interactive=true): expected 'Contextual links' in output; got:\n%s", output)
+	}
+	if !strings.Contains(output, "[db]") {
+		t.Errorf("tailStartupLogs(interactive=true): expected '[db]' label in overlay; got:\n%s", output)
+	}
+	if !strings.Contains(output, "https://localhost:5432/login") {
+		t.Errorf("tailStartupLogs(interactive=true): expected URL in overlay; got:\n%s", output)
+	}
+	// OSC 8 hyperlink sequence start
+	if !strings.Contains(output, "\x1b]8;;") {
+		t.Errorf("tailStartupLogs(interactive=true): expected OSC 8 hyperlink sequence in overlay; got:\n%s", output)
+	}
+}
+
+func TestTailStartupLogs_whenInteractive_clearsOverlayOnStop(t *testing.T) {
+	// Given — a URL so an overlay is drawn on the first tick
+	src := &stubLogSource{
+		commands: []string{"svc"},
+		logs:     map[string][]string{"svc": {"https://auth.example.com"}},
+	}
+
+	var out bytes.Buffer
+	stopCh := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		tailStartupLogs(context.Background(), src, "e", &out, true, stopCh)
+	}()
+	time.Sleep(300 * time.Millisecond)
+	close(stopCh)
+	wg.Wait()
+
+	// Then — the final output must end with a cursor-up+clear sequence (overlay
+	// erasure) followed by the log line(s) and no trailing overlay header.
+	output := out.String()
+	// The overlay must have been erased at some point (cursor-up sequence present)
+	if !strings.Contains(output, "\x1b[") {
+		t.Errorf("tailStartupLogs(interactive=true): expected cursor-control sequences in output")
+	}
+	// After stopping, no overlay header should trail the output
+	lastOverlayIdx := strings.LastIndex(output, "Contextual links")
+	lastLogLineIdx := strings.LastIndex(output, "https://auth.example.com")
+	if lastOverlayIdx > lastLogLineIdx {
+		t.Errorf("tailStartupLogs(interactive=true): overlay persists after final flush (overlay at %d, last log at %d)", lastOverlayIdx, lastLogLineIdx)
 	}
 }
 
