@@ -24,6 +24,7 @@
 
 ```sh
 brew install adericbourg/tap/env-starter
+brew trust --tap adericbourg/tap/env-starter
 ```
 
 This is the recommended path on macOS: Homebrew strips the `com.apple.quarantine` attribute on
