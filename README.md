@@ -150,6 +150,12 @@ env-starter run connect-order && echo "ready"
 
 ---
 
+## Shell completion
+
+Tab completion for subcommands, flags, and environment names is available for
+bash, zsh, and fish. See [docs/completion.md](docs/completion.md) for install
+instructions.
+
 ## Updating
 
 env-starter can keep itself up to date.

@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"embed"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,12 +19,16 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/adericbourg/env-starter/internal/completion"
 	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
 )
+
+//go:embed completions
+var completionFS embed.FS
 
 // logSource is the subset of daemon.ClientController used by tailStartupLogs.
 // Defined here so the function can be tested with a stub.
@@ -113,6 +118,14 @@ func main() {
 			// Hidden subcommand: build engine + reloadController from flags, then
 			// serve on socket. This is the process spawned by EnsureDaemon.
 			runDaemon()
+			return
+		case "__complete":
+			// Hidden subcommand invoked by shell completion scripts on every TAB.
+			// Prints candidates + a directive line; never starts the daemon.
+			runComplete(os.Args[2:])
+			return
+		case "completion":
+			runCompletion(os.Args[2:])
 			return
 		case "update":
 			runUpdate()
@@ -529,6 +542,7 @@ Commands:
   ps         Show running environments
   shutdown   Stop all environments and shut down the daemon
   update     Update env-starter to the latest version
+  completion Generate shell completion scripts (bash, zsh, fish)
   help       Show this help message
 
 Flags (default TUI and run):
@@ -538,6 +552,55 @@ Flags (default TUI and run):
 run flags:
   --timeout DURATION    Maximum time to wait for env to start (default: %s)
 `, 5*time.Minute)
+}
+
+// runCompletion implements "env-starter completion <shell>". It writes the
+// shell-specific completion script to stdout, suitable for sourcing or installing.
+func runCompletion(args []string) {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: env-starter completion <bash|zsh|fish>")
+		os.Exit(2)
+	}
+	shell := args[0]
+	data, err := completionFS.ReadFile("completions/env-starter." + shell)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "unknown shell %q: supported shells are bash, zsh, fish\n", shell)
+		os.Exit(2)
+	}
+	os.Stdout.Write(data)
+}
+
+// runComplete implements the hidden "__complete" subcommand invoked by shell
+// scripts on every TAB press. It resolves config offline (no daemon), computes
+// completion candidates, and prints them followed by a directive line.
+// Errors during config loading are silently ignored to degrade gracefully.
+func runComplete(words []string) {
+	// Scan words for --config / --config-overlay values so the config the user
+	// is working with is used as the source for environment names.
+	configFile := ""
+	configOverlay := ""
+	for i, w := range words {
+		if w == "--config" && i+1 < len(words) {
+			configFile = words[i+1]
+		}
+		if w == "--config-overlay" && i+1 < len(words) {
+			configOverlay = words[i+1]
+		}
+	}
+
+	var envNames []completion.NameDesc
+	if cfg, _, _, err := resolveConfig(configFile, configOverlay); err == nil {
+		envNames = make([]completion.NameDesc, len(cfg.Environments))
+		for i, env := range cfg.Environments {
+			envNames[i] = completion.NameDesc{Name: env.Name, Description: env.Description}
+		}
+	}
+
+	result := completion.Complete(words, envNames)
+	for _, c := range result.Candidates {
+		fmt.Println(c)
+	}
+	fmt.Printf(":%d\n", result.Directive)
 }
 
 // runUpdate implements the "env-starter update" subcommand. It checks whether
