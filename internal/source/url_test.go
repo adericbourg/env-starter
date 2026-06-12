@@ -203,6 +203,33 @@ func TestURL_Fetch_whenConcurrentSameURL_noError(t *testing.T) {
 	}
 }
 
+func TestURL_Fetch_whenBodyExceedsLimit_returnsErrorAndRemovesFile(t *testing.T) {
+	// Given a download cap smaller than the served body.
+	prev := maxDownloadBytes
+	maxDownloadBytes = 8
+	t.Cleanup(func() { maxDownloadBytes = prev })
+
+	cacheBase := t.TempDir()
+	u := &URL{
+		URL:       "https://example.com/big.tar.gz",
+		cacheBase: cacheBase,
+		httpGet:   fakeHTTPGet([]byte("0123456789abcdef")), // 16 bytes > 8
+	}
+
+	// When
+	_, err := u.Fetch(context.Background())
+
+	// Then
+	if err == nil {
+		t.Fatal("expected an error when the body exceeds the size limit, got nil")
+	}
+	dir, _ := u.cacheDir()
+	dest := filepath.Join(dir, "big.tar.gz")
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("oversize file was not removed: %s", dest)
+	}
+}
+
 func TestURL_Fetch_withNoChecksum_downloadsSuccessfully(t *testing.T) {
 	// Given
 	content := []byte("no checksum needed")

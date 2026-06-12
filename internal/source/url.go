@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +15,11 @@ import (
 
 // maxRedirects bounds how many redirect hops a download may follow.
 const maxRedirects = 10
+
+// maxDownloadBytes caps the size of a downloaded file to avoid unbounded disk
+// (and, previously, memory) use from a malicious or misbehaving server. It is a
+// var so tests can lower it.
+var maxDownloadBytes int64 = 2 << 30 // 2 GiB
 
 // URL is a Source that downloads a file into the OS cache directory and returns
 // that directory. An optional checksum (currently only sha256) is verified; a
@@ -144,7 +150,10 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 }
 
 // writeAndVerify streams body to destPath and, when a checksum is configured,
-// verifies it. If verification fails the bad file is removed.
+// verifies it. The body is bounded by maxDownloadBytes and the digest is
+// computed incrementally, so neither the file nor the hash is buffered in
+// memory. If the size limit is exceeded or verification fails, the bad file is
+// removed.
 func (u *URL) writeAndVerify(body io.Reader, destPath string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
@@ -153,23 +162,31 @@ func (u *URL) writeAndVerify(body io.Reader, destPath string) error {
 	defer f.Close()
 
 	var writer io.Writer = f
-	var hasher *sha256HashWriter
+	var hasher hash.Hash
 
 	if u.ChecksumAlg != "" {
 		if u.ChecksumAlg != "sha256" {
 			return fmt.Errorf("unsupported checksum algorithm: %s", u.ChecksumAlg)
 		}
-		hasher = newSHA256HashWriter(f)
-		writer = hasher
+		hasher = sha256.New()
+		writer = io.MultiWriter(f, hasher)
 	}
 
-	if _, err := io.Copy(writer, body); err != nil {
+	// Read one byte past the cap so an exactly-at-limit file still succeeds while
+	// anything larger is detected.
+	limited := io.LimitReader(body, maxDownloadBytes+1)
+	n, err := io.Copy(writer, limited)
+	if err != nil {
 		os.Remove(destPath)
 		return fmt.Errorf("writing to %s: %w", destPath, err)
 	}
+	if n > maxDownloadBytes {
+		os.Remove(destPath)
+		return fmt.Errorf("download from %s exceeds the %d byte limit", u.URL, maxDownloadBytes)
+	}
 
 	if hasher != nil {
-		got := hasher.HexSum()
+		got := hex.EncodeToString(hasher.Sum(nil))
 		if got != u.ChecksumValue {
 			os.Remove(destPath)
 			return fmt.Errorf("checksum mismatch for %s: got %s, want %s", destPath, got, u.ChecksumValue)
@@ -177,31 +194,4 @@ func (u *URL) writeAndVerify(body io.Reader, destPath string) error {
 	}
 
 	return nil
-}
-
-// sha256HashWriter wraps an io.Writer and computes a SHA-256 digest as data is written.
-type sha256HashWriter struct {
-	w   io.Writer
-	h   [sha256.Size]byte // reuse via hash.Hash
-	sum []byte
-}
-
-func newSHA256HashWriter(w io.Writer) *sha256HashWriter {
-	hw := &sha256HashWriter{w: w}
-	return hw
-}
-
-// Write passes data through to the underlying writer while accumulating the hash.
-func (hw *sha256HashWriter) Write(p []byte) (int, error) {
-	n, err := hw.w.Write(p)
-	if n > 0 {
-		hw.sum = append(hw.sum, p[:n]...)
-	}
-	return n, err
-}
-
-// HexSum returns the hex-encoded SHA-256 digest of all bytes written.
-func (hw *sha256HashWriter) HexSum() string {
-	digest := sha256.Sum256(hw.sum)
-	return hex.EncodeToString(digest[:])
 }
