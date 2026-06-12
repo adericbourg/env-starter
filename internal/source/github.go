@@ -168,6 +168,13 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 	target := dir
 	if g.Subdir != "" {
 		target = filepath.Join(dir, g.Subdir)
+		// Defense in depth: ensure the joined path stays within the clone dir, so
+		// a "../.." subdir cannot escape the cache even if config validation is
+		// bypassed by a direct caller.
+		rel, err := filepath.Rel(dir, target)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("subdir %q escapes the source directory for %s", g.Subdir, g.Repo)
+		}
 		if _, err := os.Stat(target); err != nil {
 			return "", fmt.Errorf("subdir %q does not exist in %s (branch %s): %w",
 				g.Subdir, g.Repo, g.effectiveBranch(), err)

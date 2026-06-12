@@ -361,6 +361,89 @@ func TestWarnings_whenURLSourceHasChecksum_returnsNone(t *testing.T) {
 	}
 }
 
+func TestValidate_whenGitHubRepoMalformed_returnsError(t *testing.T) {
+	cases := map[string]string{
+		"no slash":          "ownerrepo",
+		"leading dash":      "-owner/repo",
+		"shell metachar":    "owner/repo;rm -rf",
+		"path traversal":    "../../etc/repo",
+		"too many segments": "owner/repo/extra",
+	}
+	for name, repo := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Given
+			cfg := &Config{Commands: []Command{{
+				Name: "c", Type: "service", Run: "x",
+				Source: Source{GitHub: &GitHub{Repo: repo, Branch: "main"}},
+			}}}
+			// When / Then
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for repo %q, got nil", repo)
+			}
+		})
+	}
+}
+
+func TestValidate_whenGitHubBranchUnsafe_returnsError(t *testing.T) {
+	cases := map[string]string{
+		"leading dash":   "-x",
+		"shell metachar": "main;echo",
+		"space":          "feat branch",
+	}
+	for name, branch := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Given
+			cfg := &Config{Commands: []Command{{
+				Name: "c", Type: "service", Run: "x",
+				Source: Source{GitHub: &GitHub{Repo: "owner/repo", Branch: branch}},
+			}}}
+			// When / Then
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for branch %q, got nil", branch)
+			}
+		})
+	}
+}
+
+func TestValidate_whenSubdirEscapes_returnsError(t *testing.T) {
+	cases := map[string]string{
+		"parent traversal": "../secrets",
+		"nested traversal": "scripts/../../etc",
+		"absolute path":    "/etc",
+	}
+	for name, subdir := range cases {
+		t.Run(name, func(t *testing.T) {
+			// Given
+			cfg := &Config{Commands: []Command{{
+				Name: "c", Type: "service", Run: "x",
+				Source: Source{GitHub: &GitHub{Repo: "owner/repo", Branch: "main"}, Subdir: subdir},
+			}}}
+			// When / Then
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for subdir %q, got nil", subdir)
+			}
+		})
+	}
+}
+
+func TestValidate_whenGitHubSourceWellFormed_returnsNil(t *testing.T) {
+	// Given a valid repo, branch and nested subdir.
+	cfg := &Config{
+		Commands: []Command{{
+			Name: "c", Type: "service", Run: "x",
+			Source: Source{
+				GitHub: &GitHub{Repo: "acme.org/infra_repo-1", Branch: "release/1.x"},
+				Subdir: "scripts/db",
+			},
+		}},
+		Environments: []Environment{{Name: "dev", Workflow: []WorkflowStep{{Command: "c"}}}},
+	}
+	// When / Then
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidate_whenReadinessHasMultipleProbes_returnsError(t *testing.T) {
 	// Given
 	cfg := &Config{

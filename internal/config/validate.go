@@ -4,8 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
+	"regexp"
 	"strings"
 )
+
+// repoPattern matches a GitHub "owner/name" slug. Both segments are restricted
+// to characters GitHub actually allows, which also keeps the value from being
+// interpreted as a flag or shell metacharacter when handed to git/gh.
+var repoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+$`)
+
+// branchPattern matches a safe git ref name: ordinary ref characters only, and
+// never starting with '-' (which git would parse as a flag).
+var branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
 // Validate checks the Config for correctness. It returns a descriptive error on
 // the first violation found, or nil if everything is valid.
@@ -102,6 +113,34 @@ func validateSource(cmdName string, src Source) error {
 		if parsed.Scheme != "https" {
 			return fmt.Errorf("command %q: url source must use https, got scheme %q", cmdName, parsed.Scheme)
 		}
+	}
+	if src.GitHub != nil {
+		if !repoPattern.MatchString(src.GitHub.Repo) {
+			return fmt.Errorf("command %q: github repo %q must be of the form owner/name (letters, digits, '.', '_', '-')", cmdName, src.GitHub.Repo)
+		}
+		if src.GitHub.Branch != "" && (!branchPattern.MatchString(src.GitHub.Branch) || strings.HasPrefix(src.GitHub.Branch, "-")) {
+			return fmt.Errorf("command %q: github branch %q is not a valid ref name", cmdName, src.GitHub.Branch)
+		}
+	}
+	if err := validateSubdir(cmdName, src.Subdir); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateSubdir rejects a subdir that is absolute or escapes the source
+// directory. filepath.Join would otherwise let "../.." reach outside the cache.
+func validateSubdir(cmdName, subdir string) error {
+	if subdir == "" {
+		return nil
+	}
+	if path.IsAbs(subdir) || strings.HasPrefix(subdir, "/") {
+		return fmt.Errorf("command %q: subdir %q must be relative", cmdName, subdir)
+	}
+	// Clean with a fixed root and confirm it stays under it.
+	cleaned := path.Clean("/" + subdir)
+	if cleaned == "/" || strings.HasPrefix(cleaned, "/../") || strings.Contains(subdir, "..") {
+		return fmt.Errorf("command %q: subdir %q must not escape the source directory", cmdName, subdir)
 	}
 	return nil
 }
