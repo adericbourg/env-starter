@@ -10,6 +10,7 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -199,7 +200,7 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 	}
 
 	// 3. Extract the binary from the archive into memory.
-	binaryReader, err := extractBinaryFromTarGz(archivePath, runtime.GOOS)
+	binaryReader, err := extractBinary(archivePath, runtime.GOOS)
 	if err != nil {
 		return fmt.Errorf("extracting binary: %w", err)
 	}
@@ -263,14 +264,40 @@ func (c *Client) downloadWithVerify(ctx context.Context, url, destPath, expected
 	return nil
 }
 
-// extractBinaryFromTarGz opens the tar.gz at archivePath, finds the binary
-// entry, reads it into a buffer, and returns it as an io.Reader.
-func extractBinaryFromTarGz(archivePath, goos string) (io.Reader, error) {
+// maxBinaryBytes caps how much of an archive entry is read into memory, guarding
+// against a decompression bomb. It is a var so tests can lower it.
+var maxBinaryBytes int64 = 512 << 20 // 512 MiB
+
+// extractBinary extracts the env-starter binary from the release archive,
+// selecting the archive format from the platform: a .zip on Windows (matching
+// goreleaser's format_overrides) and a .tar.gz elsewhere.
+func extractBinary(archivePath, goos string) (io.Reader, error) {
 	binaryName := "env-starter"
 	if goos == "windows" {
 		binaryName = "env-starter.exe"
 	}
+	if goos == "windows" || strings.HasSuffix(archivePath, ".zip") {
+		return extractBinaryFromZip(archivePath, binaryName)
+	}
+	return extractBinaryFromTarGz(archivePath, binaryName)
+}
 
+// readCapped copies r into a buffer, refusing to read more than maxBinaryBytes.
+func readCapped(r io.Reader) (*bytes.Buffer, error) {
+	var buf bytes.Buffer
+	n, err := io.Copy(&buf, io.LimitReader(r, maxBinaryBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("reading binary from archive: %w", err)
+	}
+	if n > maxBinaryBytes {
+		return nil, fmt.Errorf("archived binary exceeds the %d byte limit", maxBinaryBytes)
+	}
+	return &buf, nil
+}
+
+// extractBinaryFromTarGz opens the tar.gz at archivePath, finds the named
+// binary entry, reads it (size-capped) into a buffer, and returns it.
+func extractBinaryFromTarGz(archivePath, binaryName string) (io.Reader, error) {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
@@ -293,11 +320,34 @@ func extractBinaryFromTarGz(archivePath, goos string) (io.Reader, error) {
 			return nil, fmt.Errorf("reading tar: %w", err)
 		}
 		if filepath.Base(hdr.Name) == binaryName {
-			var buf bytes.Buffer
-			if _, err := io.Copy(&buf, tr); err != nil {
-				return nil, fmt.Errorf("reading binary from archive: %w", err)
-			}
-			return &buf, nil
+			return readCapped(tr)
 		}
 	}
+}
+
+// extractBinaryFromZip opens the zip at archivePath, finds the named binary
+// entry, reads it (size-capped) into a buffer, and returns it.
+func extractBinaryFromZip(archivePath, binaryName string) (io.Reader, error) {
+	zr, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("opening zip archive: %w", err)
+	}
+	defer zr.Close()
+
+	for _, file := range zr.File {
+		if filepath.Base(file.Name) != binaryName {
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			return nil, fmt.Errorf("opening zip entry: %w", err)
+		}
+		buf, err := readCapped(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		return buf, nil
+	}
+	return nil, fmt.Errorf("binary %q not found in archive", binaryName)
 }

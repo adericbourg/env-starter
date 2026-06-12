@@ -2,15 +2,18 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 )
@@ -210,6 +213,68 @@ func buildTarGz(t *testing.T, binaryName string, content []byte) []byte {
 		t.Fatalf("closing gzip writer: %v", err)
 	}
 	return buf.Bytes()
+}
+
+// buildZip creates an in-memory zip archive containing a single file named
+// binaryName with the given content.
+func buildZip(t *testing.T, binaryName string, content []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create(binaryName)
+	if err != nil {
+		t.Fatalf("creating zip entry: %v", err)
+	}
+	if _, err := w.Write(content); err != nil {
+		t.Fatalf("writing zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("closing zip writer: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestExtractBinary_fromZip_returnsBinaryContent(t *testing.T) {
+	// Given a Windows-style .zip archive on disk.
+	content := []byte("windows binary bytes")
+	archive := buildZip(t, "env-starter.exe", content)
+	path := filepath.Join(t.TempDir(), "env-starter_1.0.0_windows_amd64.zip")
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatalf("writing archive: %v", err)
+	}
+
+	// When
+	r, err := extractBinary(path, "windows")
+	if err != nil {
+		t.Fatalf("extractBinary: %v", err)
+	}
+
+	// Then
+	got, _ := io.ReadAll(r)
+	if !bytes.Equal(got, content) {
+		t.Errorf("extracted content = %q, want %q", got, content)
+	}
+}
+
+func TestExtractBinary_whenEntryExceedsLimit_returnsError(t *testing.T) {
+	// Given a tiny size cap and an archive entry larger than it.
+	prev := maxBinaryBytes
+	maxBinaryBytes = 4
+	t.Cleanup(func() { maxBinaryBytes = prev })
+
+	archive := buildTarGz(t, "env-starter", []byte("0123456789")) // 10 bytes > 4
+	path := filepath.Join(t.TempDir(), "env-starter_1.0.0_linux_amd64.tar.gz")
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatalf("writing archive: %v", err)
+	}
+
+	// When
+	_, err := extractBinary(path, "linux")
+
+	// Then
+	if err == nil {
+		t.Fatal("expected an error when the entry exceeds the size limit, got nil")
+	}
 }
 
 func TestApply_happyPath_replacesBinary(t *testing.T) {
