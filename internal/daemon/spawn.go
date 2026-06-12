@@ -89,7 +89,10 @@ func EnsureDaemon(ctx context.Context, socketPath, lockPath, configFile, configO
 	}
 
 	// Step 2a: acquire an exclusive flock on the lock file.
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	// 0o700: this dir holds the daemon socket, lock, and log. Restricting it to
+	// the owner closes the brief window between net.Listen creating the socket and
+	// the server chmod'ing it to 0600 — another local user cannot even traverse in.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, fmt.Errorf("daemon: ensure: create lock dir: %w", err)
 	}
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
@@ -184,7 +187,7 @@ func spawnDaemon(configFile, configOverlay string) error {
 	if err != nil {
 		return fmt.Errorf("daemon log path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return fmt.Errorf("create daemon log dir: %w", err)
 	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
