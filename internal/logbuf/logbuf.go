@@ -141,10 +141,12 @@ func (w *Writer) Close() error {
 // OpenFile creates any missing parent directories and opens path for writing
 // (creating or truncating it), returning the file as an io.WriteCloser.
 func OpenFile(path string) (io.WriteCloser, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// Owner-only perms: command output can contain secrets and must not be
+	// readable by other local users.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 }
 
 // OpenFileAppend creates any missing parent directories and opens path for
@@ -152,8 +154,8 @@ func OpenFile(path string) (io.WriteCloser, error) {
 // Unlike OpenFile it does not truncate existing content, so subsequent phases
 // (e.g. teardown) can be appended after the main run's output.
 func OpenFileAppend(path string) (io.WriteCloser, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 }

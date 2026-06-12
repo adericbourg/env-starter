@@ -3,6 +3,7 @@ package logbuf
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -280,6 +281,39 @@ func TestOpenFile_createsMissingDirsAndFile(t *testing.T) {
 	}
 	if string(got) != "hello" {
 		t.Errorf("file content = %q, want %q", string(got), "hello")
+	}
+}
+
+func TestOpenFile_createsOwnerOnlyFileAndDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix file mode bits are not meaningful on Windows")
+	}
+	// Given a log path whose parent directory does not yet exist.
+	dir := t.TempDir()
+	logDir := filepath.Join(dir, "logs")
+	path := filepath.Join(logDir, "cmd.log")
+
+	// When
+	wc, err := OpenFile(path)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	wc.Close()
+
+	// Then the log file is owner read/write only, and its dir owner-only.
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat file: %v", err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Errorf("log file mode = %o, want 600", perm)
+	}
+	di, err := os.Stat(logDir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if perm := di.Mode().Perm(); perm != 0o700 {
+		t.Errorf("log dir mode = %o, want 700", perm)
 	}
 }
 
