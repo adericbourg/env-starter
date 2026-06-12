@@ -134,6 +134,23 @@ func TestWrite_multiLineInput_splitsIntoSeparateRingLines(t *testing.T) {
 	}
 }
 
+func TestWrite_sanitizesTerminalEscapesInRing(t *testing.T) {
+	// Given output carrying an OSC 52 clipboard-write escape and a BEL.
+	r := NewRing(10)
+	w := NewWriter(r, nil)
+
+	// When
+	if _, err := w.Write([]byte("safe\x1b]52;c;ZXZpbA==\x07text\x07\n")); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Then the ring line keeps the visible text but not the control sequences.
+	lines := r.Lines()
+	if len(lines) != 1 || lines[0] != "safetext" {
+		t.Errorf("ring lines = %v, want [\"safetext\"]", lines)
+	}
+}
+
 func TestWrite_partialLineThenClose_buffersAndFlushesTail(t *testing.T) {
 	// Given
 	r := NewRing(10)

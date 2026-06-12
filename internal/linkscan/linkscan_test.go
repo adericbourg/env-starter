@@ -21,6 +21,20 @@ func TestExtract_ofPlainHttpUrl_returnsUrl(t *testing.T) {
 	}
 }
 
+func TestExtract_stripsControlCharactersFromUrl(t *testing.T) {
+	// Given a URL with an embedded BEL (an OSC terminator) and a DEL.
+	line := "see https://example.com/\x07path\x7fend now"
+
+	// When
+	got := Extract(line)
+
+	// Then the control characters are removed from the extracted URL.
+	want := []string{"https://example.com/pathend"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Extract(%q) = %v, want %v", line, got, want)
+	}
+}
+
 func TestExtract_ofHttpsUrl_returnsUrl(t *testing.T) {
 	// Given
 	line := "Login at https://sso.example.com/auth?token=abc123"

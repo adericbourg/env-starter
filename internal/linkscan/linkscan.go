@@ -42,9 +42,22 @@ func Extract(line string) []string {
 	}
 	out := make([]string, 0, len(matches))
 	for _, m := range matches {
-		out = append(out, strings.TrimRight(m, trailingPunct))
+		out = append(out, stripControl(strings.TrimRight(m, trailingPunct)))
 	}
 	return out
+}
+
+// stripControl removes C0 control characters and DEL from s. URLs are later
+// embedded into OSC 8 hyperlink escapes; a stray control byte (notably BEL,
+// an OSC terminator) could otherwise break out of the hyperlink envelope and
+// inject a terminal sequence.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // Collect scans the provided tagged lines (oldest first) and returns the

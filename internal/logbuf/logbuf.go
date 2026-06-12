@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/adericbourg/env-starter/internal/termsafe"
 )
 
 const defaultCapacity = 1000
@@ -112,7 +114,9 @@ func (w *Writer) Write(p []byte) (int, error) {
 		line := string(b[:idx])
 		// Advance past the newline.
 		w.pending.Next(idx + 1)
-		w.ring.Add(line)
+		// Neutralize terminal control sequences from (untrusted) command output
+		// before it reaches the in-memory ring that the TUI renders live.
+		w.ring.Add(termsafe.Line(line))
 	}
 
 	if fileErr != nil {
@@ -128,7 +132,7 @@ func (w *Writer) Close() error {
 	defer w.mu.Unlock()
 
 	if w.pending.Len() > 0 {
-		w.ring.Add(w.pending.String())
+		w.ring.Add(termsafe.Line(w.pending.String()))
 		w.pending.Reset()
 	}
 
