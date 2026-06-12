@@ -370,3 +370,107 @@ func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
 		t.Error("expected error for checksum mismatch")
 	}
 }
+
+// serveRelease starts a test server exposing checksums.txt (+ optional .sig)
+// and the platform archive at the deterministic release download paths.
+func serveRelease(t *testing.T, tag, archiveName string, archive, checksums, sig []byte) *httptest.Server {
+	t.Helper()
+	base := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/", tag)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case base + "checksums.txt":
+			w.Write(checksums) //nolint:errcheck
+		case base + "checksums.txt.sig":
+			if sig == nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Write(sig) //nolint:errcheck
+		case base + archiveName:
+			w.Write(archive) //nolint:errcheck
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestApply_withValidSignature_replacesBinary(t *testing.T) {
+	// Given a signed checksums file and a configured public key.
+	tag := "v1.2.3"
+	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	binaryName := "env-starter"
+	if runtime.GOOS == "windows" {
+		binaryName = "env-starter.exe"
+	}
+	binaryContent := []byte("signed binary content")
+	archiveBytes := buildTarGz(t, binaryName, binaryContent)
+	digest := sha256.Sum256(archiveBytes)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
+	pub, sig := signBlob(t, checksums)
+
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+
+	targetFile, err := os.CreateTemp(t.TempDir(), "env-starter-test-*")
+	if err != nil {
+		t.Fatalf("creating temp target: %v", err)
+	}
+	targetFile.Close()
+
+	c := &Client{webBaseURL: srv.URL, targetPath: targetFile.Name(), verifyKeyPEM: pub}
+
+	// When
+	if err := c.Apply(context.Background(), Release{TagName: tag}); err != nil {
+		t.Fatalf("Apply returned error: %v", err)
+	}
+
+	// Then
+	got, _ := os.ReadFile(targetFile.Name())
+	if !bytes.Equal(got, binaryContent) {
+		t.Errorf("target content = %q, want %q", got, binaryContent)
+	}
+}
+
+func TestApply_withInvalidSignature_returnsError(t *testing.T) {
+	// Given a checksums file whose signature does not match the configured key.
+	tag := "v1.2.3"
+	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archiveBytes := buildTarGz(t, "env-starter", []byte("x"))
+	digest := sha256.Sum256(archiveBytes)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
+	pub, _ := signBlob(t, checksums)
+	_, wrongSig := signBlob(t, []byte("a different message"))
+
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, wrongSig)
+	c := &Client{webBaseURL: srv.URL, verifyKeyPEM: pub}
+
+	// When
+	err := c.Apply(context.Background(), Release{TagName: tag})
+
+	// Then
+	if err == nil {
+		t.Fatal("expected Apply to fail with an invalid checksums signature, got nil")
+	}
+}
+
+func TestApply_whenKeyConfiguredButSignatureMissing_returnsError(t *testing.T) {
+	// Given a configured key but no signature published in the release.
+	tag := "v1.2.3"
+	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archiveBytes := buildTarGz(t, "env-starter", []byte("x"))
+	digest := sha256.Sum256(archiveBytes)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
+	pub, _ := signBlob(t, checksums)
+
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, nil) // no .sig served
+	c := &Client{webBaseURL: srv.URL, verifyKeyPEM: pub}
+
+	// When
+	err := c.Apply(context.Background(), Release{TagName: tag})
+
+	// Then
+	if err == nil {
+		t.Fatal("expected Apply to fail closed when the signature is missing, got nil")
+	}
+}

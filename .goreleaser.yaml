@@ -63,6 +63,21 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# Sign checksums.txt with cosign so the self-updater can authenticate a release,
+# not merely trust TLS to GitHub. Requires COSIGN_PRIVATE_KEY and COSIGN_PASSWORD
+# in the release environment; the matching public key is embedded in the binary
+# (internal/update/verify.go). See docs/releasing.md.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    output: true
+    args:
+      - sign-blob
+      - "--key=env://COSIGN_PRIVATE_KEY"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+
 changelog:
   disable: true
 

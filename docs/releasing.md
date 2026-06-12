@@ -1,0 +1,52 @@
+# Releasing
+
+Releases are cut by the **Release** GitHub Actions workflow (`workflow_dispatch`),
+which tags a new version and runs GoReleaser to build archives, publish the
+GitHub Release, update the Homebrew tap, and **sign `checksums.txt` with cosign**.
+
+The self-updater (`env-starter update` and the startup prompt) verifies that
+`checksums.txt` was signed by the project key before trusting any digest in it.
+This means a tampered or swapped release cannot be installed even if the TLS
+connection to GitHub is compromised.
+
+## One-time signing setup
+
+Until the signing key is configured, releases are still produced but the
+self-updater falls back to TLS-only integrity and prints a warning. To enable
+authenticated updates:
+
+1. **Generate a cosign keypair** (keep `cosign.key` secret, never commit it):
+
+   ```sh
+   cosign generate-key-pair
+   # produces cosign.key (private, password-protected) and cosign.pub (public)
+   ```
+
+2. **Add repository secrets** (Settings → Secrets and variables → Actions):
+   - `COSIGN_PRIVATE_KEY` — the full contents of `cosign.key`
+   - `COSIGN_PASSWORD` — the password chosen when generating the key
+
+3. **Embed the public key** in the binary: paste the contents of `cosign.pub`
+   into the `cosignPublicKeyPEM` constant in
+   [`internal/update/verify.go`](../internal/update/verify.go), commit, and
+   push. While this constant is empty, signature verification is skipped.
+
+4. **Cut a release** via the Release workflow. GoReleaser will publish
+   `checksums.txt` alongside `checksums.txt.sig`.
+
+## Verifying a release manually
+
+```sh
+cosign verify-blob \
+  --key cosign.pub \
+  --signature checksums.txt.sig \
+  checksums.txt
+```
+
+## Key rotation
+
+If the key is rotated, update both the `COSIGN_PRIVATE_KEY`/`COSIGN_PASSWORD`
+secrets and the embedded `cosignPublicKeyPEM`. Clients on an old version still
+trust the old key until they update to a build carrying the new one, so publish
+at least one release signed with the old key after rotating, or coordinate a
+manual reinstall.

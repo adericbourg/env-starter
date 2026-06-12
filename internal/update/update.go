@@ -56,6 +56,17 @@ type Client struct {
 	// targetPath overrides the binary replacement path for tests.
 	// Defaults to os.Executable().
 	targetPath string
+
+	// verifyKeyPEM overrides the embedded cosign public key in tests.
+	// Defaults to cosignPublicKeyPEM.
+	verifyKeyPEM string
+}
+
+func (c *Client) effectiveVerifyKey() string {
+	if c.verifyKeyPEM != "" {
+		return c.verifyKeyPEM
+	}
+	return cosignPublicKeyPEM
 }
 
 // New returns a Client configured for production use.
@@ -186,6 +197,11 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 		return fmt.Errorf("reading checksums: %w", err)
 	}
 
+	// 1b. Authenticate checksums.txt before trusting any digest in it.
+	if err := c.verifyChecksums(ctx, tmpDir, checksumsURL, checksumsContent); err != nil {
+		return err
+	}
+
 	archiveName, expectedDigest, err := findArchive(checksumsContent, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		return fmt.Errorf("finding platform archive: %w", err)
@@ -212,6 +228,34 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 	}
 	if err := selfupdate.Apply(binaryReader, opts); err != nil {
 		return fmt.Errorf("applying update: %w", err)
+	}
+	return nil
+}
+
+// verifyChecksums authenticates checksumsContent against its detached cosign
+// signature (checksums.txt.sig in the same release). When an embedded public
+// key is configured, a missing or invalid signature is a hard failure (fail
+// closed). When no key is configured, it warns and falls back to TLS-only
+// integrity so existing releases keep working until signing is set up.
+func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL string, checksumsContent []byte) error {
+	pubKey := c.effectiveVerifyKey()
+	if pubKey == "" {
+		fmt.Fprintln(os.Stderr,
+			"warning: update signature verification is not configured; the download is trusted on TLS alone")
+		return nil
+	}
+
+	sigURL := checksumsURL + ".sig"
+	sigPath := filepath.Join(tmpDir, "checksums.txt.sig")
+	if err := c.downloadTo(ctx, sigURL, sigPath); err != nil {
+		return fmt.Errorf("downloading checksums signature: %w", err)
+	}
+	sig, err := os.ReadFile(sigPath)
+	if err != nil {
+		return fmt.Errorf("reading checksums signature: %w", err)
+	}
+	if err := verifyBlobSignature(pubKey, checksumsContent, sig); err != nil {
+		return fmt.Errorf("authenticating release: %w", err)
 	}
 	return nil
 }

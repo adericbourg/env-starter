@@ -186,6 +186,12 @@ env-starter update
 Downloads and installs the latest release if a newer version is available;
 prints `env-starter <version> is already up to date` and exits otherwise.
 
+The downloaded archive is sha256-verified against `checksums.txt`, which is
+itself cosign-signed and verified against the public key embedded in the binary
+before any digest is trusted — so an update cannot be installed from a tampered
+release even if the connection to GitHub is compromised. See
+[docs/releasing.md](docs/releasing.md) for the signing setup.
+
 ---
 
 ## Configuration example

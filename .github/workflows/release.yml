@@ -29,6 +29,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
       - name: Test
         run: go test ./...
 
@@ -71,3 +74,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
