@@ -7,9 +7,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 )
+
+// maxRedirects bounds how many redirect hops a download may follow.
+const maxRedirects = 10
 
 // URL is a Source that downloads a file into the OS cache directory and returns
 // that directory. An optional checksum (currently only sha256) is verified; a
@@ -51,14 +55,46 @@ func (u *URL) cacheDir() (string, error) {
 	return filepath.Join(base, "env-starter", subName), nil
 }
 
-func defaultHTTPGet(_ context.Context, url string) (io.ReadCloser, error) {
-	resp, err := http.Get(url) //nolint:noctx // intentional: real fallback ignores ctx for simplicity
+// validateHTTPSURL rejects any URL that is not served over https, so that a
+// downloaded artifact cannot be served (or tampered with) over plaintext http.
+func validateHTTPSURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("url source must use https, got scheme %q in %q", parsed.Scheme, raw)
+	}
+	return nil
+}
+
+// checkHTTPSRedirect is the redirect policy for download requests: every hop
+// must stay on https (no downgrade to http) and the chain is bounded.
+func checkHTTPSRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing redirect to non-https URL %q", req.URL.String())
+	}
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxRedirects)
+	}
+	return nil
+}
+
+// downloadClient follows only https redirects, up to maxRedirects hops.
+var downloadClient = &http.Client{CheckRedirect: checkHTTPSRedirect}
+
+func defaultHTTPGet(ctx context.Context, rawURL string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := downloadClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP GET %s returned status %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("HTTP GET %s returned status %d", rawURL, resp.StatusCode)
 	}
 	return resp.Body, nil
 }
@@ -67,6 +103,10 @@ func defaultHTTPGet(_ context.Context, url string) (io.ReadCloser, error) {
 // Concurrent Fetch calls for the same URL serialize so that writes to the
 // destination file do not interleave.
 func (u *URL) Fetch(ctx context.Context) (string, error) {
+	if err := validateHTTPSURL(u.URL); err != nil {
+		return "", err
+	}
+
 	dir, err := u.cacheDir()
 	if err != nil {
 		return "", err

@@ -22,9 +22,9 @@ func fakeHTTPGet(data []byte) func(context.Context, string) (io.ReadCloser, erro
 }
 
 func TestURL_Fetch_downloadsFileIntoCache(t *testing.T) {
-	// Given
+	// Given an HTTPS test server serving a file.
 	content := []byte("hello world")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(content) //nolint:errcheck
 	}))
 	defer srv.Close()
@@ -33,6 +33,9 @@ func TestURL_Fetch_downloadsFileIntoCache(t *testing.T) {
 	u := &URL{
 		URL:       srv.URL + "/file.txt",
 		cacheBase: cacheBase,
+		// Use the test server's client so its self-signed cert is trusted; this
+		// still exercises the real download/redirect path in defaultHTTPGet.
+		httpGet: clientHTTPGet(srv.Client()),
 	}
 
 	// When
@@ -52,6 +55,66 @@ func TestURL_Fetch_downloadsFileIntoCache(t *testing.T) {
 	}
 }
 
+// clientHTTPGet adapts an *http.Client into the URL.httpGet seam.
+func clientHTTPGet(c *http.Client) func(context.Context, string) (io.ReadCloser, error) {
+	return func(ctx context.Context, rawURL string) (io.ReadCloser, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		return resp.Body, nil
+	}
+}
+
+func TestURL_Fetch_whenSchemeNotHTTPS_returnsError(t *testing.T) {
+	// Given a plaintext http:// URL, which must be rejected before any request.
+	u := &URL{
+		URL:       "http://example.com/archive.tar.gz",
+		cacheBase: t.TempDir(),
+		httpGet: func(context.Context, string) (io.ReadCloser, error) {
+			t.Fatal("getter must not be called for a non-https URL")
+			return nil, nil
+		},
+	}
+
+	// When
+	_, err := u.Fetch(context.Background())
+
+	// Then
+	if err == nil {
+		t.Fatal("expected an error for a non-https URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error %q should mention the https requirement", err)
+	}
+}
+
+func TestCheckHTTPSRedirect_rejectsDowngradeAndExcessiveHops(t *testing.T) {
+	httpsReq, _ := http.NewRequest(http.MethodGet, "https://example.com/b", nil)
+	httpReq, _ := http.NewRequest(http.MethodGet, "http://example.com/b", nil)
+
+	// A single https->https hop is allowed.
+	if err := checkHTTPSRedirect(httpsReq, []*http.Request{httpsReq}); err != nil {
+		t.Errorf("https redirect should be allowed: %v", err)
+	}
+	// A downgrade to http is rejected.
+	if err := checkHTTPSRedirect(httpReq, []*http.Request{httpsReq}); err == nil {
+		t.Error("redirect to http should be rejected")
+	}
+	// Too many hops are rejected.
+	via := make([]*http.Request, maxRedirects+1)
+	for i := range via {
+		via[i] = httpsReq
+	}
+	if err := checkHTTPSRedirect(httpsReq, via); err == nil {
+		t.Error("excessive redirects should be rejected")
+	}
+}
+
 func TestURL_Fetch_withMatchingChecksum_succeeds(t *testing.T) {
 	// Given
 	content := []byte("checksum test content")
@@ -59,7 +122,7 @@ func TestURL_Fetch_withMatchingChecksum_succeeds(t *testing.T) {
 	expected := hex.EncodeToString(digest[:])
 
 	u := &URL{
-		URL:           "http://example.com/archive.tar.gz",
+		URL:           "https://example.com/archive.tar.gz",
 		ChecksumAlg:   "sha256",
 		ChecksumValue: expected,
 		cacheBase:     t.TempDir(),
@@ -81,7 +144,7 @@ func TestURL_Fetch_withMismatchedChecksum_returnsErrorAndRemovesFile(t *testing.
 	cacheBase := t.TempDir()
 
 	u := &URL{
-		URL:           "http://example.com/archive.tar.gz",
+		URL:           "https://example.com/archive.tar.gz",
 		ChecksumAlg:   "sha256",
 		ChecksumValue: "0000000000000000000000000000000000000000000000000000000000000000",
 		cacheBase:     cacheBase,
@@ -123,7 +186,7 @@ func TestURL_Fetch_whenConcurrentSameURL_noError(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			u := &URL{
-				URL:       "http://example.com/file.tar.gz",
+				URL:       "https://example.com/file.tar.gz",
 				cacheBase: cacheBase,
 				httpGet:   getter,
 			}
@@ -144,7 +207,7 @@ func TestURL_Fetch_withNoChecksum_downloadsSuccessfully(t *testing.T) {
 	// Given
 	content := []byte("no checksum needed")
 	u := &URL{
-		URL:       "http://example.com/plain.tar.gz",
+		URL:       "https://example.com/plain.tar.gz",
 		cacheBase: t.TempDir(),
 		httpGet:   fakeHTTPGet(content),
 	}
