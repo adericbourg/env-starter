@@ -281,6 +281,86 @@ func TestValidate_whenCommandSourceHasMultiple_returnsError(t *testing.T) {
 	}
 }
 
+func TestValidate_whenURLSourceNotHTTPS_returnsError(t *testing.T) {
+	// Given a url source served over plaintext http.
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{URL: "http://example.com/bin"}},
+			},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for non-https url source, got nil")
+	}
+}
+
+func TestValidate_whenURLSourceHTTPS_returnsNil(t *testing.T) {
+	// Given a url source served over https.
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{URL: "https://example.com/bin"}},
+			},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "bin"}}},
+		},
+	}
+
+	// When / Then
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("unexpected error for https url source: %v", err)
+	}
+}
+
+func TestWarnings_whenURLSourceHasNoChecksum_returnsAdvisory(t *testing.T) {
+	// Given an https url source with no checksum.
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{URL: "https://example.com/bin"}},
+			},
+		},
+	}
+
+	// When
+	warnings := cfg.Warnings()
+
+	// Then
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly one warning, got %d: %v", len(warnings), warnings)
+	}
+}
+
+func TestWarnings_whenURLSourceHasChecksum_returnsNone(t *testing.T) {
+	// Given an https url source with a checksum.
+	cfg := &Config{
+		Commands: []Command{
+			{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{
+					URL:      "https://example.com/bin",
+					Checksum: &Checksum{Alg: "sha256", Value: "abc"},
+				}},
+			},
+		},
+	}
+
+	// When / Then
+	if w := cfg.Warnings(); len(w) != 0 {
+		t.Errorf("expected no warnings, got %v", w)
+	}
+}
+
 func TestValidate_whenReadinessHasMultipleProbes_returnsError(t *testing.T) {
 	// Given
 	cfg := &Config{

@@ -197,12 +197,18 @@ Download a file from an arbitrary URL.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `url` | string (scalar) | yes | — | URL to download. |
+| `url` | string (scalar) | yes | — | URL to download. **Must use `https`** — plaintext `http` is rejected at config load. |
 | `checksum` | object | no | — | If set, verification is mandatory. Mismatch is a hard failure — the command will not start. |
 | `checksum.alg` | string | yes (if checksum set) | — | Hash algorithm. Currently only `sha256` is used. |
 | `checksum.value` | string | yes (if checksum set) | — | Expected hex digest. |
 
 Note: `url` is a **scalar string** at the top level of the `source` mapping, not a nested object. `checksum` is its optional sibling.
+
+> **Strongly recommended: set a `checksum`.** Without one, the downloaded file
+> (which is then executed) is trusted on the TLS connection alone — a compromised
+> or swapped upstream artifact would not be detected. env-starter prints a
+> startup warning for any `url` source that omits a checksum. The download is
+> always served over `https`, capped at 2 GiB, and only follows `https` redirects.
 
 ```yaml
 source:

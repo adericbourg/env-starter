@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
@@ -93,7 +94,32 @@ func validateSource(cmdName string, src Source) error {
 	if count > 1 {
 		return fmt.Errorf("command %q: source must specify exactly one of github, url, or local (got %d)", cmdName, count)
 	}
+	if src.URLSource != nil {
+		parsed, err := url.Parse(src.URLSource.URL)
+		if err != nil {
+			return fmt.Errorf("command %q: invalid url %q: %w", cmdName, src.URLSource.URL, err)
+		}
+		if parsed.Scheme != "https" {
+			return fmt.Errorf("command %q: url source must use https, got scheme %q", cmdName, parsed.Scheme)
+		}
+	}
 	return nil
+}
+
+// Warnings returns non-fatal advisories about the configuration. Unlike
+// Validate, these do not block loading; they surface footguns the user may want
+// to address (e.g. a url source downloaded without an integrity checksum, which
+// is then trusted on TLS alone).
+func (c *Config) Warnings() []string {
+	var warnings []string
+	for _, cmd := range c.Commands {
+		if cmd.Source.URLSource != nil && cmd.Source.URLSource.Checksum == nil {
+			warnings = append(warnings, fmt.Sprintf(
+				"command %q: url source has no checksum; the download is trusted on TLS alone. "+
+					"Add a sha256 checksum to detect a tampered or swapped artifact.", cmd.Name))
+		}
+	}
+	return warnings
 }
 
 func validateReadiness(cmdName string, r Readiness) error {

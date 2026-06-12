@@ -870,6 +870,12 @@ func resolveConfig(baseFile, overlayFile string) (*config.Config, func() (*confi
 		return nil, nil, nil, err
 	}
 
+	// Surface non-fatal advisories once, on the initial load only (not on
+	// hot-reload via loadFn), so the user sees footguns without blocking startup.
+	for _, w := range cfg.Warnings() {
+		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
+	}
+
 	watchPaths := []string{basePath}
 	if overlayFile != "" {
 		watchPaths = append(watchPaths, overlayFile)
