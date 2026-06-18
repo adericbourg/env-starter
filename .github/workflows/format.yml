@@ -16,7 +16,7 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Use the commit SHA (a safe hex string) rather than the branch name to
           # avoid ref-injection from an attacker-controlled head_ref value.
