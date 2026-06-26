@@ -274,6 +274,8 @@ See [`docs/configuration.md`](docs/configuration.md) for the full reference cove
 
 On Linux this is typically `~/.cache/env-starter/logs/`. On macOS it is `~/Library/Caches/env-starter/logs/`.
 
+Log files are created with `0600` permissions (owner read/write only). They are **not redacted**: if a command echoes tokens, passwords, or other secrets to stdout/stderr, those appear verbatim in the log file. Avoid running commands that print secrets, or rotate/delete log files after use.
+
 **Daemon socket and lock** are also stored under the cache root:
 
 ```
