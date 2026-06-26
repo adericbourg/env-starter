@@ -104,7 +104,7 @@ The daemon socket, spawn-lock, and startup log live under the OS cache directory
 | Flag | Description |
 |------|-------------|
 | `--config FILE` | Replace the default config entirely with `FILE`. |
-| `--config-overlay FILE` | Merge `FILE` on top of the default config (entries keyed by `name`; overlay wins on conflicts). |
+| `--config-overlay FILE` | Merge `FILE` on top of the default config (entries keyed by `name`; overlay wins on conflicts). **Overlay files are trusted as code** — a malicious overlay can replace any command's `run`/`setup`/`teardown` fields. Only use overlays from sources you control. |
 | `--version` | Print the version and exit. |
 
 ### Running

@@ -20,6 +20,13 @@ This document is the complete reference for `env-starter`'s YAML configuration.
 | `--config FILE` | Replace the default config entirely with `FILE`. The default path is not read. |
 | `--config-overlay FILE` | Load `FILE` and merge it on top of the base config. Entries are keyed by `name`; the overlay wins on any conflict. Commands and environments from the overlay that share a name with the base replace their counterpart; new names are appended. |
 
+> **Security note — overlays are trusted as code.**
+> An overlay file can replace any base command by name, including its `run`,
+> `setup`, and `teardown` fields, which are executed verbatim as shell commands.
+> A malicious or compromised overlay is equivalent to arbitrary code execution
+> under your user account. Only use overlay files from sources you control;
+> never share, commit, or accept overlays from untrusted parties.
+
 ### Top-level wrapper key
 
 The entire configuration must be nested under the key `env-starter:`:
