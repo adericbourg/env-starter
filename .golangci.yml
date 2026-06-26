@@ -22,10 +22,24 @@ linters:
         # inside a 0700 temp directory during the update download flow.
         # The parent directory restricts access regardless of the file mode.
         - G306
+        # G702: command injection via taint analysis — syscall.Exec(self, os.Args,
+        # os.Environ()) in reexec_unix.go, where self = os.Executable() (the
+        # program's own resolved path after a verified self-update). Not
+        # user-tainted; same rationale as the already-excluded G204.
+        - G702
+        # G703: path traversal via taint analysis — os.Create/os.Open on paths
+        # built internally inside a 0700 temp directory during the update flow.
+        # Never raw user input; same rationale as the already-excluded G304.
+        - G703
   exclusions:
     rules:
-      # errcheck on http.ResponseWriter.Write is intentionally suppressed in
-      # tests — the connection is local and errors are non-actionable.
+      # In tests, errcheck and gosec findings are intentionally suppressed:
+      # - errcheck: test I/O (http.ResponseWriter.Write, ring-buffer writes,
+      #   net.Listener.Close) is local and errors are non-actionable.
+      # - gosec: test fixtures use relaxed dir permissions (G301), unchecked
+      #   writes to in-process buffers (G104), and a benign int→int32 cast
+      #   (G115) — none of these are actionable in a test context.
       - path: _test\.go
         linters:
           - errcheck
+          - gosec

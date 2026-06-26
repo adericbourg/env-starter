@@ -185,7 +185,7 @@ func (e *Engine) runTeardown(c *command) {
 		file = nil
 	}
 	w := logbuf.NewWriter(c.ring, file)
-	defer w.Close()
+	defer func() { _ = w.Close() }()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", c.cfg.Teardown)
 	if c.runDir != "" {

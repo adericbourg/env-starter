@@ -44,7 +44,7 @@ func (p *tcpProbe) Check(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("tcp probe: dial %s: %w", p.addr, err)
 	}
-	conn.Close()
+	_ = conn.Close()
 	return nil
 }
 

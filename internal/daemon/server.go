@@ -200,7 +200,7 @@ func (s *server) runHub(ctx context.Context, ln net.Listener, events <-chan engi
 // handleConn reads the first request from the connection to determine the
 // connection mode, then dispatches accordingly.
 func (s *server) handleConn(ctx context.Context, conn net.Conn, ln net.Listener) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	scanner := bufio.NewScanner(conn)
 	enc := json.NewEncoder(conn)
@@ -433,7 +433,7 @@ func (s *server) shutdown(ctx context.Context, ln net.Listener) {
 		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 			log.Printf("daemon: close listener: %v", err)
 		}
-		os.Remove(s.socketPath) // best-effort
+		_ = os.Remove(s.socketPath) // best-effort
 	})
 }
 

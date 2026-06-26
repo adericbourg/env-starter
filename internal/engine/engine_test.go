@@ -418,7 +418,7 @@ func TestEvents_emittedForStateTransitions(t *testing.T) {
 	sawDone := false
 	sawEnvRunning := false
 	deadline := time.After(5 * time.Second)
-	for !(sawStarting && sawDone && sawEnvRunning) {
+	for !sawStarting || !sawDone || !sawEnvRunning {
 		select {
 		case ev := <-e.Events():
 			if ev.Kind == "command" && ev.Command == "t" {
@@ -480,7 +480,7 @@ func TestStopEnvironment_whenStopping_transitionsThroughStopping(t *testing.T) {
 	sawStopping := false
 	sawStopped := false
 	deadline := time.After(5 * time.Second)
-	for !(sawStopping && sawStopped) {
+	for !sawStopping || !sawStopped {
 		select {
 		case ev := <-e.Events():
 			if ev.Kind == "command" && ev.Command == "svc" {

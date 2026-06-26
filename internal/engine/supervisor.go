@@ -186,7 +186,7 @@ func (e *Engine) startCommand(c *command) {
 	if err != nil {
 		fetchErr := fmt.Errorf("fetch source: %w", err)
 		e.logCmdError(c, fetchErr)
-		c.writer.Close()
+		_ = c.writer.Close()
 		e.setCmdState(c.cfg.Name, CmdError, fetchErr)
 		return
 	}
@@ -195,7 +195,7 @@ func (e *Engine) startCommand(c *command) {
 	if err := e.runSetup(ctx, c, runDir); err != nil {
 		setupErr := fmt.Errorf("setup failed: %w", err)
 		e.logCmdError(c, setupErr)
-		c.writer.Close()
+		_ = c.writer.Close()
 		e.setCmdState(c.cfg.Name, CmdError, setupErr)
 		return
 	}
@@ -203,7 +203,7 @@ func (e *Engine) startCommand(c *command) {
 	if err := e.launchProcess(c); err != nil {
 		launchErr := fmt.Errorf("start process: %w", err)
 		e.logCmdError(c, launchErr)
-		c.writer.Close()
+		_ = c.writer.Close()
 		e.setCmdState(c.cfg.Name, CmdError, launchErr)
 		return
 	}
@@ -253,7 +253,7 @@ func (e *Engine) launchProcess(c *command) error {
 	go func() {
 		err := cmd.Wait()
 		c.exitErr = err
-		c.writeOnce.Do(func() { c.writer.Close() })
+		c.writeOnce.Do(func() { _ = c.writer.Close() })
 		close(c.exited)
 	}()
 
@@ -798,7 +798,7 @@ func appendSubdir(dir, subdir string) (string, error) {
 // + log file) so configuration problems are visible, not just flagged with ✗.
 // Must be called while c.writer is still open.
 func (e *Engine) logCmdError(c *command, err error) {
-	fmt.Fprintf(c.writer, "\nenv-starter: %v\n", err)
+	_, _ = fmt.Fprintf(c.writer, "\nenv-starter: %v\n", err)
 }
 
 func (e *Engine) logsDir() string {

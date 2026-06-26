@@ -107,7 +107,7 @@ func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.
 	// effectively erasing the previously drawn overlay.
 	eraseOverlay := func() {
 		if prevOverlayHeight > 0 {
-			fmt.Fprintf(out, "\x1b[%dA\x1b[J", prevOverlayHeight)
+			_, _ = fmt.Fprintf(out, "\x1b[%dA\x1b[J", prevOverlayHeight)
 			prevOverlayHeight = 0
 		}
 	}
@@ -125,7 +125,7 @@ func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.
 		if overlay == "" {
 			return
 		}
-		fmt.Fprint(out, overlay)
+		_, _ = fmt.Fprint(out, overlay)
 		prevOverlayHeight = strings.Count(overlay, "\n")
 	}
 
@@ -138,7 +138,7 @@ func tailStartupLogs(ctx context.Context, src logSource, envName string, out io.
 			start := seenLines[cmd]
 			prefix := prefixes[cmd]
 			for _, line := range lines[start:] {
-				fmt.Fprintf(out, "%s %s\n", prefix, line)
+				_, _ = fmt.Fprintf(out, "%s %s\n", prefix, line)
 				if interactive {
 					appendLast5(cmd, line)
 				}
@@ -681,7 +681,7 @@ func runShutdown() {
 
 // printHelp prints usage information for all subcommands to w.
 func printHelp(w *os.File) {
-	fmt.Fprintf(w, `Usage: env-starter [command] [flags]
+	_, _ = fmt.Fprintf(w, `Usage: env-starter [command] [flags]
 
 Commands:
   (default)  Open the TUI to manage environments
@@ -716,7 +716,7 @@ func runCompletion(args []string) {
 		fmt.Fprintf(os.Stderr, "unknown shell %q: supported shells are bash, zsh, fish\n", shell)
 		os.Exit(2)
 	}
-	os.Stdout.Write(data)
+	_, _ = os.Stdout.Write(data)
 }
 
 // runComplete implements the hidden "__complete" subcommand invoked by shell

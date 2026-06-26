@@ -101,7 +101,7 @@ func defaultHTTPGet(ctx context.Context, url string) (io.ReadCloser, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP GET %s returned status %d: %s", url, resp.StatusCode, bytes.TrimSpace(body))
 	}
 	return resp.Body, nil
@@ -114,7 +114,7 @@ func tagFromLocation(location string) (string, error) {
 	const marker = "/releases/tag/"
 	idx := strings.LastIndex(location, marker)
 	if idx < 0 {
-		return "", fmt.Errorf("Location %q does not contain %q", location, marker)
+		return "", fmt.Errorf("location %q does not contain %q", location, marker)
 	}
 	tag := strings.TrimSuffix(location[idx+len(marker):], "/")
 	if tag == "" {
@@ -139,7 +139,7 @@ func (c *Client) Latest(ctx context.Context) (Release, error) {
 	if err != nil {
 		return Release{}, fmt.Errorf("fetching latest release: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusMovedPermanently {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
@@ -183,7 +183,7 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 	if err != nil {
 		return fmt.Errorf("creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	// 1. Download checksums.txt to discover the archive name and digest.
 	checksumsURL := fmt.Sprintf("%s/%s/releases/download/%s/checksums.txt",
@@ -260,18 +260,22 @@ func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL strin
 }
 
 // downloadTo fetches url and writes its body to destPath.
-func (c *Client) downloadTo(ctx context.Context, url, destPath string) error {
+func (c *Client) downloadTo(ctx context.Context, url, destPath string) (retErr error) {
 	body, err := c.effectiveHTTPGet()(ctx, url)
 	if err != nil {
 		return err
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", destPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); retErr == nil {
+			retErr = cerr
+		}
+	}()
 
 	_, err = io.Copy(f, body)
 	return err
@@ -279,29 +283,33 @@ func (c *Client) downloadTo(ctx context.Context, url, destPath string) error {
 
 // downloadWithVerify fetches url into destPath and verifies the sha256 digest
 // by streaming through io.MultiWriter — no in-memory buffer of the full file.
-func (c *Client) downloadWithVerify(ctx context.Context, url, destPath, expectedSHA256 string) error {
+func (c *Client) downloadWithVerify(ctx context.Context, url, destPath, expectedSHA256 string) (retErr error) {
 	body, err := c.effectiveHTTPGet()(ctx, url)
 	if err != nil {
 		return err
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", destPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); retErr == nil {
+			retErr = cerr
+		}
+	}()
 
 	h := sha256.New()
 	// Write to the file and hash simultaneously without buffering the whole content.
 	if _, err := io.Copy(io.MultiWriter(f, h), body); err != nil {
-		os.Remove(destPath)
+		_ = os.Remove(destPath)
 		return fmt.Errorf("writing archive: %w", err)
 	}
 
 	got := hex.EncodeToString(h.Sum(nil))
 	if got != expectedSHA256 {
-		os.Remove(destPath)
+		_ = os.Remove(destPath)
 		return fmt.Errorf("checksum mismatch: got %s, want %s", got, expectedSHA256)
 	}
 	return nil
@@ -345,13 +353,13 @@ func extractBinaryFromTarGz(archivePath, binaryName string) (io.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		return nil, fmt.Errorf("opening gzip stream: %w", err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 
 	tr := tar.NewReader(gz)
 	for {
@@ -375,7 +383,7 @@ func extractBinaryFromZip(archivePath, binaryName string) (io.Reader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening zip archive: %w", err)
 	}
-	defer zr.Close()
+	defer func() { _ = zr.Close() }()
 
 	for _, file := range zr.File {
 		if filepath.Base(file.Name) != binaryName {
@@ -386,7 +394,7 @@ func extractBinaryFromZip(archivePath, binaryName string) (io.Reader, error) {
 			return nil, fmt.Errorf("opening zip entry: %w", err)
 		}
 		buf, err := readCapped(rc)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			return nil, err
 		}

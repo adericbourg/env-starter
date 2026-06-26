@@ -62,15 +62,15 @@ func Connect(socketPath string) (*ClientController, error) {
 	// 2. Dial the event-stream connection.
 	streamConn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		rpcConn.Close()
+		_ = rpcConn.Close()
 		return nil, fmt.Errorf("daemon client: dial stream: %w", err)
 	}
 
 	// 3. Send MethodSubscribe on the event-stream connection.
 	streamEnc := json.NewEncoder(streamConn)
 	if err := streamEnc.Encode(Request{Method: MethodSubscribe}); err != nil {
-		rpcConn.Close()
-		streamConn.Close()
+		_ = rpcConn.Close()
+		_ = streamConn.Close()
 		return nil, fmt.Errorf("daemon client: subscribe: %w", err)
 	}
 
@@ -82,25 +82,25 @@ func Connect(socketPath string) (*ClientController, error) {
 		if err == nil {
 			err = errors.New("connection closed before snapshot")
 		}
-		rpcConn.Close()
-		streamConn.Close()
+		_ = rpcConn.Close()
+		_ = streamConn.Close()
 		return nil, fmt.Errorf("daemon client: read snapshot: %w", err)
 	}
 	var snapResp Response
 	if err := json.Unmarshal(streamScan.Bytes(), &snapResp); err != nil {
-		rpcConn.Close()
-		streamConn.Close()
+		_ = rpcConn.Close()
+		_ = streamConn.Close()
 		return nil, fmt.Errorf("daemon client: decode snapshot response: %w", err)
 	}
 	if snapResp.Error != "" {
-		rpcConn.Close()
-		streamConn.Close()
+		_ = rpcConn.Close()
+		_ = streamConn.Close()
 		return nil, fmt.Errorf("daemon client: subscribe error: %s", snapResp.Error)
 	}
 	var snap Snapshot
 	if err := json.Unmarshal(snapResp.Result, &snap); err != nil {
-		rpcConn.Close()
-		streamConn.Close()
+		_ = rpcConn.Close()
+		_ = streamConn.Close()
 		return nil, fmt.Errorf("daemon client: decode snapshot: %w", err)
 	}
 

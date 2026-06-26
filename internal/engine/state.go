@@ -97,10 +97,10 @@ func (e *Engine) recomputeEnvState(envCfg config.Environment) {
 	e.mu.Unlock()
 
 	var state EnvState
-	switch {
-	case up == total:
+	switch up {
+	case total:
 		state = EnvRunning
-	case up == 0:
+	case 0:
 		state = EnvError
 	default:
 		state = EnvDegraded

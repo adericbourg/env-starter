@@ -99,7 +99,7 @@ func defaultHTTPGet(ctx context.Context, rawURL string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP GET %s returned status %d", rawURL, resp.StatusCode)
 	}
 	return resp.Body, nil
@@ -140,7 +140,7 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("downloading %s: %w", u.URL, err)
 	}
-	defer body.Close()
+	defer func() { _ = body.Close() }()
 
 	if err := u.writeAndVerify(body, destPath); err != nil {
 		return "", err
@@ -154,12 +154,16 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 // computed incrementally, so neither the file nor the hash is buffered in
 // memory. If the size limit is exceeded or verification fails, the bad file is
 // removed.
-func (u *URL) writeAndVerify(body io.Reader, destPath string) error {
+func (u *URL) writeAndVerify(body io.Reader, destPath string) (retErr error) {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("creating destination file %s: %w", destPath, err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); retErr == nil {
+			retErr = cerr
+		}
+	}()
 
 	var writer io.Writer = f
 	var hasher hash.Hash
@@ -177,18 +181,18 @@ func (u *URL) writeAndVerify(body io.Reader, destPath string) error {
 	limited := io.LimitReader(body, maxDownloadBytes+1)
 	n, err := io.Copy(writer, limited)
 	if err != nil {
-		os.Remove(destPath)
+		_ = os.Remove(destPath)
 		return fmt.Errorf("writing to %s: %w", destPath, err)
 	}
 	if n > maxDownloadBytes {
-		os.Remove(destPath)
+		_ = os.Remove(destPath)
 		return fmt.Errorf("download from %s exceeds the %d byte limit", u.URL, maxDownloadBytes)
 	}
 
 	if hasher != nil {
 		got := hex.EncodeToString(hasher.Sum(nil))
 		if got != u.ChecksumValue {
-			os.Remove(destPath)
+			_ = os.Remove(destPath)
 			return fmt.Errorf("checksum mismatch for %s: got %s, want %s", destPath, got, u.ChecksumValue)
 		}
 	}

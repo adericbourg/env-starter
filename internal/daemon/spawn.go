@@ -97,7 +97,7 @@ func EnsureDaemon(ctx context.Context, socketPath, lockPath, configFile, configO
 	if err != nil {
 		return nil, fmt.Errorf("daemon: ensure: open lock file: %w", err)
 	}
-	defer lockFile.Close()
+	defer func() { _ = lockFile.Close() }()
 
 	if err := lockFileExclusive(lockFile); err != nil {
 		return nil, fmt.Errorf("daemon: ensure: acquire lock: %w", err)
@@ -202,13 +202,13 @@ func spawnDaemon(configFile, configOverlay string) error {
 	configureDetached(cmd)
 
 	if err := cmd.Start(); err != nil {
-		logFile.Close()
+		_ = logFile.Close()
 		return fmt.Errorf("start daemon process: %w", err)
 	}
 
 	go func() {
 		_ = cmd.Wait()
-		logFile.Close()
+		_ = logFile.Close()
 	}()
 
 	return nil

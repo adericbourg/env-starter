@@ -328,8 +328,7 @@ func TestUpdate_whenFirstCtrlC_doesNotShutDownEnvs(t *testing.T) {
 	m := seed(New(ctrl))
 
 	// When
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	m = updated.(Model)
+	_, _ = m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	// Then: shutdown must NOT have been called — environments keep running.
 	if ctrl.shutdownCalled {
