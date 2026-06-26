@@ -1,0 +1,32 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - ineffassign
+    - staticcheck
+    - gosec
+  settings:
+    gosec:
+      excludes:
+        # G204: subprocess launched with a variable string — by design.
+        # This tool is a command launcher; Run/Setup/Teardown fields in the
+        # user's config are intentionally passed to sh -c.
+        - G204
+        # G304: file path built from a variable — by design.
+        # Config file paths, source download paths, and log file paths are all
+        # user-supplied; they are validated at config-load time.
+        - G304
+        # G306: file created with os.Create (default 0666, limited by umask)
+        # inside a 0700 temp directory during the update download flow.
+        # The parent directory restricts access regardless of the file mode.
+        - G306
+
+issues:
+  exclude-rules:
+    # errcheck on http.ResponseWriter.Write is intentionally suppressed in
+    # tests — the connection is local and errors are non-actionable.
+    - path: _test\.go
+      linters:
+        - errcheck
