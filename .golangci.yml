@@ -22,11 +22,10 @@ linters:
         # inside a 0700 temp directory during the update download flow.
         # The parent directory restricts access regardless of the file mode.
         - G306
-
-issues:
-  exclude-rules:
-    # errcheck on http.ResponseWriter.Write is intentionally suppressed in
-    # tests — the connection is local and errors are non-actionable.
-    - path: _test\.go
-      linters:
-        - errcheck
+  exclusions:
+    rules:
+      # errcheck on http.ResponseWriter.Write is intentionally suppressed in
+      # tests — the connection is local and errors are non-actionable.
+      - path: _test\.go
+        linters:
+          - errcheck
