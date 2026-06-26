@@ -1,5 +1,3 @@
-//go:build !windows
-
 package daemon
 
 import (
@@ -101,10 +99,10 @@ func EnsureDaemon(ctx context.Context, socketPath, lockPath, configFile, configO
 	}
 	defer lockFile.Close()
 
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFileExclusive(lockFile); err != nil {
 		return nil, fmt.Errorf("daemon: ensure: acquire lock: %w", err)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	defer unlockFile(lockFile) //nolint:errcheck
 
 	// Step 2b: retry dial after acquiring the lock — another process may have
 	// started the daemon while we waited for the lock.
@@ -199,9 +197,9 @@ func spawnDaemon(configFile, configOverlay string) error {
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = logFile
-	// Setsid detaches the child from the controlling terminal so it survives
-	// the parent process exiting.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	// configureDetached detaches the child from the controlling terminal so it
+	// survives the parent process exiting. Implementation varies by OS.
+	configureDetached(cmd)
 
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
