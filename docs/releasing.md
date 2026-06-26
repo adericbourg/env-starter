@@ -11,9 +11,9 @@ connection to GitHub is compromised.
 
 ## One-time signing setup
 
-Until the signing key is configured, releases are still produced but the
-self-updater falls back to TLS-only integrity and prints a warning. To enable
-authenticated updates:
+**Until the signing key is configured, self-update is disabled**: `Apply` returns
+an error and no binary is replaced. To enable self-update, complete the steps
+below before cutting a release:
 
 1. **Generate a cosign keypair** (keep `cosign.key` secret, never commit it):
 
@@ -29,7 +29,8 @@ authenticated updates:
 3. **Embed the public key** in the binary: paste the contents of `cosign.pub`
    into the `cosignPublicKeyPEM` constant in
    [`internal/update/verify.go`](../internal/update/verify.go), commit, and
-   push. While this constant is empty, signature verification is skipped.
+   push. While this constant is empty, self-update is disabled (Apply returns
+   an error).
 
 4. **Cut a release** via the Release workflow. GoReleaser will publish
    `checksums.txt` alongside `checksums.txt.sig`.

@@ -290,26 +290,12 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	binaryContent := []byte("fake binary content for testing")
 	archiveBytes := buildTarGz(t, binaryName, binaryContent)
 
-	// Compute the sha256 of the archive.
+	// Sign the checksums so signature verification succeeds.
 	digest := sha256.Sum256(archiveBytes)
-	checksumsContent := fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
+	pub, sig := signBlob(t, checksums)
 
-	// Serve both assets from a test server at the deterministic release download paths.
-	checksumsPath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/checksums.txt", tag)
-	archivePath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/%s", tag, archiveName)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case checksumsPath:
-			fmt.Fprint(w, checksumsContent)
-		case archivePath:
-			w.Write(archiveBytes) //nolint:errcheck
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	rel := Release{TagName: tag}
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
 
 	// Redirect the binary replacement to a temp file.
 	targetFile, err := os.CreateTemp(t.TempDir(), "env-starter-test-*")
@@ -318,10 +304,10 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	}
 	targetFile.Close()
 
-	c := &Client{webBaseURL: srv.URL, targetPath: targetFile.Name()}
+	c := &Client{webBaseURL: srv.URL, targetPath: targetFile.Name(), verifyKeyPEM: pub}
 
 	// When
-	if err := c.Apply(context.Background(), rel); err != nil {
+	if err := c.Apply(context.Background(), Release{TagName: tag}); err != nil {
 		t.Fatalf("Apply returned error: %v", err)
 	}
 
@@ -336,34 +322,21 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 }
 
 func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
+	// Given a signed checksums file whose digest does not match the archive.
 	tag := "v1.2.3"
 	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	binaryContent := []byte("fake binary content")
-	archiveBytes := buildTarGz(t, "env-starter", binaryContent)
+	archiveBytes := buildTarGz(t, "env-starter", []byte("fake binary content"))
 
-	// Deliberately wrong checksum.
-	wrongChecksum := hex.EncodeToString(sha256.New().Sum(nil))
-	checksumsContent := fmt.Sprintf("%s  %s\n", wrongChecksum, archiveName)
+	// Sign a checksums file with a deliberately wrong digest.
+	wrongDigest := hex.EncodeToString(sha256.New().Sum(nil))
+	checksums := []byte(fmt.Sprintf("%s  %s\n", wrongDigest, archiveName))
+	pub, sig := signBlob(t, checksums)
 
-	checksumsPath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/checksums.txt", tag)
-	archivePath := fmt.Sprintf("/adericbourg/env-starter/releases/download/%s/%s", tag, archiveName)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case checksumsPath:
-			fmt.Fprint(w, checksumsContent)
-		case archivePath:
-			w.Write(archiveBytes) //nolint:errcheck
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	rel := Release{TagName: tag}
-	c := &Client{webBaseURL: srv.URL}
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+	c := &Client{webBaseURL: srv.URL, verifyKeyPEM: pub}
 
 	// When
-	err := c.Apply(context.Background(), rel)
+	err := c.Apply(context.Background(), Release{TagName: tag})
 
 	// Then
 	if err == nil {
@@ -451,6 +424,27 @@ func TestApply_withInvalidSignature_returnsError(t *testing.T) {
 	// Then
 	if err == nil {
 		t.Fatal("expected Apply to fail with an invalid checksums signature, got nil")
+	}
+}
+
+func TestApply_withNoKeyConfigured_returnsError(t *testing.T) {
+	// Given a valid release served over HTTP but no verification key embedded.
+	tag := "v1.2.3"
+	archiveName := fmt.Sprintf("env-starter_1.2.3_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	archiveBytes := buildTarGz(t, "env-starter", []byte("binary"))
+	digest := sha256.Sum256(archiveBytes)
+	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
+	_, sig := signBlob(t, checksums)
+
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+	c := &Client{webBaseURL: srv.URL} // verifyKeyPEM deliberately empty
+
+	// When
+	err := c.Apply(context.Background(), Release{TagName: tag})
+
+	// Then: must refuse to apply the update when no key is configured.
+	if err == nil {
+		t.Fatal("expected Apply to fail closed when no verification key is configured, got nil")
 	}
 }
 

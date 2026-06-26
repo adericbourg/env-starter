@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -233,16 +234,14 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 }
 
 // verifyChecksums authenticates checksumsContent against its detached cosign
-// signature (checksums.txt.sig in the same release). When an embedded public
-// key is configured, a missing or invalid signature is a hard failure (fail
-// closed). When no key is configured, it warns and falls back to TLS-only
-// integrity so existing releases keep working until signing is set up.
+// signature (checksums.txt.sig in the same release). An embedded public key
+// is required: a missing key, a missing signature, or an invalid signature
+// are all hard failures (fail closed). Self-update is disabled until
+// cosignPublicKeyPEM in verify.go is set to the project's public key.
 func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL string, checksumsContent []byte) error {
 	pubKey := c.effectiveVerifyKey()
 	if pubKey == "" {
-		fmt.Fprintln(os.Stderr,
-			"warning: update signature verification is not configured; the download is trusted on TLS alone")
-		return nil
+		return errors.New("update: signature verification is not configured; embed the cosign public key in internal/update/verify.go before releasing")
 	}
 
 	sigURL := checksumsURL + ".sig"

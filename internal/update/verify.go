@@ -11,14 +11,15 @@ import (
 	"strings"
 )
 
-// cosignPublicKeyPEM is the project's cosign public key (PKIX PEM). When set,
-// self-update verifies that checksums.txt was signed by the matching private
-// key before trusting any digest in it, so a tampered or swapped release cannot
-// be installed even if TLS to GitHub is compromised.
+// cosignPublicKeyPEM is the project's cosign public key (PKIX PEM). Self-update
+// verifies that checksums.txt was signed by the matching private key before
+// trusting any digest in it, so a tampered or swapped release cannot be
+// installed even if TLS to GitHub is compromised.
 //
-// It is intentionally empty in source: a maintainer pastes the contents of
-// cosign.pub here once the release keypair exists (see docs/releasing.md).
-// While empty, signature verification is skipped and a warning is emitted.
+// When this constant is empty, self-update is disabled entirely: Apply returns
+// an error and no binary is replaced. A maintainer must paste the contents of
+// cosign.pub here and cut a signed release before self-update is usable
+// (see docs/releasing.md).
 const cosignPublicKeyPEM = ""
 
 // verifyBlobSignature reports whether sigB64 is a valid cosign signature of blob
