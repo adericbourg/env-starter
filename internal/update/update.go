@@ -236,8 +236,7 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 // verifyChecksums authenticates checksumsContent against its detached cosign
 // signature (checksums.txt.sig in the same release). An embedded public key
 // is required: a missing key, a missing signature, or an invalid signature
-// are all hard failures (fail closed). Self-update is disabled until
-// cosignPublicKeyPEM in verify.go is set to the project's public key.
+// are all hard failures (fail closed).
 func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL string, checksumsContent []byte) error {
 	pubKey := c.effectiveVerifyKey()
 	if pubKey == "" {

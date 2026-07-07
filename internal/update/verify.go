@@ -16,11 +16,13 @@ import (
 // trusting any digest in it, so a tampered or swapped release cannot be
 // installed even if TLS to GitHub is compromised.
 //
-// When this constant is empty, self-update is disabled entirely: Apply returns
-// an error and no binary is replaced. A maintainer must paste the contents of
-// cosign.pub here and cut a signed release before self-update is usable
-// (see docs/releasing.md).
-const cosignPublicKeyPEM = ""
+// If this constant is ever cleared, self-update is disabled entirely: Apply
+// returns an error and no binary is replaced (see docs/releasing.md).
+const cosignPublicKeyPEM = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEm+sOgpB6s2xTuf+9XueSpRlXwDIH
+gygDTfQ7op0yrp2Dh7Ub4MX/YIEQRxj1RNk6l0InsDICLekXmyMPqkBsGw==
+-----END PUBLIC KEY-----
+`
 
 // verifyBlobSignature reports whether sigB64 is a valid cosign signature of blob
 // produced by the private key matching pubKeyPEM. It mirrors `cosign
