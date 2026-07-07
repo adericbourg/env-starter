@@ -59,3 +59,7 @@ jobs:
         with:
           go-version-file: go.mod
           go-package: ./...
+          # The repo is already checked out above; the action's own checkout
+          # (bundled actions/checkout@v4.1.1) fails with a git 400 error on
+          # current runner images, so skip it and reuse the existing working tree.
+          repo-checkout: false
