@@ -6,7 +6,7 @@
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
     {
-      "matchPackageNames": ["github.com/charmbracelet/**"],
+      "matchPackageNames": ["github.com/charmbracelet/**", "charm.land/**"],
       "groupName": "charmbracelet (Bubble Tea)"
     },
     {
