@@ -213,7 +213,7 @@ Clone or pull a GitHub repository.
 | `branch` | string | no | `main` | Branch **or tag** to check out. |
 | `method` | string | no | auto | Transport: `ssh`, `https`, or `gh`. When unset, tries `ssh` → `gh` → `https` in order. |
 
-Commands that share the same `repo` and `branch` reuse a single cached clone (safe for concurrent startup). Commands that share the same `repo` but use different values for `branch` each get their own separate clone.
+Commands that share the same `repo` and `branch` reuse a single cached clone (safe for concurrent startup). Commands that share the same `repo` but use different values for `branch` each get their own separate clone. Access to each cached clone is serialized by a sibling `<clone-dir>.lock` file, so concurrent `env-starter` processes sharing the same cache never race on it.
 
 ```yaml
 source:

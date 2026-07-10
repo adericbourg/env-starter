@@ -103,8 +103,6 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	defer lockPath(dir)()
-
 	// The cache dir names are predictable (hash of the URL), so a pre-existing
 	// dir is only trusted when it is owned by us and private: a dir planted by
 	// another user on a shared cache location would otherwise be reused — and
@@ -112,6 +110,13 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(dir)); err != nil {
 		return "", fmt.Errorf("cache dir: %w", err)
 	}
+
+	unlock, err := lockPath(dir)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+
 	if err := fsutil.EnsureOwnerOnlyDir(dir); err != nil {
 		return "", fmt.Errorf("cannot create cache dir %s: %w", dir, err)
 	}

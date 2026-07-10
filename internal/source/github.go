@@ -140,7 +140,19 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	defer lockPath(dir)()
+	// The cache dir names are predictable (github-owner-name-branch), so a
+	// pre-existing clone is only trusted when the cache root is owned by us and
+	// private: a repo planted by another user on a shared cache location would
+	// otherwise be pulled — and its contents executed — as if we had cloned it.
+	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(dir)); err != nil {
+		return "", fmt.Errorf("cache dir: %w", err)
+	}
+
+	unlock, err := lockPath(dir)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 
 	runGit := g.runGit
 	if runGit == nil {
@@ -149,14 +161,6 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 	runGh := g.runGh
 	if runGh == nil {
 		runGh = g.ghRunner
-	}
-
-	// The cache dir names are predictable (github-owner-name-branch), so a
-	// pre-existing clone is only trusted when the cache root is owned by us and
-	// private: a repo planted by another user on a shared cache location would
-	// otherwise be pulled — and its contents executed — as if we had cloned it.
-	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(dir)); err != nil {
-		return "", fmt.Errorf("cache dir: %w", err)
 	}
 
 	info, statErr := os.Stat(dir)

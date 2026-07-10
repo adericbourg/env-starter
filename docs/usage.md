@@ -111,4 +111,4 @@ Log files are created with `0600` permissions (owner read/write only). They are 
 
 Both files are managed automatically; do not edit them by hand.
 
-**Source cache** (downloaded/cloned sources) lives under the same cache root. Sources are always refreshed before a run; a `url` source with a `checksum` re-verifies on every refresh.
+**Source cache** (downloaded/cloned sources) lives under the same cache root. Sources are always refreshed before a run; a `url` source with a `checksum` re-verifies on every refresh. Each cached source has a sibling `<name>.lock` file (e.g. `github-owner-name-branch.lock`) used to serialize access to it across processes; these are managed automatically.
