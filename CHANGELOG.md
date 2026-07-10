@@ -19,7 +19,8 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ### Added
 - golangci-lint (`staticcheck`, `errcheck`, `gosec`, `ineffassign`) and
   govulncheck steps added to CI.
-- Releases now include an SPDX SBOM per archive.
+- Releases now include an SPDX SBOM per archive and a Sigstore build-provenance
+  attestation, verifiable with `gh attestation verify`.
 
 ## [1.0.0] — 2026-06-26
 
