@@ -16,10 +16,12 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/fsutil"
 	"github.com/adericbourg/env-starter/internal/tui"
 )
 
@@ -83,10 +85,23 @@ func Serve(ctx context.Context, socketPath string, ctrl SwappableController) err
 		done:       make(chan struct{}),
 	}
 
+	// The socket dir must be owner-only before the socket exists: it is the
+	// primary barrier keeping other local users from ever reaching the socket.
+	// Enforced here (not only in EnsureDaemon) so a directly-invoked __daemon
+	// gets the same guarantee.
+	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(socketPath)); err != nil {
+		return fmt.Errorf("daemon: socket dir: %w", err)
+	}
+
 	// Remove any stale socket file from a previous run.
 	_ = os.Remove(socketPath)
 
+	// Create the socket file with owner-only permissions from the first instant:
+	// net.Listen creates it 0777&^umask, which would otherwise leave a brief
+	// window where another local user could connect before the chmod below.
+	restoreUmask := restrictUmask()
 	ln, err := net.Listen("unix", socketPath)
+	restoreUmask()
 	if err != nil {
 		return fmt.Errorf("daemon: listen %s: %w", socketPath, err)
 	}

@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -215,6 +217,77 @@ func rpc(t *testing.T, enc *json.Encoder, scanner *bufio.Scanner, req Request) R
 		t.Fatalf("decode response: %v", err)
 	}
 	return resp
+}
+
+// ── Socket permission tests ───────────────────────────────────────────────────
+
+func TestServe_socketAndDirAreOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits are not meaningful on windows")
+	}
+	// Given / When
+	socketPath, cancel := startTestServer(t, newMockController())
+	defer cancel()
+
+	// Then: the socket must never be reachable by other users.
+	sockInfo, err := os.Stat(socketPath)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if perm := sockInfo.Mode().Perm(); perm != 0o600 {
+		t.Errorf("socket mode: want 0600, got %o", perm)
+	}
+	dirInfo, err := os.Stat(filepath.Dir(socketPath))
+	if err != nil {
+		t.Fatalf("stat socket dir: %v", err)
+	}
+	if perm := dirInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("socket dir mode: want 0700, got %o", perm)
+	}
+}
+
+func TestServe_tightensPreexistingLooseSocketDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits are not meaningful on windows")
+	}
+	// Given: the socket dir already exists world-traversable (e.g. created by an
+	// older version) — the direct __daemon path must still end up owner-only.
+	dir := filepath.Join(t.TempDir(), "cache")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	socketPath := filepath.Join(dir, "daemon.sock")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, socketPath, newMockController()) }()
+
+	// When: wait until the server accepts connections.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.DialTimeout("unix", socketPath, 5*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("server did not start in time")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Then
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("pre-existing socket dir: want tightened to 0700, got %o", perm)
+	}
 }
 
 // ── RPC dispatch tests ────────────────────────────────────────────────────────
