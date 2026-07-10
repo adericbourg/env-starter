@@ -18,6 +18,12 @@ var repoPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]
 // never starting with '-' (which git would parse as a flag).
 var branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 
+// namePattern matches a safe command name. Names are used as file names (the
+// per-command log file is "<name>.log") so path separators, leading dots and
+// leading dashes are rejected — a name like "../../x" would otherwise escape
+// the logs directory.
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._ -]*$`)
+
 // Validate checks the Config for correctness. It returns a descriptive error on
 // the first violation found, or nil if everything is valid.
 func (c *Config) Validate() error {
@@ -43,6 +49,9 @@ func (c *Config) Validate() error {
 func validateCommand(idx int, cmd Command) error {
 	if cmd.Name == "" {
 		return fmt.Errorf("command[%d]: name is required", idx)
+	}
+	if !namePattern.MatchString(cmd.Name) {
+		return fmt.Errorf("command[%d]: name %q must start with a letter or digit and contain only letters, digits, '.', '_', '-' and spaces", idx, cmd.Name)
 	}
 	if cmd.Type == "" {
 		return fmt.Errorf("command %q: type is required", cmd.Name)

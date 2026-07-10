@@ -54,6 +54,11 @@ A list of named, runnable units. Each entry has the following fields.
 
 Unique identifier for the command. Referenced by `workflow[].command` and `workflow[].depends-on`.
 
+The name must start with a letter or digit and may contain only letters, digits, `.`, `_`, `-` and
+spaces. This is enforced because the name is also used as the command's log file name
+(`<name>.log`); path separators or leading dots/dashes are rejected so a name can never point
+outside the logs directory.
+
 ```yaml
 name: database
 ```
@@ -595,6 +600,7 @@ The following conditions cause `env-starter` to fail at startup with a descripti
 | Rule | Error condition |
 |------|----------------|
 | `command.name` is required | A command entry has no `name`. |
+| `command.name` must be a safe file name | Names must start with a letter or digit and contain only letters, digits, `.`, `_`, `-` and spaces (the name is used as the log file name). |
 | `command.type` is required | A command entry has no `type`. |
 | `command.type` must be `service` or `task` | Any other value is rejected. |
 | `command.run` is required | A command entry has no `run`. |

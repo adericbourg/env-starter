@@ -190,6 +190,37 @@ func TestValidate_whenCommandNameMissing_returnsError(t *testing.T) {
 	}
 }
 
+func TestValidate_whenCommandNameUnsafe_returnsError(t *testing.T) {
+	// Names become log file names ("<name>.log"), so anything that could
+	// escape the logs directory or start a flag must be rejected.
+	for _, name := range []string{"../../evil", "a/b", ".hidden", "-flag", "a\\b", "x\ny"} {
+		cfg := &Config{
+			Commands: []Command{
+				{Name: name, Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+			},
+		}
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("name %q: expected error, got nil", name)
+		}
+	}
+}
+
+func TestValidate_whenCommandNameSafe_returnsNil(t *testing.T) {
+	for _, name := range []string{"db", "api-server", "web_1", "cache.v2", "my service"} {
+		cfg := &Config{
+			Commands: []Command{
+				{Name: name, Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+			},
+			Environments: []Environment{
+				{Name: "dev", Workflow: []WorkflowStep{{Command: name}}},
+			},
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("name %q: expected no error, got %v", name, err)
+		}
+	}
+}
+
 func TestValidate_whenCommandTypeMissing_returnsError(t *testing.T) {
 	// Given
 	cfg := &Config{
