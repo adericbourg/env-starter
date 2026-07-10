@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,7 +141,7 @@ env-starter:
         url: https://example.com/bin
         checksum:
           alg: sha256
-          value: abc123
+          value: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
       run: ./bin
   environments:
     - name: dev
@@ -389,6 +390,72 @@ func TestWarnings_whenURLSourceHasChecksum_returnsNone(t *testing.T) {
 	// When / Then
 	if w := cfg.Warnings(); len(w) != 0 {
 		t.Errorf("expected no warnings, got %v", w)
+	}
+}
+
+func TestValidate_whenRequireChecksumsAndURLSourceHasNone_returnsError(t *testing.T) {
+	// Given require-checksums and an https url source without a checksum.
+	cfg := &Config{
+		RequireChecksums: true,
+		Commands: []Command{
+			{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{URL: "https://example.com/bin"}},
+			},
+		},
+	}
+
+	// When / Then
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for missing checksum under require-checksums, got nil")
+	}
+}
+
+func TestValidate_whenChecksumMalformed_returnsError(t *testing.T) {
+	cases := map[string]Checksum{
+		"unsupported alg": {Alg: "md5", Value: strings.Repeat("a", 32)},
+		"short value":     {Alg: "sha256", Value: "abc123"},
+		"non-hex value":   {Alg: "sha256", Value: strings.Repeat("z", 64)},
+		"empty value":     {Alg: "sha256"},
+	}
+	for name, cs := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := &Config{Commands: []Command{{
+				Name: "bin", Type: "service", Run: "./bin",
+				Source: Source{URLSource: &URL{URL: "https://example.com/bin", Checksum: &cs}},
+			}}}
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("expected error for checksum %+v, got nil", cs)
+			}
+		})
+	}
+}
+
+func TestValidate_whenChecksumWellFormed_returnsNil(t *testing.T) {
+	cfg := &Config{Commands: []Command{{
+		Name: "bin", Type: "service", Run: "./bin",
+		Source: Source{URLSource: &URL{
+			URL:      "https://example.com/bin",
+			Checksum: &Checksum{Alg: "sha256", Value: strings.Repeat("ab", 32)},
+		}},
+	}}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestMerge_requireChecksums_isNeverRelaxedByOverlay(t *testing.T) {
+	strict := &Config{RequireChecksums: true}
+	lax := &Config{}
+
+	if !Merge(strict, lax).RequireChecksums {
+		t.Error("overlay without require-checksums must not relax the base")
+	}
+	if !Merge(lax, strict).RequireChecksums {
+		t.Error("overlay with require-checksums must tighten the base")
+	}
+	if Merge(lax, lax).RequireChecksums {
+		t.Error("neither file sets require-checksums: merged config must not")
 	}
 }
 

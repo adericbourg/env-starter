@@ -9,8 +9,11 @@ package config
 //   - Neither base nor overlay is mutated.
 func Merge(base, overlay *Config) *Config {
 	return &Config{
-		Commands:     mergeCommands(base.Commands, overlay.Commands),
-		Environments: mergeEnvironments(base.Environments, overlay.Environments),
+		// Strictness never merges downward: if either file requires checksums,
+		// the merged config does — an overlay cannot relax the base's policy.
+		RequireChecksums: base.RequireChecksums || overlay.RequireChecksums,
+		Commands:         mergeCommands(base.Commands, overlay.Commands),
+		Environments:     mergeEnvironments(base.Environments, overlay.Environments),
 	}
 }
 

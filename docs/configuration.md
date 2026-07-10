@@ -39,6 +39,27 @@ env-starter:
 
 This prevents accidental collisions when you use overlays or include the file in a larger YAML document.
 
+### `require-checksums`
+
+| | |
+|---|---|
+| Type | bool |
+| Required | no |
+| Default | `false` |
+
+When `true`, a `url` source without a `checksum` is a **validation error** instead of a startup
+warning. Recommended for shared or team configs: without a checksum the downloaded file — which is
+then executed — is trusted on TLS alone (see [`source.url`](#sourceurl)).
+
+When configs are merged with `--config-overlay`, `require-checksums` is never relaxed: if either
+the base or the overlay sets it, the merged config enforces it.
+
+```yaml
+env-starter:
+  require-checksums: true
+  commands: [...]
+```
+
 ---
 
 ## `commands[]`
@@ -210,24 +231,26 @@ Download a file from an arbitrary URL.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `url` | string (scalar) | yes | — | URL to download. **Must use `https`** — plaintext `http` is rejected at config load. |
-| `checksum` | object | no | — | If set, verification is mandatory. Mismatch is a hard failure — the command will not start. |
-| `checksum.alg` | string | yes (if checksum set) | — | Hash algorithm. Currently only `sha256` is used. |
-| `checksum.value` | string | yes (if checksum set) | — | Expected hex digest. |
+| `checksum` | object | no (unless `require-checksums` is set) | — | If set, verification is mandatory. Mismatch is a hard failure — the command will not start. |
+| `checksum.alg` | string | yes (if checksum set) | — | Hash algorithm. Only `sha256` is supported; anything else is rejected at config load. |
+| `checksum.value` | string | yes (if checksum set) | — | Expected digest: exactly 64 hex characters, validated at config load. |
 
 Note: `url` is a **scalar string** at the top level of the `source` mapping, not a nested object. `checksum` is its optional sibling.
 
 > **Strongly recommended: set a `checksum`.** Without one, the downloaded file
 > (which is then executed) is trusted on the TLS connection alone — a compromised
 > or swapped upstream artifact would not be detected. env-starter prints a
-> startup warning for any `url` source that omits a checksum. The download is
-> always served over `https`, capped at 2 GiB, and only follows `https` redirects.
+> startup warning for any `url` source that omits a checksum; set
+> [`require-checksums: true`](#require-checksums) at the top level to turn the
+> warning into a hard error. The download is always served over `https`, capped
+> at 2 GiB, and only follows `https` redirects.
 
 ```yaml
 source:
   url: https://releases.example.com/auth-gateway/bin
   checksum:
     alg: sha256
-    value: "e3b0c44298fc1c149afb4c8996fb92427ae41e4649b934ca495991b7852b855"
+    value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 ```
 
 ### `source.local`
@@ -605,6 +628,8 @@ The following conditions cause `env-starter` to fail at startup with a descripti
 | `command.type` must be `service` or `task` | Any other value is rejected. |
 | `command.run` is required | A command entry has no `run`. |
 | `source` must specify exactly one variant | `github`, `url`, and `local` are mutually exclusive; having none or more than one is rejected. |
+| `checksum` must be well-formed | `alg` must be `sha256` and `value` exactly 64 hex characters. |
+| `url` source needs a `checksum` when `require-checksums` is set | With top-level `require-checksums: true`, a `url` source without a checksum is rejected. |
 | `readiness` probe must be `tcp` or `shell` | `http` and `log` probes are not yet supported. Specifying more than one of `tcp`/`shell` is also rejected. |
 | `restart` on a task requires a `readiness` probe | A task with a `restart` block (and restart not explicitly disabled) must also declare a `readiness` probe. Without a probe, liveness monitoring is impossible for a task. |
 | `restart.max-retries` must not be negative | Negative values are rejected. |

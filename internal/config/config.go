@@ -149,8 +149,13 @@ type Environment struct {
 
 // Config is the root configuration object.
 type Config struct {
-	Commands     []Command     `yaml:"commands"`
-	Environments []Environment `yaml:"environments"`
+	// RequireChecksums makes a missing checksum on a url source a validation
+	// error instead of a warning. Without a checksum, the downloaded file —
+	// which is executed as code — is trusted on TLS alone, so a swapped or
+	// tampered artifact at the origin goes undetected.
+	RequireChecksums bool          `yaml:"require-checksums,omitempty"`
+	Commands         []Command     `yaml:"commands"`
+	Environments     []Environment `yaml:"environments"`
 }
 
 // envStarterWrapper is used to unwrap the top-level "env-starter:" key.

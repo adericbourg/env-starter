@@ -31,7 +31,7 @@ func (c *Config) Validate() error {
 	commandNames := make(map[string]struct{}, len(c.Commands))
 
 	for i, cmd := range c.Commands {
-		if err := validateCommand(i, cmd); err != nil {
+		if err := validateCommand(i, cmd, c.RequireChecksums); err != nil {
 			return err
 		}
 		commandNames[cmd.Name] = struct{}{}
@@ -46,7 +46,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-func validateCommand(idx int, cmd Command) error {
+func validateCommand(idx int, cmd Command, requireChecksums bool) error {
 	if cmd.Name == "" {
 		return fmt.Errorf("command[%d]: name is required", idx)
 	}
@@ -67,7 +67,7 @@ func validateCommand(idx int, cmd Command) error {
 			return fmt.Errorf("command %q: setup[%d] must not be empty", cmd.Name, i)
 		}
 	}
-	if err := validateSource(cmd.Name, cmd.Source); err != nil {
+	if err := validateSource(cmd.Name, cmd.Source, requireChecksums); err != nil {
 		return err
 	}
 	if cmd.Readiness != nil {
@@ -97,7 +97,7 @@ func validateRestart(cmdName string, r Restart) error {
 	return nil
 }
 
-func validateSource(cmdName string, src Source) error {
+func validateSource(cmdName string, src Source, requireChecksums bool) error {
 	count := 0
 	if src.GitHub != nil {
 		count++
@@ -122,6 +122,12 @@ func validateSource(cmdName string, src Source) error {
 		if parsed.Scheme != "https" {
 			return fmt.Errorf("command %q: url source must use https, got scheme %q", cmdName, parsed.Scheme)
 		}
+		if src.URLSource.Checksum == nil && requireChecksums {
+			return fmt.Errorf("command %q: url source has no checksum and require-checksums is enabled", cmdName)
+		}
+		if err := validateChecksum(cmdName, src.URLSource.Checksum); err != nil {
+			return err
+		}
 	}
 	if src.GitHub != nil {
 		if !repoPattern.MatchString(src.GitHub.Repo) {
@@ -133,6 +139,25 @@ func validateSource(cmdName string, src Source) error {
 	}
 	if err := validateSubdir(cmdName, src.Subdir); err != nil {
 		return err
+	}
+	return nil
+}
+
+// checksumValuePattern matches a sha256 digest: exactly 64 hex characters.
+var checksumValuePattern = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+
+// validateChecksum rejects a malformed checksum at config load rather than at
+// fetch time, so a typo'd digest (or unsupported algorithm) is reported before
+// anything is downloaded.
+func validateChecksum(cmdName string, cs *Checksum) error {
+	if cs == nil {
+		return nil
+	}
+	if cs.Alg != "sha256" {
+		return fmt.Errorf("command %q: checksum alg must be \"sha256\", got %q", cmdName, cs.Alg)
+	}
+	if !checksumValuePattern.MatchString(cs.Value) {
+		return fmt.Errorf("command %q: checksum value must be a 64-character hex sha256 digest", cmdName)
 	}
 	return nil
 }
@@ -163,8 +188,10 @@ func (c *Config) Warnings() []string {
 	for _, cmd := range c.Commands {
 		if cmd.Source.URLSource != nil && cmd.Source.URLSource.Checksum == nil {
 			warnings = append(warnings, fmt.Sprintf(
-				"command %q: url source has no checksum; the download is trusted on TLS alone. "+
-					"Add a sha256 checksum to detect a tampered or swapped artifact.", cmd.Name))
+				"command %q: url source has NO checksum — the downloaded file will be executed "+
+					"trusting TLS alone, so a tampered or swapped artifact at the origin goes "+
+					"undetected. Add a sha256 checksum to the source, or set require-checksums: true "+
+					"at the top level to make this an error.", cmd.Name))
 		}
 	}
 	return warnings
