@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/adericbourg/env-starter/internal/fsutil"
 )
 
 // runProcess executes name with args, routing stdout to out.
@@ -149,6 +151,14 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 		runGh = g.ghRunner
 	}
 
+	// The cache dir names are predictable (github-owner-name-branch), so a
+	// pre-existing clone is only trusted when the cache root is owned by us and
+	// private: a repo planted by another user on a shared cache location would
+	// otherwise be pulled — and its contents executed — as if we had cloned it.
+	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(dir)); err != nil {
+		return "", fmt.Errorf("cache dir: %w", err)
+	}
+
 	info, statErr := os.Stat(dir)
 	if statErr == nil && info.IsDir() {
 		// Directory already exists — refresh.
@@ -157,9 +167,6 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 		}
 	} else {
 		// Need to clone.
-		if err := os.MkdirAll(filepath.Dir(dir), 0o750); err != nil {
-			return "", fmt.Errorf("cannot create cache parent dir: %w", err)
-		}
 		if err := g.clone(ctx, dir, runGit, runGh); err != nil {
 			return "", err
 		}

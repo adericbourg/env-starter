@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/adericbourg/env-starter/internal/fsutil"
 	"github.com/adericbourg/env-starter/internal/httpsafe"
 )
 
@@ -104,7 +105,14 @@ func (u *URL) Fetch(ctx context.Context) (string, error) {
 
 	defer lockPath(dir)()
 
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	// The cache dir names are predictable (hash of the URL), so a pre-existing
+	// dir is only trusted when it is owned by us and private: a dir planted by
+	// another user on a shared cache location would otherwise be reused — and
+	// its contents executed — as if we had downloaded it.
+	if err := fsutil.EnsureOwnerOnlyDir(filepath.Dir(dir)); err != nil {
+		return "", fmt.Errorf("cache dir: %w", err)
+	}
+	if err := fsutil.EnsureOwnerOnlyDir(dir); err != nil {
 		return "", fmt.Errorf("cannot create cache dir %s: %w", dir, err)
 	}
 

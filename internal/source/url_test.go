@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -52,6 +53,42 @@ func TestURL_Fetch_downloadsFileIntoCache(t *testing.T) {
 	}
 	if string(got) != string(content) {
 		t.Errorf("file content = %q, want %q", got, content)
+	}
+}
+
+func TestURL_Fetch_tightensPreexistingLooseCacheRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits are not meaningful on windows")
+	}
+	// Given a cache root that already exists world-traversable. Cache subdir
+	// names are predictable, so the root must be private before any pre-existing
+	// content is reused.
+	cacheBase := t.TempDir()
+	root := filepath.Join(cacheBase, "env-starter")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	u := &URL{
+		URL:       "https://example.com/file.txt",
+		cacheBase: cacheBase,
+		httpGet:   fakeHTTPGet([]byte("data")),
+	}
+
+	// When
+	if _, err := u.Fetch(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Then
+	info, err := os.Stat(root)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o700 {
+		t.Errorf("cache root: want tightened to 0700, got %o", perm)
 	}
 }
 
