@@ -139,6 +139,13 @@ func Serve(ctx context.Context, socketPath string, ctrl SwappableController) err
 				return fmt.Errorf("daemon: accept: %w", err)
 			}
 		}
+		// Defence in depth on top of the socket file permissions: only peers
+		// running as the daemon's own user may issue commands.
+		if err := checkPeer(conn); err != nil {
+			log.Printf("daemon: %v", err)
+			_ = conn.Close()
+			continue
+		}
 		go s.handleConn(ctx, conn, ln)
 	}
 }
