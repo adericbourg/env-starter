@@ -1,7 +1,8 @@
 # Regenerate docs/images/demo.gif:
 #   go build -o env-starter ./cmd/env-starter
+#   docker pull nginx:alpine      (pre-cache so the recording isn't slowed by the pull; Docker must be running)
 #   vhs docs/examples/demo.tape   (run from the repo root; needs local network for ttyd)
-#   ./env-starter shutdown        (stop the daemon spawned while recording)
+#   ./env-starter shutdown        (stop the daemon + container spawned while recording)
 
 Output docs/images/demo.gif
 
@@ -27,4 +28,4 @@ Sleep 400ms
 Enter
 Sleep 1500ms
 Type "s"
-Sleep 13s
+Sleep 15s

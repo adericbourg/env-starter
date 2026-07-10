@@ -28,10 +28,10 @@ waiting are no longer your job.
 
 ![env-starter starting a dependency-ordered environment](docs/images/demo.gif)
 
-The environment above declares `database → {migrate, auth-gateway} → frontend`.
-`env-starter` starts `database` first, waits for its readiness probe, then starts
-`migrate` and `auth-gateway` in parallel, and only starts `frontend` once both are
-done — all from pressing `s` once.
+The environment above declares two independent services — `docker-web` (an
+`nginx` container) and `local-web` (a local `python3` HTTP server) — started in
+parallel, plus a `greet` task that only runs once both are healthy. All from
+pressing `s` once.
 
 ## Example
 
@@ -66,7 +66,7 @@ env-starter:
         shell: "curl -sf localhost:8080/health"
 
   environments:
-    - name: connect-order
+    - name: my-app-environment
       workflow:
         - command: database
         - command: migrate
@@ -76,14 +76,16 @@ env-starter:
 ```
 
 ```sh
-env-starter run connect-order && echo "ready"
+env-starter run my-app-environment && echo "ready"
 ```
 
 `source` accepts a `github` repo, a `url` (with an optional checksum), or a `local`
 path — see the [configuration reference](docs/configuration.md) for the full
-schema. For a version you can actually run with no setup (no Docker, no network —
-it's what recorded the demo above), see
-[`docs/examples/demo.yaml`](docs/examples/demo.yaml).
+schema. For a version you can actually run yourself — one service in Docker, one
+without, no repos to clone — see
+[`docs/examples/demo.yaml`](docs/examples/demo.yaml) (it's what recorded the
+demo above). It needs a running Docker daemon, `python3`, `curl`, and free
+ports `8080`/`9000`.
 
 ## Features
 
