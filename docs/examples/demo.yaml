@@ -1,0 +1,53 @@
+# Self-contained demo config used to record docs/images/demo.gif (see demo.tape)
+# and referenced from the README as a runnable example. No external sources,
+# ports, or network access required — every command uses `source: local` and
+# plain shell one-liners so it runs the same on any machine.
+env-starter:
+  commands:
+    - name: database
+      type: service
+      source:
+        local: .
+      run: sh -c 'while true; do sleep 1; done'
+      readiness:
+        shell: "sleep 2 && true"
+        timeout: 10s
+        interval: 1s
+
+    - name: migrate
+      type: task
+      source:
+        local: .
+      run: sh -c 'echo migrating... && sleep 1 && echo done'
+
+    - name: auth-gateway
+      type: service
+      source:
+        local: .
+      run: sh -c 'while true; do sleep 1; done'
+      readiness:
+        shell: "sleep 1 && true"
+        timeout: 10s
+        interval: 1s
+
+    - name: frontend
+      type: service
+      source:
+        local: .
+      run: sh -c 'while true; do sleep 1; done'
+      readiness:
+        shell: "sleep 1 && true"
+        timeout: 10s
+        interval: 1s
+
+  environments:
+    - name: connect-order
+      description: Database, migrations, auth gateway, and frontend, started in order
+      workflow:
+        - command: database
+        - command: migrate
+          depends-on: [database]
+        - command: auth-gateway
+          depends-on: [database]
+        - command: frontend
+          depends-on: [migrate, auth-gateway]
