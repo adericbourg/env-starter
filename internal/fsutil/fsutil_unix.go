@@ -19,7 +19,9 @@ func enforceOwnerOnly(dir string, info os.FileInfo) error {
 		}
 	}
 	if info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(dir, 0o700); err != nil {
+		// 0700, not 0600: directories need the execute bit for the owner to
+		// traverse them; gosec's 0600-or-less rule targets regular files.
+		if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec
 			return fmt.Errorf("%s: tighten permissions to 0700: %w", dir, err)
 		}
 	}
