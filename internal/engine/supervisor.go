@@ -801,16 +801,8 @@ func (e *Engine) logCmdError(c *command, err error) {
 	_, _ = fmt.Fprintf(c.writer, "\nenv-starter: %v\n", err)
 }
 
-func (e *Engine) logsDir() string {
-	base, err := source.CacheDir()
-	if err != nil {
-		base = os.TempDir()
-	}
-	return filepath.Join(base, "logs")
-}
-
 func (e *Engine) logPath(cmdName string) string {
-	return filepath.Join(e.logsDir(), cmdName+".log")
+	return filepath.Join(e.logsDir, cmdName+".log")
 }
 
 // runSetup executes each setup command sequentially in runDir, streaming output

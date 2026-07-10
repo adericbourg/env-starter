@@ -12,11 +12,13 @@ package engine
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/logbuf"
+	"github.com/adericbourg/env-starter/internal/source"
 )
 
 // EnvState is the lifecycle state of an environment.
@@ -214,6 +216,12 @@ type Engine struct {
 	// runEnvironment) to recompute environment state after a restart.
 	envsOf map[string][]string
 
+	// logsDir is where per-command log files are written. Resolved once at
+	// construction; New fails when no per-user cache dir is available rather
+	// than falling back to a shared location like os.TempDir(), because command
+	// output can contain secrets.
+	logsDir string
+
 	events chan Event
 }
 
@@ -243,6 +251,11 @@ func New(cfg *config.Config) (*Engine, error) {
 		}
 	}
 
+	cacheDir, err := source.CacheDir()
+	if err != nil {
+		return nil, fmt.Errorf("engine: resolve logs dir: %w", err)
+	}
+
 	return &Engine{
 		cfg:           cfg,
 		GracePeriod:   defaultGracePeriod,
@@ -253,6 +266,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		envOrder:      envOrder,
 		cmdOf:         cmdOf,
 		envsOf:        envsOf,
+		logsDir:       filepath.Join(cacheDir, "logs"),
 		events:        make(chan Event, eventBufferSize),
 	}, nil
 }
@@ -335,7 +349,7 @@ func (e *Engine) LogPath(command string) string {
 // directory. It is safe to call before any command starts. A missing directory
 // is not an error. Returns the base names of removed files.
 func (e *Engine) PurgeOldLogs() ([]string, error) {
-	return logbuf.PurgeOlderThan(e.logsDir(), logbuf.LogRetention)
+	return logbuf.PurgeOlderThan(e.logsDir, logbuf.LogRetention)
 }
 
 // StoppingCommands returns the commands currently being torn down, in config

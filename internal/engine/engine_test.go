@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -536,6 +537,25 @@ func TestNew_whenEnvReferencesUnknownCommand_returnsError(t *testing.T) {
 	// Then it fails.
 	if err == nil {
 		t.Fatalf("expected error for unknown command reference")
+	}
+}
+
+func TestNew_whenNoCacheDirAvailable_returnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.UserCacheDir does not depend on HOME on windows")
+	}
+	// Given no way to resolve a per-user cache dir. The engine must refuse to
+	// start rather than fall back to a shared location (e.g. os.TempDir) for
+	// log files, which can contain secrets.
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	// When constructing the engine.
+	_, err := New(&config.Config{})
+
+	// Then it fails.
+	if err == nil {
+		t.Fatal("expected an error when the user cache dir cannot be resolved")
 	}
 }
 
