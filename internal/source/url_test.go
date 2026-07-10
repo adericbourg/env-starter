@@ -93,28 +93,6 @@ func TestURL_Fetch_whenSchemeNotHTTPS_returnsError(t *testing.T) {
 	}
 }
 
-func TestCheckHTTPSRedirect_rejectsDowngradeAndExcessiveHops(t *testing.T) {
-	httpsReq, _ := http.NewRequest(http.MethodGet, "https://example.com/b", nil)
-	httpReq, _ := http.NewRequest(http.MethodGet, "http://example.com/b", nil)
-
-	// A single https->https hop is allowed.
-	if err := checkHTTPSRedirect(httpsReq, []*http.Request{httpsReq}); err != nil {
-		t.Errorf("https redirect should be allowed: %v", err)
-	}
-	// A downgrade to http is rejected.
-	if err := checkHTTPSRedirect(httpReq, []*http.Request{httpsReq}); err == nil {
-		t.Error("redirect to http should be rejected")
-	}
-	// Too many hops are rejected.
-	via := make([]*http.Request, maxRedirects+1)
-	for i := range via {
-		via[i] = httpsReq
-	}
-	if err := checkHTTPSRedirect(httpsReq, via); err == nil {
-		t.Error("excessive redirects should be rejected")
-	}
-}
-
 func TestURL_Fetch_withMatchingChecksum_succeeds(t *testing.T) {
 	// Given
 	content := []byte("checksum test content")

@@ -11,10 +11,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-)
 
-// maxRedirects bounds how many redirect hops a download may follow.
-const maxRedirects = 10
+	"github.com/adericbourg/env-starter/internal/httpsafe"
+)
 
 // maxDownloadBytes caps the size of a downloaded file to avoid unbounded disk
 // (and, previously, memory) use from a malicious or misbehaving server. It is a
@@ -74,27 +73,12 @@ func validateHTTPSURL(raw string) error {
 	return nil
 }
 
-// checkHTTPSRedirect is the redirect policy for download requests: every hop
-// must stay on https (no downgrade to http) and the chain is bounded.
-func checkHTTPSRedirect(req *http.Request, via []*http.Request) error {
-	if req.URL.Scheme != "https" {
-		return fmt.Errorf("refusing redirect to non-https URL %q", req.URL.String())
-	}
-	if len(via) >= maxRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxRedirects)
-	}
-	return nil
-}
-
-// downloadClient follows only https redirects, up to maxRedirects hops.
-var downloadClient = &http.Client{CheckRedirect: checkHTTPSRedirect}
-
 func defaultHTTPGet(ctx context.Context, rawURL string) (io.ReadCloser, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := downloadClient.Do(req)
+	resp, err := httpsafe.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}

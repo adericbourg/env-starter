@@ -22,9 +22,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
+	"github.com/adericbourg/env-starter/internal/httpsafe"
 	"github.com/minio/selfupdate"
 	"golang.org/x/mod/semver"
 )
@@ -95,7 +97,8 @@ func defaultHTTPGet(ctx context.Context, url string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "env-starter")
-	resp, err := http.DefaultClient.Do(req)
+	// Same transport policy as source downloads: redirects must stay on https.
+	resp, err := httpsafe.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -107,9 +110,15 @@ func defaultHTTPGet(ctx context.Context, url string) (io.ReadCloser, error) {
 	return resp.Body, nil
 }
 
+// tagPattern matches a plausible release tag (v1.2.3, v1.2.3-rc.1). The tag
+// comes from a redirect Location header and is interpolated into download URL
+// paths, so anything containing '/' or other URL-significant characters is
+// rejected rather than allowed to reshape the checksums/archive URLs.
+var tagPattern = regexp.MustCompile(`^v[0-9A-Za-z.+-]+$`)
+
 // tagFromLocation extracts the release tag from a GitHub releases/tag redirect
-// Location header value. It returns an error if the marker segment is absent or
-// the tag is empty.
+// Location header value. It returns an error if the marker segment is absent,
+// the tag is empty, or the tag does not look like a release version.
 func tagFromLocation(location string) (string, error) {
 	const marker = "/releases/tag/"
 	idx := strings.LastIndex(location, marker)
@@ -119,6 +128,9 @@ func tagFromLocation(location string) (string, error) {
 	tag := strings.TrimSuffix(location[idx+len(marker):], "/")
 	if tag == "" {
 		return "", fmt.Errorf("empty tag in Location %q", location)
+	}
+	if !tagPattern.MatchString(tag) {
+		return "", fmt.Errorf("tag %q in Location %q is not a valid release tag", tag, location)
 	}
 	return tag, nil
 }

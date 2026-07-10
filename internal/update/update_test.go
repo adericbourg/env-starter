@@ -126,6 +126,32 @@ func TestTagFromLocation_ofEmptyLocation_returnsError(t *testing.T) {
 	}
 }
 
+func TestTagFromLocation_ofUnsafeTag_returnsError(t *testing.T) {
+	// The tag is interpolated into download URL paths, so anything that could
+	// reshape those URLs (path traversal, query strings, missing v prefix) must
+	// be rejected even though the cosign gate would catch a forged artifact.
+	for _, loc := range []string{
+		"https://github.com/adericbourg/env-starter/releases/tag/../../../evil",
+		"https://github.com/adericbourg/env-starter/releases/tag/v1.0.0?x=1",
+		"https://github.com/adericbourg/env-starter/releases/tag/1.0.0",
+		"https://github.com/adericbourg/env-starter/releases/tag/v1.0.0%2F..",
+	} {
+		if _, err := tagFromLocation(loc); err == nil {
+			t.Errorf("location %q: expected error, got nil", loc)
+		}
+	}
+}
+
+func TestTagFromLocation_ofPrereleaseTag_returnsTag(t *testing.T) {
+	tag, err := tagFromLocation("https://github.com/adericbourg/env-starter/releases/tag/v2.0.0-rc.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tag != "v2.0.0-rc.1" {
+		t.Errorf("want v2.0.0-rc.1, got %q", tag)
+	}
+}
+
 // --- Latest ---
 
 func TestLatest_ofRedirectResponse_returnsTagName(t *testing.T) {
