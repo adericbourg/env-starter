@@ -1,4 +1,7 @@
 name: Format
+# Actions are pinned to full commit SHAs (uses: owner/action@<sha> # vX) so a
+# retagged or compromised action version cannot change what this workflow runs.
+# Renovate maintains the pins via helpers:pinGitHubActionDigests.
 
 on:
   pull_request:
@@ -16,13 +19,13 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           # Use the commit SHA (a safe hex string) rather than the branch name to
           # avoid ref-injection from an attacker-controlled head_ref value.
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
           cache: true
