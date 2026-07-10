@@ -63,6 +63,14 @@ checksum:
   name_template: checksums.txt
   algorithm: sha256
 
+# Generate an SPDX SBOM per archive (syft). Uploaded as release assets alongside
+# checksums.txt. Additive supply-chain transparency; does not affect the
+# cosign-signed self-update trust chain.
+sboms:
+  - artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+
 # Sign checksums.txt with cosign so the self-updater can authenticate a release,
 # not merely trust TLS to GitHub. Requires COSIGN_PRIVATE_KEY and COSIGN_PASSWORD
 # in the release environment; the matching public key is embedded in the binary
