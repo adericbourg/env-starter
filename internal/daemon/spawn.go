@@ -102,10 +102,10 @@ func EnsureDaemon(ctx context.Context, socketPath, lockPath, configFile, configO
 	}
 	defer func() { _ = lockFile.Close() }()
 
-	if err := lockFileExclusive(lockFile); err != nil {
+	if err := fsutil.LockFileExclusive(lockFile); err != nil {
 		return nil, fmt.Errorf("daemon: ensure: acquire lock: %w", err)
 	}
-	defer unlockFile(lockFile) //nolint:errcheck
+	defer fsutil.UnlockFile(lockFile) //nolint:errcheck
 
 	// Step 2b: retry dial after acquiring the lock — another process may have
 	// started the daemon while we waited for the lock.
