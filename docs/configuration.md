@@ -612,7 +612,7 @@ To disable auto-restart for a specific command, set `restart.enabled: false`.
 Each command's output is captured in two places:
 
 - **In-memory ring buffer** — shown in the live TUI log pane.
-- **File tee** — written to `<os.UserCacheDir()>/env-starter/logs/<env>/<command>.log` for post-mortem inspection.
+- **File tee** — written to `<os.UserCacheDir()>/env-starter/logs/<command>.log` for post-mortem inspection.
 
 ---
 

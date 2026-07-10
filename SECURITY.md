@@ -34,6 +34,44 @@ it goes through a two-step verification chain:
 The binary is replaced atomically (rename) so a partial update cannot leave
 the tool in a broken state.
 
+## Local trust model
+
+env-starter is a strictly per-user tool. Everything it persists lives under
+`os.UserCacheDir()/env-starter/` (`~/.cache/env-starter` on Linux), which is
+enforced **owner-only** (`0700`): the directory is created private, a
+pre-existing directory with looser permissions is tightened, and a directory
+owned by another user is rejected outright.
+
+Inside that boundary:
+
+- **Daemon socket** — the background daemon listens on a unix socket
+  (`daemon.sock`, `0600`) inside the owner-only directory. The socket is
+  created with a restrictive umask so it is never connectable by other users,
+  even briefly. As defence in depth the daemon also verifies each connecting
+  peer's uid against its own (`SO_PEERCRED` on Linux, `LOCAL_PEERCRED` on
+  macOS) and rejects mismatches. This matters because a connected peer can
+  start configured environments — i.e. run the owner's commands — and shut
+  the daemon down.
+- **Source cache** — downloaded url sources and GitHub clones live in
+  predictable subdirectories and are executed as code, so pre-existing cache
+  content is only reused after the ownership check above passes.
+- **Log files** — per-command logs are `0600` in an owner-only directory and
+  are never written to a shared location: if the per-user cache directory
+  cannot be resolved, env-starter fails instead of falling back to a
+  world-readable temp dir.
+
+There is no setuid, no TCP listener, and no cross-user IPC of any kind.
+
+## URL source integrity
+
+`url` sources are downloaded over `https` only (redirects must stay on
+https) and are then **executed as code**. Declare a `checksum` so a tampered
+or swapped artifact at the origin is detected; without one the download is
+trusted on TLS alone and env-starter prints a startup warning. Set
+`require-checksums: true` at the top level of the config to make a missing
+checksum a hard validation error (recommended for shared configs; an overlay
+can never relax it).
+
 ## Config overlay trust
 
 `--config-overlay` files are trusted at the same level as the base config
