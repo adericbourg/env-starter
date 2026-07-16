@@ -31,6 +31,7 @@ var subcommands = []NameDesc{
 	{Name: "stop", Description: "stop a named environment"},
 	{Name: "list", Description: "list configured environments"},
 	{Name: "ps", Description: "show running environments"},
+	{Name: "command", Description: "manage individual commands (list, restart)"},
 	{Name: "shutdown", Description: "stop the daemon and all environments"},
 	{Name: "update", Description: "update env-starter to the latest release"},
 	{Name: "help", Description: "show usage"},
@@ -45,10 +46,17 @@ var cmdFlags = map[string][]string{
 	"list":       {"--config", "--config-overlay"},
 	"stop":       {},
 	"ps":         {},
+	"command":    {},
 	"shutdown":   {},
 	"update":     {},
 	"help":       {},
 	"completion": {},
+}
+
+// commandVerbs is the ordered list of "env-starter command <verb>" sub-verbs.
+var commandVerbs = []NameDesc{
+	{Name: "list", Description: "show started commands and their state"},
+	{Name: "restart", Description: "restart a single command"},
 }
 
 // flagTakesValue lists flags that consume the next token as their value.
@@ -64,8 +72,10 @@ var flagTakesValue = map[string]bool{
 // words contains the arguments typed so far, with the program name excluded.
 // The last element is the partial word currently being completed (may be "").
 // envNames provides environment names and descriptions loaded from the offline
-// config (no daemon required).
-func Complete(words []string, envNames []NameDesc) Result {
+// config (no daemon required). cmdNames optionally provides command names for
+// completing "env-starter command restart <TAB>"; existing callers that only
+// deal with environments can omit it.
+func Complete(words []string, envNames []NameDesc, cmdNames ...NameDesc) Result {
 	if len(words) == 0 {
 		return Result{Candidates: format(subcommands)}
 	}
@@ -117,6 +127,18 @@ func Complete(words []string, envNames []NameDesc) Result {
 		}
 	}
 
+	// For command: complete the verb (list/restart), then — for restart —
+	// the command-name positional slot.
+	if sub == "command" {
+		if len(words) == 2 {
+			return Result{Candidates: filterByPrefix(format(commandVerbs), current)}
+		}
+		if words[1] == "restart" && isPositionalSlotFrom(words, 2) {
+			return Result{Candidates: filterByPrefix(format(cmdNames), current)}
+		}
+		return Result{}
+	}
+
 	return Result{}
 }
 
@@ -129,8 +151,16 @@ func isFileFlag(flag string) bool {
 // (non-flag) argument after the subcommand (words[0]).
 // It skips over flags and their values correctly.
 func isPositionalSlot(words []string) bool {
+	return isPositionalSlotFrom(words, 1)
+}
+
+// isPositionalSlotFrom returns true when we are completing the first
+// positional (non-flag) argument starting at index start (e.g. start=2 for
+// "command restart <TAB>", skipping over "command" and "restart").
+// It skips over flags and their values correctly.
+func isPositionalSlotFrom(words []string, start int) bool {
 	positionals := 0
-	i := 1
+	i := start
 	for i < len(words)-1 { // exclude the current partial (last element)
 		w := words[i]
 		if flagTakesValue[w] {

@@ -14,6 +14,12 @@ var testEnvs = []completion.NameDesc{
 	{Name: "full-stack", Description: "Everything"},
 }
 
+// testCmds is a fixed set of commands used across tests.
+var testCmds = []completion.NameDesc{
+	{Name: "api"},
+	{Name: "db"},
+}
+
 // --- helpers ---
 
 // candidateValues extracts the value part (before the first tab) from each
@@ -85,7 +91,7 @@ func TestComplete_ofEmptyCurrentWord_returnsAllSubcommands(t *testing.T) {
 	if result.Directive != completion.DirectiveDefault {
 		t.Errorf("directive = %v, want DirectiveDefault", result.Directive)
 	}
-	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "shutdown", "update", "help", "completion")
+	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "command", "shutdown", "update", "help", "completion")
 	notContains(t, result.Candidates, "__complete")
 	notContains(t, result.Candidates, "__daemon")
 }
@@ -253,5 +259,57 @@ func TestComplete_ofDescriptions_areIncludedInCandidates(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("candidates = %v: expected 'frontend\\tFrontend stack'", result.Candidates)
+	}
+}
+
+func TestComplete_ofCommandWithEmptyArg_returnsListAndRestart(t *testing.T) {
+	// Given / When
+	result := completion.Complete([]string{"command", ""}, testEnvs)
+
+	// Then
+	exactValues(t, result.Candidates, "list", "restart")
+}
+
+func TestComplete_ofCommandWithVerbPrefix_filtersVerbs(t *testing.T) {
+	// Given / When
+	result := completion.Complete([]string{"command", "re"}, testEnvs)
+
+	// Then
+	exactValues(t, result.Candidates, "restart")
+}
+
+func TestComplete_ofCommandRestartWithEmptyArg_returnsCommandNames(t *testing.T) {
+	// Given / When
+	result := completion.Complete([]string{"command", "restart", ""}, testEnvs, testCmds...)
+
+	// Then
+	exactValues(t, result.Candidates, "api", "db")
+}
+
+func TestComplete_ofCommandRestartWithNamePrefix_filtersCommandNames(t *testing.T) {
+	// Given / When
+	result := completion.Complete([]string{"command", "restart", "a"}, testEnvs, testCmds...)
+
+	// Then
+	exactValues(t, result.Candidates, "api")
+}
+
+func TestComplete_ofCommandRestartWithNameAlreadyTyped_returnsNoMoreCandidates(t *testing.T) {
+	// Given / When — `env-starter command restart api <TAB>`: positional already filled.
+	result := completion.Complete([]string{"command", "restart", "api", ""}, testEnvs, testCmds...)
+
+	// Then
+	if len(result.Candidates) != 0 {
+		t.Errorf("candidates = %v, want empty (positional already filled)", result.Candidates)
+	}
+}
+
+func TestComplete_ofCommandListWithEmptyArg_returnsNoCandidates(t *testing.T) {
+	// Given / When — `list` takes no further arguments.
+	result := completion.Complete([]string{"command", "list", ""}, testEnvs, testCmds...)
+
+	// Then
+	if len(result.Candidates) != 0 {
+		t.Errorf("candidates = %v, want empty (list takes no args)", result.Candidates)
 	}
 }

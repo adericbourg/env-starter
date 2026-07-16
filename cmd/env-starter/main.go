@@ -880,14 +880,19 @@ func runComplete(words []string) {
 	}
 
 	var envNames []completion.NameDesc
+	var cmdNames []completion.NameDesc
 	if cfg, _, _, err := resolveConfig(configFile, configOverlay); err == nil {
 		envNames = make([]completion.NameDesc, len(cfg.Environments))
 		for i, env := range cfg.Environments {
 			envNames[i] = completion.NameDesc{Name: env.Name, Description: env.Description}
 		}
+		cmdNames = make([]completion.NameDesc, len(cfg.Commands))
+		for i, cmd := range cfg.Commands {
+			cmdNames[i] = completion.NameDesc{Name: cmd.Name}
+		}
 	}
 
-	result := completion.Complete(words, envNames)
+	result := completion.Complete(words, envNames, cmdNames...)
 	for _, c := range result.Candidates {
 		fmt.Println(c)
 	}

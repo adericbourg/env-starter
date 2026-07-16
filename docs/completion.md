@@ -6,6 +6,7 @@ Completion covers:
 - Subcommand names (`run`, `stop`, `list`, …)
 - Flag names (`--config`, `--config-overlay`, `--timeout`, …)
 - Environment names (from your config, e.g. `env-starter run <TAB>`)
+- Command names (from your config, e.g. `env-starter command restart <TAB>`)
 - File-path completion for `--config` and `--config-overlay` values
 
 ## Installation
@@ -63,5 +64,6 @@ so far, loads your config **offline** (no daemon required), and prints completio
 candidates followed by a directive line (`:0` for normal candidates, `:1` to
 signal the shell to fall back to file-path completion).
 
-Environment names come from the same config that `env-starter list` reads, so
-they always reflect your local configuration without needing a running daemon.
+Environment and command names come from the same config that `env-starter list`
+reads, so they always reflect your local configuration without needing a
+running daemon.
