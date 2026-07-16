@@ -1,7 +1,10 @@
 #compdef env-starter
 # zsh completion for env-starter
 # Install:
-#   env-starter completion zsh > "${fpath[1]}/_env-starter"
+#   mkdir -p ~/.zsh/completions
+#   env-starter completion zsh > ~/.zsh/completions/_env-starter
+#   # then add to .zshrc, before compinit is called:
+#   #   fpath=(~/.zsh/completions $fpath)
 # or for lazy-loading via compinit (e.g. Oh My Zsh):
 #   source <(env-starter completion zsh)
 
