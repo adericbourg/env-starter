@@ -15,7 +15,14 @@ Completion covers:
 **Recommended — install to `$fpath`** (persists across sessions):
 
 ```zsh
-env-starter completion zsh > "${fpath[1]}/_env-starter"
+mkdir -p ~/.zsh/completions
+env-starter completion zsh > ~/.zsh/completions/_env-starter
+```
+
+Add this to your `.zshrc`, **before** `compinit` is called, if not already present:
+
+```zsh
+fpath=(~/.zsh/completions $fpath)
 ```
 
 **Alternative — load inline from your `.zshrc`**:
