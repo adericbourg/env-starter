@@ -77,6 +77,7 @@ env-starter run connect-order && echo "ready"
 | `Tab` / `←` / `→` | Switch between panes |
 | `s` | Start the selected environment |
 | `x` | Stop the selected environment |
+| `R` (Shift+R) | Restart the selected command (command panel focused) |
 | `l` | Focus/scroll the logs pane |
 | `r` | Refresh |
 | `Ctrl+L` | Open the selected command's log file in the default application |

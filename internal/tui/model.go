@@ -382,6 +382,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m = m.refreshLogView()
 
+	case "R":
+		if m.focused == focusCmds {
+			if cmd := m.selectedCommand(); cmd != "" {
+				_ = m.ctrl.RestartCommand(cmd)
+				m.notice = fmt.Sprintf("Restarting %s…", cmd)
+				return m, noticeResetCmd()
+			}
+		}
+
 	case "c":
 		if !m.configDirty || m.configParseErr != "" {
 			// "c" is inert when no valid change is pending (or file is unparseable).
@@ -897,7 +906,7 @@ func (m Model) renderFooter() string {
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  l logs  r refresh logs  ^L open  ^D detach  ^C shutdown"
+	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  R restart  l logs  r refresh logs  ^L open  ^D detach  ^C shutdown"
 	return footerStyle.Render(shortcuts)
 }
 

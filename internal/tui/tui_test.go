@@ -282,6 +282,37 @@ func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
 	_ = m
 }
 
+func TestUpdate_whenR_withCmdsFocused_callsRestartCommand(t *testing.T) {
+	// Given a model with the commands pane focused and the first command selected.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a" (env "alpha")
+
+	// When
+	m = sendKey(m, "R")
+
+	// Then
+	if len(ctrl.restartedCmds) != 1 || ctrl.restartedCmds[0] != "svc-a" {
+		t.Errorf("expected RestartCommand('svc-a'), got %v", ctrl.restartedCmds)
+	}
+	_ = m
+}
+
+func TestUpdate_whenR_withoutCmdsFocused_isNoOp(t *testing.T) {
+	// Given a model with the envs pane focused (the default).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	m = sendKey(m, "R")
+
+	// Then
+	if len(ctrl.restartedCmds) != 0 {
+		t.Errorf("expected no RestartCommand call, got %v", ctrl.restartedCmds)
+	}
+	_ = m
+}
+
 func TestUpdate_whenQ_doesNotQuit(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
