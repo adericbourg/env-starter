@@ -457,3 +457,77 @@ func WaitForEnvSettled(ctx context.Context, ctrl *ClientController, envName stri
 		}
 	}
 }
+
+// cmdSettleGrace bounds how long WaitForCmdSettled waits to observe the
+// transient restarting phase before trusting an already-terminal reading.
+// A var (not a const) so tests can shrink it.
+var cmdSettleGrace = 200 * time.Millisecond
+
+// WaitForCmdSettled blocks until the named command has "settled" after a
+// restart — meaning it is no longer starting/restarting/stopping — and
+// returns true if it ended healthy/done, false if it ended in
+// error/timeout/stopped. ctrl must be a *ClientController.
+//
+// Unlike WaitForEnvSettled, an immediate "already healthy" mirror reading
+// cannot be trusted as proof the restart happened: a restarted command's
+// success state is indistinguishable from its state just before the
+// restart, and the RestartCommand RPC response and the event that carries
+// the CmdRestarting transition travel over two independent connections with
+// no ordering guarantee between them. So a terminal reading is only trusted
+// once we have actually observed the transient restarting phase, or once
+// cmdSettleGrace has elapsed without seeing it (meaning the restart most
+// likely completed before this call even started watching) — whichever
+// comes first. The grace window is comfortably longer than any realistic
+// local-socket propagation delay and far shorter than an actual restart
+// cycle (process kill + relaunch + readiness probe).
+//
+// WaitForCmdSettled must only be called when no other goroutine is consuming
+// ctrl.Events() — it reads directly from the shared event channel. In practice
+// this means it should only be used in headless mode (the `command restart`
+// subcommand) where ctrl is the sole consumer.
+func WaitForCmdSettled(ctx context.Context, ctrl *ClientController, command string) (healthy bool, err error) {
+	// settled reports whether the current mirror state for command is
+	// terminal (isSettled), transient (isTransient), and healthy (isHealthy).
+	settled := func() (isSettled, isTransient, isHealthy bool) {
+		switch ctrl.CmdState(command) {
+		case engine.CmdStarting, engine.CmdRestarting, engine.CmdStopping:
+			return false, true, false
+		case engine.CmdHealthy, engine.CmdDone:
+			return true, false, true
+		default:
+			return true, false, false
+		}
+	}
+
+	grace := time.NewTimer(cmdSettleGrace)
+	defer grace.Stop()
+	trusted := false
+
+	for {
+		isSettled, isTransient, isHealthy := settled()
+		if isTransient {
+			trusted = true // the restart has now visibly begun
+		}
+		if isSettled && trusted {
+			return isHealthy, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-grace.C:
+			trusted = true
+		case _, ok := <-ctrl.Events():
+			if !ok {
+				// Event stream closed — no further information can ever
+				// arrive, so this is necessarily the final word regardless
+				// of the trust gate above.
+				isSettled, _, isHealthy := settled()
+				if isSettled {
+					return isHealthy, nil
+				}
+				return false, errors.New("event stream closed before command settled")
+			}
+		}
+	}
+}

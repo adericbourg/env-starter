@@ -60,6 +60,8 @@ The TUI launches with the list of environments on the left. Select one and press
 | `env-starter stop <env>` | Stop a running environment |
 | `env-starter list` | List all configured environments (reads local config, no daemon needed) |
 | `env-starter ps` | Show currently running environments and their command states |
+| `env-starter command list` | Show started commands and their state (needs a running daemon) |
+| `env-starter command restart <name>` | Restart a single command in place, waiting until it is healthy (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) — needs a running daemon |
 | `env-starter shutdown` | Stop all environments and shut down the daemon |
 | `env-starter update` | Update env-starter to the latest version |
 | `env-starter help` | Show help |

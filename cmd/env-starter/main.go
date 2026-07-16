@@ -287,6 +287,9 @@ func main() {
 		case "ps":
 			runPs()
 			return
+		case "command":
+			runCommand(os.Args[2:])
+			return
 		case "shutdown":
 			runShutdown()
 			return
@@ -652,6 +655,141 @@ func runPs() {
 	}
 }
 
+// runCommand implements the "env-starter command <verb>" subcommand group,
+// dispatching to the list/restart sub-verbs.
+func runCommand(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: env-starter command <list|restart> [args]")
+		os.Exit(2)
+	}
+	switch args[0] {
+	case "list":
+		runCommandList()
+	case "restart":
+		runCommandRestart(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command verb: %q\n\n", args[0])
+		fmt.Fprintln(os.Stderr, "Usage: env-starter command <list|restart> [args]")
+		os.Exit(2)
+	}
+}
+
+// runCommandList implements "env-starter command list". It dials an existing
+// daemon and prints every command referenced by a non-stopped environment,
+// deduplicated (a command can be shared by several environments), with its
+// current state.
+func runCommandList() {
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	client, err := daemon.DialOnly(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if client == nil {
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	seen := make(map[string]bool)
+	var names []string
+	for _, env := range client.Environments() {
+		if client.EnvState(env.Name) == engine.EnvStopped {
+			continue
+		}
+		for _, cmd := range client.WorkflowCommands(env.Name) {
+			if !seen[cmd] {
+				seen[cmd] = true
+				names = append(names, cmd)
+			}
+		}
+	}
+
+	if len(names) == 0 {
+		fmt.Println("No commands running.")
+		return
+	}
+
+	maxLen := 0
+	for _, name := range names {
+		if len(name) > maxLen {
+			maxLen = len(name)
+		}
+	}
+	for _, name := range names {
+		fmt.Printf("%-*s  %s\n", maxLen, name, string(client.CmdState(name)))
+	}
+}
+
+// runCommandRestart implements "env-starter command restart <name>". It
+// restarts a single command in place and waits until it settles, exiting 0
+// when it comes back healthy/done, 1 on error/timeout/interruption, or 3 if
+// --timeout elapses first.
+func runCommandRestart(args []string) {
+	fs := flag.NewFlagSet("command restart", flag.ExitOnError)
+	timeout := fs.Duration("timeout", 5*time.Minute, "maximum time to wait for the command to become healthy")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: env-starter command restart <name>")
+		os.Exit(2)
+	}
+	name := fs.Arg(0)
+
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+
+	client, err := daemon.DialOnly(socketPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if client == nil {
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	if err := client.RestartCommand(name); err != nil {
+		fmt.Fprintf(os.Stderr, "error: restart command %q: %v\n", name, err)
+		os.Exit(1)
+	}
+
+	fmt.Fprintf(os.Stderr, "Restarting command %q…\n", name)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	timeoutCtx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
+
+	healthy, err := daemon.WaitForCmdSettled(timeoutCtx, client, name)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "interrupted")
+			os.Exit(1)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "timed out waiting for command %q to become healthy\n", name)
+			os.Exit(3)
+		}
+		fmt.Fprintf(os.Stderr, "error waiting for command %q: %v\n", name, err)
+		os.Exit(1)
+	}
+
+	if healthy {
+		fmt.Fprintf(os.Stderr, "Command %q is healthy.\n", name)
+		os.Exit(0)
+	}
+	fmt.Fprintf(os.Stderr, "Command %q failed to restart (state: %s).\n", name, client.CmdState(name))
+	os.Exit(1)
+}
+
 // runShutdown implements the "env-starter shutdown" subcommand. It dials an
 // existing daemon, sends a shutdown RPC, then waits until the event stream
 // closes (daemon fully gone).
@@ -689,6 +827,7 @@ Commands:
   stop       Stop a running environment
   list       List configured environments
   ps         Show running environments
+  command    Manage individual commands (list, restart)
   shutdown   Stop all environments and shut down the daemon
   update     Update env-starter to the latest version
   completion Generate shell completion scripts (bash, zsh, fish)
@@ -699,7 +838,10 @@ Flags (default TUI and run):
   --config-overlay FILE Apply FILE as overlay on top of base config
 
 run flags:
-  --timeout DURATION    Maximum time to wait for env to start (default: %s)
+  --timeout DURATION    Maximum time to wait for env to start (default: %[1]s)
+
+command restart flags:
+  --timeout DURATION    Maximum time to wait for the command to become healthy (default: %[1]s)
 `, 5*time.Minute)
 }
 

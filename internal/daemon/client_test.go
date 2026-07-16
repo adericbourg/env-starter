@@ -472,3 +472,96 @@ func TestWaitForEnvSettled_whenFailsAfterRetries_returnsFalse(t *testing.T) {
 		t.Error("want running=false (env errored), got true")
 	}
 }
+
+func TestWaitForCmdSettled_whenTransitionsThroughRestarting_returnsHealthyTrue(t *testing.T) {
+	// Given — the mirror starts out "healthy" (the pre-restart residue), then
+	// genuinely transitions through restarting before becoming healthy again.
+	snap := Snapshot{
+		EnvStates:    map[string]engine.EnvState{"dev": engine.EnvRunning},
+		CmdStates:    map[string]engine.CmdState{"api": engine.CmdHealthy},
+		CmdRetries:   map[string][2]int{},
+		Environments: []engine.EnvInfo{{Name: "dev"}},
+		WorkflowCmds: map[string][]string{"dev": {"api"}},
+		LogPaths:     map[string]string{},
+	}
+	extraEvents := []WireEvent{
+		{Kind: "command", Command: "api", CmdState: engine.CmdRestarting},
+		{Kind: "command", Command: "api", CmdState: engine.CmdHealthy},
+	}
+	ctrl := buildSettledCtrl(t, snap, extraEvents)
+
+	// When
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	healthy, err := WaitForCmdSettled(ctx, ctrl, "api")
+
+	// Then
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !healthy {
+		t.Error("want healthy=true, got false")
+	}
+}
+
+func TestWaitForCmdSettled_whenRestartingThenError_returnsHealthyFalse(t *testing.T) {
+	// Given — the command genuinely restarts but fails to come back healthy.
+	snap := Snapshot{
+		EnvStates:    map[string]engine.EnvState{"dev": engine.EnvRunning},
+		CmdStates:    map[string]engine.CmdState{"api": engine.CmdHealthy},
+		CmdRetries:   map[string][2]int{},
+		Environments: []engine.EnvInfo{{Name: "dev"}},
+		WorkflowCmds: map[string][]string{"dev": {"api"}},
+		LogPaths:     map[string]string{},
+	}
+	extraEvents := []WireEvent{
+		{Kind: "command", Command: "api", CmdState: engine.CmdRestarting},
+		{Kind: "command", Command: "api", CmdState: engine.CmdError},
+	}
+	ctrl := buildSettledCtrl(t, snap, extraEvents)
+
+	// When
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	healthy, err := WaitForCmdSettled(ctx, ctrl, "api")
+
+	// Then
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if healthy {
+		t.Error("want healthy=false (command errored), got true")
+	}
+}
+
+func TestWaitForCmdSettled_whenNoTransientObserved_trustsMirrorAfterGrace(t *testing.T) {
+	// Given — the mirror already shows "healthy" and no restarting transition
+	// is ever observed (the restart, if any, fully completed before this call
+	// started watching). Shrink the grace window so the test stays fast.
+	orig := cmdSettleGrace
+	cmdSettleGrace = 20 * time.Millisecond
+	defer func() { cmdSettleGrace = orig }()
+
+	snap := Snapshot{
+		EnvStates:    map[string]engine.EnvState{"dev": engine.EnvRunning},
+		CmdStates:    map[string]engine.CmdState{"api": engine.CmdHealthy},
+		CmdRetries:   map[string][2]int{},
+		Environments: []engine.EnvInfo{{Name: "dev"}},
+		WorkflowCmds: map[string][]string{"dev": {"api"}},
+		LogPaths:     map[string]string{},
+	}
+	ctrl := buildSettledCtrl(t, snap, nil)
+
+	// When
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	healthy, err := WaitForCmdSettled(ctx, ctrl, "api")
+
+	// Then
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if !healthy {
+		t.Error("want healthy=true after grace window elapses, got false")
+	}
+}
