@@ -270,6 +270,19 @@ func (c *ClientController) StopEnvironment(env string) error {
 	return nil
 }
 
+// RestartCommand sends a restartCommand RPC and returns any error.
+func (c *ClientController) RestartCommand(command string) error {
+	params, _ := json.Marshal(CmdParam{Command: command})
+	resp, err := c.rpc(Request{Method: MethodRestartCommand, Params: params})
+	if err != nil {
+		return err
+	}
+	if resp.Error != "" {
+		return errors.New(resp.Error)
+	}
+	return nil
+}
+
 // StoppingCommands fetches the currently-stopping commands via RPC.
 func (c *ClientController) StoppingCommands() []engine.StoppingCommand {
 	resp, err := c.rpc(Request{Method: MethodStoppingCommands})

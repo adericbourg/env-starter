@@ -19,6 +19,7 @@ const (
 	MethodEnvironments     = "environments"
 	MethodStartEnvironment = "startEnvironment"
 	MethodStopEnvironment  = "stopEnvironment"
+	MethodRestartCommand   = "restartCommand"
 	MethodSubscribe        = "subscribe"
 	MethodShutdown         = "shutdown"
 	MethodSnapshot         = "snapshot"

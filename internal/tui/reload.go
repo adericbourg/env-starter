@@ -252,6 +252,12 @@ func (c *reloadController) StopEnvironment(env string) error {
 	return c.eng.StopEnvironment(env)
 }
 
+func (c *reloadController) RestartCommand(command string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.eng.RestartCommand(command)
+}
+
 func (c *reloadController) Events() <-chan engine.Event {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

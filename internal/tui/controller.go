@@ -21,6 +21,9 @@ type Controller interface {
 	LogPath(command string) string
 	StartEnvironment(env string) error
 	StopEnvironment(env string) error
+	// RestartCommand restarts a single running command in place, preserving its
+	// environment holders. Returns an error if the command is not running.
+	RestartCommand(command string) error
 	Events() <-chan engine.Event
 	// StoppingCommands lists the commands currently being torn down, with elapsed
 	// and grace durations, for the shutdown screen.

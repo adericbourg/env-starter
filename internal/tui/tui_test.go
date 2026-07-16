@@ -25,9 +25,11 @@ type fakeController struct {
 	events     chan engine.Event
 	stopping   []engine.StoppingCommand
 
-	startedEnvs    []string
-	stoppedEnvs    []string
-	shutdownCalled bool
+	startedEnvs       []string
+	stoppedEnvs       []string
+	restartedCmds     []string
+	restartCommandErr error
+	shutdownCalled    bool
 
 	// hot-reload stubs
 	configChanged  bool
@@ -100,6 +102,11 @@ func (f *fakeController) StartEnvironment(env string) error {
 func (f *fakeController) StopEnvironment(env string) error {
 	f.stoppedEnvs = append(f.stoppedEnvs, env)
 	return nil
+}
+
+func (f *fakeController) RestartCommand(command string) error {
+	f.restartedCmds = append(f.restartedCmds, command)
+	return f.restartCommandErr
 }
 
 func (f *fakeController) Events() <-chan engine.Event { return f.events }

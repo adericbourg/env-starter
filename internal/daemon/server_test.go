@@ -32,8 +32,12 @@ type mockController struct {
 	logs         map[string][]string
 	stoppingCmds []engine.StoppingCommand
 
-	startErr error
-	stopErr  error
+	startErr   error
+	stopErr    error
+	restartErr error
+
+	// restartedCommands records every command name passed to RestartCommand.
+	restartedCommands []string
 
 	// eventsWrite is the writable end; eventsCh is the receive-only view returned
 	// by Events(). Keeping both lets tests inject events via sendEvent.
@@ -110,6 +114,13 @@ func (m *mockController) StartEnvironment(env string) error {
 
 func (m *mockController) StopEnvironment(env string) error {
 	return m.stopErr
+}
+
+func (m *mockController) RestartCommand(command string) error {
+	m.mu.Lock()
+	m.restartedCommands = append(m.restartedCommands, command)
+	m.mu.Unlock()
+	return m.restartErr
 }
 
 func (m *mockController) Events() <-chan engine.Event {
@@ -360,6 +371,49 @@ func TestServe_startEnvironment_whenError_returnsError(t *testing.T) {
 	// Then
 	if !strings.Contains(resp.Error, "environment already starting") {
 		t.Errorf("want error containing %q, got %q", "environment already starting", resp.Error)
+	}
+}
+
+func TestServe_restartCommand_whenNoError_returnsNilResultAndForwardsCommand(t *testing.T) {
+	// Given
+	ctrl := newMockController()
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	_, scanner, enc := dialDaemon(t, socketPath)
+	params, _ := json.Marshal(CmdParam{Command: "api"})
+
+	// When
+	resp := rpc(t, enc, scanner, Request{Method: MethodRestartCommand, Params: params})
+
+	// Then
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	ctrl.mu.Lock()
+	got := ctrl.restartedCommands
+	ctrl.mu.Unlock()
+	if len(got) != 1 || got[0] != "api" {
+		t.Errorf("want RestartCommand called with %q, got %v", "api", got)
+	}
+}
+
+func TestServe_restartCommand_whenError_returnsError(t *testing.T) {
+	// Given
+	ctrl := newMockController()
+	ctrl.restartErr = fmt.Errorf("command %q is not running", "api")
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	_, scanner, enc := dialDaemon(t, socketPath)
+	params, _ := json.Marshal(CmdParam{Command: "api"})
+
+	// When
+	resp := rpc(t, enc, scanner, Request{Method: MethodRestartCommand, Params: params})
+
+	// Then
+	if !strings.Contains(resp.Error, "is not running") {
+		t.Errorf("want error containing %q, got %q", "is not running", resp.Error)
 	}
 }
 

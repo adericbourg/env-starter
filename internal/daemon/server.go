@@ -410,6 +410,18 @@ func (s *server) handleRPC(ctx context.Context, req Request, enc *json.Encoder) 
 		}
 		writeResult(enc, nil)
 
+	case MethodRestartCommand:
+		var p CmdParam
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, "invalid params: "+err.Error())
+			return
+		}
+		if err := s.ctrl.RestartCommand(p.Command); err != nil {
+			writeError(enc, err.Error())
+			return
+		}
+		writeResult(enc, nil)
+
 	case MethodStoppingCommands:
 		cmds := s.ctrl.StoppingCommands()
 		wire := make([]WireStoppingCommand, 0, len(cmds))
