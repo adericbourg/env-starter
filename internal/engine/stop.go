@@ -254,6 +254,66 @@ func (e *Engine) restartInPlace(c *command) {
 	e.recomputeEnvsFor(c.cfg.Name)
 }
 
+// RestartCommand restarts a single running command in place, preserving its
+// environment holders. Unlike automatic restarts it is user-initiated and
+// ignores the restart policy — it recycles the process even when auto-restart
+// is disabled for this command. Returns an error if the command is unknown or
+// currently has no holders (i.e. it is not running).
+func (e *Engine) RestartCommand(name string) error {
+	e.mu.Lock()
+	c, ok := e.commands[name]
+	running := ok && len(c.holders) > 0
+	e.mu.Unlock()
+	if !running {
+		return fmt.Errorf("engine: command %q is not running", name)
+	}
+
+	// Publish CmdRestarting synchronously so a caller waiting on state/events
+	// observes the transition immediately, before the still-current healthy
+	// state could be mistaken for the restarted one.
+	e.setCmdState(name, CmdRestarting, nil)
+	go e.restartCommandInPlace(c)
+	return nil
+}
+
+// restartCommandInPlace cancels the command's current supervisor/restart cycle
+// (if any), then tears down and relaunches the process, re-establishing
+// monitoring on success. Holders are never touched.
+func (e *Engine) restartCommandInPlace(c *command) {
+	// Cancel the current owner goroutine and wait for any in-flight launch to
+	// settle, mirroring the barrier releaseCommand/Shutdown use to avoid racing
+	// a launch already in progress.
+	e.mu.Lock()
+	c.userStopped = true
+	if c.quit != nil {
+		c.quitOnce.Do(func() { close(c.quit) })
+	}
+	startDone := c.startDone
+	e.mu.Unlock()
+	<-startDone
+
+	// Reset cancellation and retry state for a fresh supervise cycle. Safe
+	// because every quitOnce.Do and this reset happen under e.mu, and the
+	// previous owner goroutine only ever reads <-quit (never calls Do on it),
+	// so it returns cleanly without interfering with the new cycle.
+	e.mu.Lock()
+	c.userStopped = false
+	c.quit = nil
+	c.quitOnce = sync.Once{}
+	c.retries = 0
+	e.mu.Unlock()
+
+	e.setCmdState(c.cfg.Name, CmdRestarting, nil)
+	e.teardownForRestart(c)
+	if e.relaunch(c) {
+		e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+		e.startMonitor(c)
+	}
+	// Recompute state for every env sharing this command so their rollup state
+	// reflects the restart outcome (mirrors restartInPlace).
+	e.recomputeEnvsFor(c.cfg.Name)
+}
+
 // Shutdown stops every currently-running command gracefully, respecting ctx as
 // an overall deadline. All holders are cleared.
 func (e *Engine) Shutdown(ctx context.Context) {
