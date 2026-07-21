@@ -357,10 +357,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focused = focusEnvs
 		}
 
-	case "l":
-		m.focused = focusLogs
-		m = m.refreshLogView()
-
 	case "up", "k":
 		m = m.moveCursorUp()
 
@@ -929,7 +925,7 @@ func (m Model) shortcutsLegend() string {
 	if m.focused == focusLogs {
 		parts = append(parts, "r refresh logs", "^L open")
 	}
-	parts = append(parts, "l logs", "^D detach", "^C shutdown")
+	parts = append(parts, "^D detach", "^C shutdown")
 	return strings.Join(parts, "  ")
 }
 

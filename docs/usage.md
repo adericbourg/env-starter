@@ -80,7 +80,6 @@ env-starter run connect-order && echo "ready"
 | `s` | Start the selected environment (Environments pane only) |
 | `x` | Stop the selected environment (Environments pane only) |
 | `R` (Shift+R) | Restart the selected command (Commands pane only) |
-| `l` | Focus/scroll the logs pane |
 | `r` | Refresh logs (Logs pane only) |
 | `Ctrl+L` | Open the selected command's log file in the default application (Logs pane only) |
 | `Ctrl+C` | First press shows confirmation; a second `Ctrl+C` within 3 seconds performs a graceful shutdown — stops all environments **and shuts down the daemon** |

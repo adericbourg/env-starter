@@ -379,6 +379,20 @@ func TestUpdate_whenLowerR_withoutLogsFocused_isNoOp(t *testing.T) {
 	}
 }
 
+func TestUpdate_whenLowerL_doesNotChangeFocus(t *testing.T) {
+	// Given — default focus is the envs pane (the jump-to-logs shortcut was removed).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	m = sendKey(m, "l")
+
+	// Then
+	if m.focused != focusEnvs {
+		t.Errorf("expected focus to remain on envs pane, got %v", m.focused)
+	}
+}
+
 func TestUpdate_whenR_withCmdsFocused_callsRestartCommand(t *testing.T) {
 	// Given a model with the commands pane focused and the first command selected.
 	ctrl := newFakeController()
