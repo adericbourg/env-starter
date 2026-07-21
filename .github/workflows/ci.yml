@@ -50,7 +50,29 @@ jobs:
           GOOS=linux   GOARCH=arm64 go build ./...
 
       - name: Test
-        run: go test -race ./...
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+
+      - name: Coverage report
+        # Monitor-only: never fails the build. The total plus a collapsible
+        # per-function breakdown is written to the run summary (visible from a
+        # PR's checks). On main pushes the full breakdown is also printed to the
+        # console log as a per-commit historical record.
+        run: |
+          go tool cover -func=coverage.out -o coverage.txt
+          total="$(grep '^total:' coverage.txt | awk '{print $3}')"
+          {
+            echo "## Coverage: ${total}"
+            echo '<details><summary>Per-function breakdown</summary>'
+            echo
+            echo '```'
+            cat coverage.txt
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "=== Coverage (total ${total}) ==="
+            cat coverage.txt
+          fi
 
       - name: Lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
