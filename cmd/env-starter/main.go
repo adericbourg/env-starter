@@ -285,6 +285,9 @@ func main() {
 		case "list":
 			runList(os.Args[2:])
 			return
+		case "allow":
+			runAllow(os.Args[2:])
+			return
 		case "ps":
 			runPs()
 			return
@@ -338,6 +341,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+
+	checkConfigTrust(configFile, configOverlay)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -457,6 +462,8 @@ func runRun(args []string) {
 	defer cancel()
 
 	fmt.Fprintf(os.Stderr, "Starting environment %q…\n", envName)
+
+	checkConfigTrust(*configFile, *configOverlay)
 
 	client, err := daemon.EnsureDaemon(timeoutCtx, socketPath, lockPath, *configFile, *configOverlay)
 	if err != nil {
@@ -610,6 +617,150 @@ func runList(args []string) {
 	for _, env := range cfg.Environments {
 		fmt.Printf("%-*s  %s\n", maxLen, env.Name, env.Description)
 	}
+}
+
+// checkConfigTrust runs the same trust gate resolveConfig's loadFn enforces,
+// but before spawning or dialing the daemon. Without this, an unapproved or
+// changed config still fails safely (the spawned __daemon process's loadFn
+// refuses it and exits), but the client only learns that indirectly, after
+// EnsureDaemon's opaque 10-second poll times out. Any other error (e.g. the
+// config file does not exist) is left to surface through that normal path,
+// which already reports it clearly.
+func checkConfigTrust(configFile, configOverlay string) {
+	err := trust.Check(configPaths(configFile, configOverlay))
+	var notApproved *trust.NotApprovedError
+	if errors.As(err, &notApproved) {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+// allowResult reports the outcome of doAllow's core logic, letting runAllow
+// decide the process exit code without doAllow itself calling os.Exit (which
+// would make it untestable).
+type allowResult struct {
+	// approved is true when the config's current hashes end up recorded in
+	// the trust store — either because they already were, or because this
+	// call just wrote them.
+	approved bool
+	// declined is true when the operator was prompted and answered no.
+	declined bool
+}
+
+// doAllow implements the "env-starter allow" subcommand's logic: it previews
+// every run/setup/teardown/readiness.shell command the resolved config would
+// execute, then — unless printOnly is set — prompts on stdin (skipped when
+// yes is set) before recording approval in the trust store that
+// resolveConfig's loadFn checks on every load and hot-reload (see
+// internal/trust and SECURITY.md, "Config trust").
+func doAllow(w io.Writer, stdin io.Reader, configFile, configOverlay string, yes, printOnly bool) (allowResult, error) {
+	paths := configPaths(configFile, configOverlay)
+
+	cfg, err := loadMerged(paths[0], configOverlay)
+	if err != nil {
+		return allowResult{}, err
+	}
+
+	statuses, err := trust.Status(paths)
+	if err != nil {
+		return allowResult{}, err
+	}
+
+	printAllowPreview(w, cfg, statuses)
+
+	if printOnly {
+		return allowResult{}, nil
+	}
+
+	allApproved := true
+	for _, st := range statuses {
+		if !st.Approved {
+			allApproved = false
+			break
+		}
+	}
+	if allApproved {
+		_, _ = fmt.Fprintln(w, "\nAlready approved — nothing to do.")
+		return allowResult{approved: true}, nil
+	}
+
+	if !yes {
+		_, _ = fmt.Fprint(w, "\nApprove these commands? [y/N] ")
+		line, _ := bufio.NewReader(stdin).ReadString('\n')
+		if answer := strings.ToLower(strings.TrimSpace(line)); answer != "y" && answer != "yes" {
+			_, _ = fmt.Fprintln(w, "Not approved.")
+			return allowResult{declined: true}, nil
+		}
+	}
+
+	if err := trust.Approve(paths); err != nil {
+		return allowResult{}, err
+	}
+	_, _ = fmt.Fprintln(w, "Approved.")
+	return allowResult{approved: true}, nil
+}
+
+// runAllow is the CLI entry point for the "allow" subcommand: it parses
+// flags, wires real stdin/stdout into doAllow, and translates the result
+// into a process exit code.
+func runAllow(args []string) {
+	fs := flag.NewFlagSet("allow", flag.ExitOnError)
+	configFile := fs.String("config", "", "use FILE as the configuration")
+	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
+	yes := fs.Bool("yes", false, "approve without prompting")
+	printOnly := fs.Bool("print", false, "show the preview and exit without approving")
+	_ = fs.Parse(args)
+
+	result, err := doAllow(os.Stdout, os.Stdin, *configFile, *configOverlay, *yes, *printOnly)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	if result.declined {
+		os.Exit(1)
+	}
+}
+
+// printAllowPreview writes a human-reviewable listing of each watched config
+// file's approval status followed by every shell command its commands would
+// execute, so the operator can make an informed approve/deny decision.
+func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathStatus) {
+	_, _ = fmt.Fprintln(w, "Config files:")
+	for _, st := range statuses {
+		status := "NEW"
+		switch {
+		case st.Approved:
+			status = "approved"
+		case st.ApprovedHash != "":
+			status = "CHANGED since approval"
+		}
+		_, _ = fmt.Fprintf(w, "  [%s] %s\n      sha256:%s\n", status, st.Path, st.CurrentHash)
+	}
+
+	_, _ = fmt.Fprintln(w, "\nCommands that will be executed as shell scripts:")
+	for _, cmd := range cfg.Commands {
+		_, _ = fmt.Fprintf(w, "\n  %s:\n", cmd.Name)
+		for _, step := range cmd.Setup {
+			_, _ = fmt.Fprintf(w, "    setup:     %s\n", indentContinuation(step))
+		}
+		if cmd.Run != "" {
+			_, _ = fmt.Fprintf(w, "    run:       %s\n", indentContinuation(cmd.Run))
+		}
+		if cmd.Teardown != "" {
+			_, _ = fmt.Fprintf(w, "    teardown:  %s\n", indentContinuation(cmd.Teardown))
+		}
+		if cmd.Readiness != nil && cmd.Readiness.Shell != "" {
+			_, _ = fmt.Fprintf(w, "    readiness: %s\n", indentContinuation(cmd.Readiness.Shell))
+		}
+	}
+}
+
+// indentContinuation indents every line after the first in a multi-line
+// shell command (e.g. a YAML "|" block scalar with several statements) so it
+// stays visually nested under its "setup:"/"run:"/"teardown:" label instead
+// of bleeding out to the left margin — the preview exists to be read.
+func indentContinuation(s string) string {
+	return strings.ReplaceAll(s, "\n", "\n               ")
 }
 
 // runPs implements the "env-starter ps" subcommand. It dials an existing daemon
@@ -829,6 +980,7 @@ Commands:
   list       List configured environments
   ps         Show running environments
   command    Manage individual commands (list, restart)
+  allow      Review and approve a config's run/setup/teardown commands
   shutdown   Stop all environments and shut down the daemon
   update     Update env-starter to the latest version
   completion Generate shell completion scripts (bash, zsh, fish)
@@ -843,6 +995,10 @@ run flags:
 
 command restart flags:
   --timeout DURATION    Maximum time to wait for the command to become healthy (default: %[1]s)
+
+allow flags:
+  --yes                  Approve without prompting
+  --print                Show the preview and exit without approving
 `, 5*time.Minute)
 }
 
@@ -995,6 +1151,26 @@ func configPaths(baseFile, overlayFile string) []string {
 	return paths
 }
 
+// loadMerged loads the base config at basePath and, if overlayFile is set,
+// merges it on top. This is the raw load/merge step, with no trust check —
+// shared by resolveConfig's gated loadFn and the `allow` subcommand's
+// preview, which intentionally bypasses the gate since its whole purpose is
+// to let the operator review a config before approving it.
+func loadMerged(basePath, overlayFile string) (*config.Config, error) {
+	base, err := config.Load(basePath)
+	if err != nil {
+		return nil, fmt.Errorf("loading config %q: %w", basePath, err)
+	}
+	if overlayFile == "" {
+		return base, nil
+	}
+	overlay, err := config.Load(overlayFile)
+	if err != nil {
+		return nil, fmt.Errorf("loading overlay config %q: %w", overlayFile, err)
+	}
+	return config.Merge(base, overlay), nil
+}
+
 // resolveConfig loads the configuration from disk and returns:
 //   - the initially parsed *config.Config
 //   - a loadFn closure that re-runs the same load+merge logic for hot-reload
@@ -1016,18 +1192,7 @@ func resolveConfig(baseFile, overlayFile string) (*config.Config, func() (*confi
 		if err := trust.Check(watchPaths); err != nil {
 			return nil, err
 		}
-		base, err := config.Load(basePath)
-		if err != nil {
-			return nil, fmt.Errorf("loading config %q: %w", basePath, err)
-		}
-		if overlayFile == "" {
-			return base, nil
-		}
-		overlay, err := config.Load(overlayFile)
-		if err != nil {
-			return nil, fmt.Errorf("loading overlay config %q: %w", overlayFile, err)
-		}
-		return config.Merge(base, overlay), nil
+		return loadMerged(basePath, overlayFile)
 	}
 
 	cfg, err := loadFn()

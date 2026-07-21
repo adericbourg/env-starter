@@ -102,6 +102,7 @@ ports `8080`/`9000`.
 ```sh
 brew install adericbourg/tap/env-starter
 brew trust --tap adericbourg/tap/env-starter
+env-starter allow   # review and approve your config's commands (first run only)
 env-starter
 ```
 

@@ -62,6 +62,7 @@ The TUI launches with the list of environments on the left. Select one and press
 | `env-starter ps` | Show currently running environments and their command states |
 | `env-starter command list` | Show started commands and their state (needs a running daemon) |
 | `env-starter command restart <name>` | Restart a single command in place, waiting until it is healthy (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) — needs a running daemon |
+| `env-starter allow` | Review a config's `run`/`setup`/`teardown`/`readiness.shell` commands and approve it; `--print` previews without approving, `--yes` approves without prompting |
 | `env-starter shutdown` | Stop all environments and shut down the daemon |
 | `env-starter update` | Update env-starter to the latest version |
 | `env-starter help` | Show help |

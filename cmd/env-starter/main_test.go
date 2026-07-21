@@ -500,3 +500,153 @@ func TestResolveConfig_missingExplicitConfig(t *testing.T) {
 		t.Fatal("expected error for missing explicit config, got nil")
 	}
 }
+
+// ── doAllow ──────────────────────────────────────────────────────────────────
+
+const allowTestConfig = `
+env-starter:
+  commands:
+    - name: web
+      type: service
+      source:
+        local: /tmp
+      setup:
+        - mkdir -p /tmp/x
+      run: echo hello
+      teardown: echo bye
+  environments: []
+`
+
+func TestDoAllow_print_showsPreviewAndApprovesNothing(t *testing.T) {
+	// Given: a fresh, never-approved config.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	var out bytes.Buffer
+
+	// When
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true)
+
+	// Then — the preview is shown, but nothing is approved or written.
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if result.approved {
+		t.Error("expected --print to not approve anything")
+	}
+	if !strings.Contains(out.String(), "run:") || !strings.Contains(out.String(), "echo hello") {
+		t.Errorf("expected the preview to show the run command, got:\n%s", out.String())
+	}
+	if err := trust.Check([]string{cfgPath}); err == nil {
+		t.Error("expected the config to remain unapproved after --print")
+	}
+}
+
+func TestDoAllow_yes_approvesWithoutPrompting(t *testing.T) {
+	// Given: a fresh, never-approved config.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	var out bytes.Buffer
+
+	// When: --yes is set, so stdin (empty reader — would block/fail if read) is
+	// never consulted.
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, false)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if !result.approved {
+		t.Error("expected --yes to approve the config")
+	}
+	if err := trust.Check([]string{cfgPath}); err != nil {
+		t.Errorf("expected the config to be approved, Check returned: %v", err)
+	}
+}
+
+func TestDoAllow_promptYes_approves(t *testing.T) {
+	// Given: a fresh config, and an operator who answers "y" at the prompt.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	var out bytes.Buffer
+
+	// When
+	result, err := doAllow(&out, strings.NewReader("y\n"), cfgPath, "", false, false)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if !result.approved {
+		t.Error("expected a 'y' answer to approve the config")
+	}
+	if err := trust.Check([]string{cfgPath}); err != nil {
+		t.Errorf("expected the config to be approved, Check returned: %v", err)
+	}
+}
+
+func TestDoAllow_promptNo_declinesAndLeavesConfigUnapproved(t *testing.T) {
+	// Given: a fresh config, and an operator who answers "n" at the prompt.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	var out bytes.Buffer
+
+	// When
+	result, err := doAllow(&out, strings.NewReader("n\n"), cfgPath, "", false, false)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if !result.declined {
+		t.Error("expected a 'n' answer to be reported as declined")
+	}
+	if result.approved {
+		t.Error("expected a 'n' answer to not approve the config")
+	}
+	if err := trust.Check([]string{cfgPath}); err == nil {
+		t.Error("expected the config to remain unapproved after declining")
+	}
+}
+
+func TestDoAllow_whenAlreadyApproved_skipsPromptAndSaysSo(t *testing.T) {
+	// Given: a config already approved.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	approveConfig(t, cfgPath)
+	var out bytes.Buffer
+
+	// When: no prompt is needed — an empty stdin would fail/block if read.
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, false)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if !result.approved {
+		t.Error("expected an already-approved config to report approved=true")
+	}
+	if !strings.Contains(out.String(), "Already approved") {
+		t.Errorf("expected an 'already approved' message, got:\n%s", out.String())
+	}
+}
+
+func TestDoAllow_invalidConfig_returnsError(t *testing.T) {
+	// Given: a config file that fails to parse.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", "not: [valid")
+	var out bytes.Buffer
+
+	// When
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, true)
+
+	// Then
+	if err == nil {
+		t.Fatal("expected an error for an invalid config, got nil")
+	}
+}

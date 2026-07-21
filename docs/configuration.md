@@ -20,12 +20,38 @@ This document is the complete reference for `env-starter`'s YAML configuration.
 | `--config FILE` | Replace the default config entirely with `FILE`. The default path is not read. |
 | `--config-overlay FILE` | Load `FILE` and merge it on top of the base config. Entries are keyed by `name`; the overlay wins on any conflict. Commands and environments from the overlay that share a name with the base replace their counterpart; new names are appended. |
 
-> **Security note — overlays are trusted as code.**
-> An overlay file can replace any base command by name, including its `run`,
-> `setup`, and `teardown` fields, which are executed verbatim as shell commands.
-> A malicious or compromised overlay is equivalent to arbitrary code execution
-> under your user account. Only use overlay files from sources you control;
-> never share, commit, or accept overlays from untrusted parties.
+> **Security note — configs are trusted as code.**
+> A base config or overlay can define any command's `run`, `setup`, and
+> `teardown` fields, which are executed verbatim as shell commands. A
+> malicious or compromised config is equivalent to arbitrary code execution
+> under your user account. See [Approving configs](#approving-configs) below
+> for the approval gate that defends against a config being tampered with or
+> slipped in after the fact — it does not make these fields any safer to
+> author, so only write or approve commands you'd run yourself.
+
+### Approving configs
+
+Every config file (base and overlay) must be explicitly approved before
+env-starter will load it. Approval is a sha256 hash of the file's exact
+bytes, recorded in a trust store under the owner-only cache directory; it is
+invalidated the instant the file's content changes, so any later edit —
+intentional or not — requires a fresh review.
+
+```sh
+env-starter allow                       # preview every run/setup/teardown/readiness.shell command, then prompt
+env-starter allow --print               # preview only, approves nothing
+env-starter allow --yes                 # approve without prompting (e.g. in scripts)
+env-starter allow --config-overlay FILE # review an overlay alongside the base config
+```
+
+An unapproved or changed config is refused at load time, with a message
+pointing back to `env-starter allow`. While a daemon is running, editing a
+watched config file to something unapproved blocks the hot-reload — the
+currently running environment keeps running unaffected until the file is
+reviewed and re-approved.
+
+See [SECURITY.md](../SECURITY.md#config-trust-approval-on-first-use) for the
+full trust model.
 
 ### Top-level wrapper key
 
