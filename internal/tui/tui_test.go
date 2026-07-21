@@ -346,6 +346,39 @@ func TestUpdate_whenX_withLogsFocused_isNoOp(t *testing.T) {
 	_ = m
 }
 
+func TestUpdate_whenLowerR_withLogsFocused_refreshesLogView(t *testing.T) {
+	// Given a model with the logs pane focused and svc-a's logs already rendered.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+	ctrl.logs["svc-a"] = append(ctrl.logs["svc-a"], "log line 3")
+
+	// When
+	m = sendKey(m, "r")
+
+	// Then — the newly appended log line must now appear in the pane.
+	pane := ansi.Strip(m.renderLogsPane())
+	if !strings.Contains(pane, "log line 3") {
+		t.Errorf("expected refreshed log pane to contain 'log line 3', got:\n%s", pane)
+	}
+}
+
+func TestUpdate_whenLowerR_withoutLogsFocused_isNoOp(t *testing.T) {
+	// Given a model with the envs pane focused (the default) and svc-a's logs already rendered.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	ctrl.logs["svc-a"] = append(ctrl.logs["svc-a"], "log line 3")
+
+	// When
+	m = sendKey(m, "r")
+
+	// Then — the log pane must not pick up the new line while envs is focused.
+	pane := ansi.Strip(m.renderLogsPane())
+	if strings.Contains(pane, "log line 3") {
+		t.Errorf("expected log pane to stay stale outside logs pane, got:\n%s", pane)
+	}
+}
+
 func TestUpdate_whenR_withCmdsFocused_callsRestartCommand(t *testing.T) {
 	// Given a model with the commands pane focused and the first command selected.
 	ctrl := newFakeController()
@@ -1237,7 +1270,7 @@ func TestRenderCmdPane_whenErrorWithNoRetries_showsNoSuffix(t *testing.T) {
 
 // ── Config hot-reload model tests ─────────────────────────────────────────────
 
-func TestRenderFooter_static_showsRefreshLogsLabel(t *testing.T) {
+func TestRenderFooter_normalState_hidesConfigReloadHint(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
@@ -1246,11 +1279,52 @@ func TestRenderFooter_static_showsRefreshLogsLabel(t *testing.T) {
 	footer := ansi.Strip(m.renderFooter())
 
 	// Then
+	if strings.Contains(footer, "(c)") {
+		t.Errorf("expected '(c)' not to appear in the normal footer, got %q", footer)
+	}
+}
+
+func TestRenderFooter_logsFocused_showsRefreshLogsLabel(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
 	if !strings.Contains(footer, "r refresh logs") {
 		t.Errorf("expected footer to contain 'r refresh logs', got %q", footer)
 	}
-	if strings.Contains(footer, "(c)") {
-		t.Errorf("expected '(c)' not to appear in the normal footer, got %q", footer)
+}
+
+func TestRenderFooter_envsFocused_hidesRefreshLogsLabel(t *testing.T) {
+	// Given — default focus is the envs pane.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected footer to hide 'r refresh logs' outside logs pane, got %q", footer)
+	}
+}
+
+func TestRenderFooter_cmdsFocused_hidesRefreshLogsLabel(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "r refresh logs") {
+		t.Errorf("expected footer to hide 'r refresh logs' outside logs pane, got %q", footer)
 	}
 }
 
