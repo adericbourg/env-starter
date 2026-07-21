@@ -36,6 +36,18 @@ gofmt -w .
 go test -covermode=atomic -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
 ```
 
+### End-to-end test
+
+`e2e/e2e.sh` drives the real, compiled binary through the full
+approve/run/stop/shutdown flow, exactly as an operator would type it (see the
+script's own comments for why it's shell rather than a Go test). It builds
+its own binary and runs fully isolated from your real trust store and
+daemon, so it's safe to run locally:
+
+```sh
+./e2e/e2e.sh
+```
+
 ---
 
 ## Git hooks
