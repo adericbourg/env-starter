@@ -207,6 +207,14 @@ type Engine struct {
 	commands map[string]*command
 	envState map[string]EnvState
 
+	// authGate serializes the launch-to-ready window of every command flagged
+	// InteractiveAuth, so their interactive browser SSO logins never overlap
+	// (most providers reject parallel login attempts). Commands without the
+	// flag never touch this lock and keep starting concurrently. Always taken
+	// as the outer lock relative to mu: gated code only acquires mu briefly
+	// underneath it, so there is no lock-ordering deadlock.
+	authGate sync.Mutex
+
 	// envOrder / cmdOf preserve config order and map command names to configs.
 	envOrder []string
 	cmdOf    map[string]config.Command

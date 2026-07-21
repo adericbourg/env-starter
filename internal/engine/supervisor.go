@@ -200,6 +200,14 @@ func (e *Engine) startCommand(c *command) {
 		return
 	}
 
+	// Serialize interactive browser logins: hold the gate from just before
+	// launch until this command settles (handleTask/handleService return),
+	// so no other interactive-auth command's browser login can overlap.
+	if c.cfg.InteractiveAuth {
+		e.authGate.Lock()
+		defer e.authGate.Unlock()
+	}
+
 	if err := e.launchProcess(c); err != nil {
 		launchErr := fmt.Errorf("start process: %w", err)
 		e.logCmdError(c, launchErr)
@@ -575,6 +583,14 @@ func (e *Engine) teardownForRestart(c *command) {
 // concurrent releaseCommand or Shutdown waiter blocks correctly.
 // Returns true if the relaunched process becomes healthy.
 func (e *Engine) relaunch(c *command) bool {
+	// Serialize interactive browser logins on restart too: hold the gate from
+	// here until this function returns (after the relaunched process settles),
+	// so a re-login can't overlap another interactive-auth command's login.
+	if c.cfg.InteractiveAuth {
+		e.authGate.Lock()
+		defer e.authGate.Unlock()
+	}
+
 	// Swap in a fresh start barrier so releaseCommand/Shutdown waiters block
 	// until this relaunch settles. The deferred close covers the error paths.
 	e.mu.Lock()

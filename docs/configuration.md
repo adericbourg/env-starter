@@ -170,6 +170,37 @@ env:
   LOG_LEVEL: debug
 ```
 
+### `interactive-auth`
+
+| | |
+|---|---|
+| Type | bool |
+| Required | no |
+| Default | `false` |
+
+Set to `true` when `run` performs an interactive, browser-based login — for
+example `tsh login` (Teleport), or any command that pops open a browser tab for
+SSO through a provider like JumpCloud, Okta, or Google. Most SSO providers
+reject **parallel** login attempts: if two such commands launch at the same
+time, only one succeeds and the rest fail.
+
+env-starter serializes every command flagged `interactive-auth: true`: it holds
+a single global lock from just before the command launches until it becomes
+healthy/done, so their logins never overlap, no matter how many environments or
+independent workflow branches reference them. Commands without the flag are
+unaffected and keep starting concurrently as usual.
+
+Notes:
+
+- The login must happen in `run`, not `setup` — only the `run` launch is gated.
+- Non-overlap is guaranteed, but the **order** between independent
+  `interactive-auth` commands is not. If you need a specific order, add a
+  `depends-on` between them in the workflow.
+
+```yaml
+interactive-auth: true
+```
+
 ### `source`
 
 Required. See the [`source`](#source) section below.
@@ -448,6 +479,9 @@ commands:
     source:
       local: /usr/local/bin
     run: tsh proxy ssh ...
+    # tsh may open a browser for SSO login (on first run or when the session
+    # expires and restart re-runs it) — serialize it against other logins.
+    interactive-auth: true
     readiness:
       shell: tsh status
     restart:
