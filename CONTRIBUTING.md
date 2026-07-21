@@ -30,6 +30,12 @@ go vet ./...
 gofmt -w .
 ```
 
+### Coverage
+
+```sh
+go test -covermode=atomic -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
+```
+
 ---
 
 ## Git hooks
@@ -62,4 +68,7 @@ CI runs on every pull request and on pushes to `main`:
 | Format check (`gofmt -l .`) | auto-fixed by the Format job | ✓ hard-fail |
 | `go vet ./...` | ✓ | ✓ |
 | `go build ./...` | ✓ | ✓ |
-| `go test ./...` | ✓ | ✓ |
+| `go test -race ./...` | ✓ | ✓ |
+| Lint (`golangci-lint`) | ✓ | ✓ |
+| Vulnerability scan (`govulncheck`) | ✓ | ✓ |
+| Coverage report | informational only, never fails | informational only, also printed to the log |
