@@ -172,7 +172,7 @@ func (m *mockController) sendEvent(ev engine.Event) {
 // It returns the socket path and a cancel function to stop the server.
 func startTestServer(t *testing.T, ctrl SwappableController) (socketPath string, cancel context.CancelFunc) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := socketTempDir(t)
 	socketPath = filepath.Join(dir, "daemon.sock")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -263,7 +263,7 @@ func TestServe_tightensPreexistingLooseSocketDir(t *testing.T) {
 	}
 	// Given: the socket dir already exists world-traversable (e.g. created by an
 	// older version) — the direct __daemon path must still end up owner-only.
-	dir := filepath.Join(t.TempDir(), "cache")
+	dir := filepath.Join(socketTempDir(t), "cache")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

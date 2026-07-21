@@ -29,7 +29,7 @@ type fakeServer struct {
 // unix socket listener backed by t.TempDir so that Connect can Dial normally.
 func startFakeServer(t *testing.T, snap Snapshot, extraEvents []WireEvent) string {
 	t.Helper()
-	dir := t.TempDir()
+	dir := socketTempDir(t)
 	socketPath := dir + "/fake.sock"
 
 	ln, err := net.Listen("unix", socketPath)
