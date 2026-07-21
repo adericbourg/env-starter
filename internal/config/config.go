@@ -132,6 +132,11 @@ type Command struct {
 	Env       map[string]string `yaml:"env,omitempty"`
 	Readiness *Readiness        `yaml:"readiness,omitempty"`
 	Restart   *Restart          `yaml:"restart,omitempty"`
+	// InteractiveAuth marks a command whose run process performs an interactive
+	// browser-based login (e.g. Teleport/tsh, JumpCloud, Okta, Google SSO). Most
+	// SSO providers reject parallel login attempts, so the engine serializes the
+	// launch of every command with this flag set: only one runs at a time.
+	InteractiveAuth bool `yaml:"interactive-auth,omitempty"`
 }
 
 // WorkflowStep is a reference to a command within an environment workflow.

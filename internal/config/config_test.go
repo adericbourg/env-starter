@@ -79,6 +79,54 @@ env-starter:
 	}
 }
 
+func TestLoad_ofInteractiveAuthTrue_parsesFlag(t *testing.T) {
+	// Given a command with interactive-auth: true
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: login
+      type: task
+      source:
+        local: /tmp/login
+      run: tsh login
+      interactive-auth: true
+  environments:
+    - name: dev
+      workflow:
+        - command: login
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !cfg.Commands[0].InteractiveAuth {
+		t.Error("expected InteractiveAuth to be true")
+	}
+}
+
+func TestLoad_ofInteractiveAuthAbsent_defaultsFalse(t *testing.T) {
+	// Given a command without interactive-auth
+	dir := t.TempDir()
+	path := writeYAML(t, dir, "config.yaml", minimalValidYAML)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if cfg.Commands[0].InteractiveAuth {
+		t.Error("expected InteractiveAuth to default to false")
+	}
+}
+
 func TestLoad_ofMissingFile_returnsError(t *testing.T) {
 	// Given
 	path := "/nonexistent/path/config.yaml"
