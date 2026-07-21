@@ -1,0 +1,29 @@
+name: E2E Scheduled
+# Actions are pinned to full commit SHAs (uses: owner/action@<sha> # vX) so a
+# retagged or compromised action version cannot change what this workflow runs.
+# Renovate maintains the pins via helpers:pinGitHubActionDigests.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: End-to-end
+        run: ./e2e/e2e.sh
