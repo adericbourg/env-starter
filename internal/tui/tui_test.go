@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/trust"
 )
 
 // ── Fake controller ───────────────────────────────────────────────────────────
@@ -1441,6 +1442,69 @@ func TestRenderFooter_whenConfigParseErrTakesPriorityOverDirty(t *testing.T) {
 	}
 	if strings.Contains(footer, "Press (c)") {
 		t.Errorf("expected reload offer to be suppressed, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenConfigNotApproved_showsNotApprovedBanner(t *testing.T) {
+	// Given — a trust error, not a YAML parse error: the file is well-formed
+	// but was refused by the approval gate.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.configParseErr = `config "/path/config.yaml" has changed since it was approved; run ` + "`env-starter allow`" + ` to review and approve it`
+	m.configNotApproved = true
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — the distinct "not approved" banner is shown, not the generic
+	// "cannot be parsed" one, and the reload offer stays suppressed.
+	if !strings.Contains(footer, "not approved") {
+		t.Errorf("expected footer to contain 'not approved', got %q", footer)
+	}
+	if strings.Contains(footer, "cannot be parsed") {
+		t.Errorf("expected the generic parse-error banner to be suppressed, got %q", footer)
+	}
+	if strings.Contains(footer, "Press (c)") {
+		t.Errorf("expected reload offer to be suppressed, got %q", footer)
+	}
+}
+
+func TestUpdate_configScanMsg_whenNotApprovedError_setsConfigNotApproved(t *testing.T) {
+	// Given — the controller's ConfigChanged reports the exact error type
+	// resolveConfig's loadFn returns for an unapproved/changed config (see
+	// internal/trust.NotApprovedError).
+	ctrl := newFakeController()
+	ctrl.configParseErr = &trust.NotApprovedError{Path: "/path/config.yaml", Reason: trust.ReasonUnknown}
+	m := seed(New(ctrl))
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then — the model detects the trust error via errors.As, not just the
+	// error string, so renderFooter can show the distinct banner.
+	if !m.configNotApproved {
+		t.Error("expected configNotApproved to be set for a *trust.NotApprovedError")
+	}
+	if !strings.Contains(m.configParseErr, "env-starter allow") {
+		t.Errorf("expected configParseErr to carry the actionable message, got %q", m.configParseErr)
+	}
+}
+
+func TestUpdate_configScanMsg_whenPlainParseError_leavesConfigNotApprovedFalse(t *testing.T) {
+	// Given — an ordinary YAML parse error, not a trust error.
+	ctrl := newFakeController()
+	ctrl.configParseErr = fmt.Errorf("yaml: line 3: did not find expected key")
+	m := seed(New(ctrl))
+	m.configNotApproved = true // stale from a previous scan; must be cleared
+
+	// When
+	updated, _ := m.Update(configScanMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.configNotApproved {
+		t.Error("expected configNotApproved to be false for a plain parse error")
 	}
 }
 

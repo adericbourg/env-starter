@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/linkscan"
 	"github.com/adericbourg/env-starter/internal/openfile"
+	"github.com/adericbourg/env-starter/internal/trust"
 )
 
 // shutdownCmdColors is the cycling ANSI color palette used to prefix command
@@ -146,6 +148,13 @@ type Model struct {
 	// file next loads successfully or a reload succeeds.
 	configParseErr string
 
+	// configNotApproved is set when configParseErr is actually a
+	// *trust.NotApprovedError — the file is well-formed but was refused by
+	// the trust gate (unapproved, or changed since approval). The footer
+	// shows a distinct, actionable banner instead of the generic "cannot be
+	// parsed" message, since the file parses fine and just isn't trusted yet.
+	configNotApproved bool
+
 	// openFile opens the given path in the OS default application. Defaults to
 	// openfile.Open; swapped out in tests.
 	openFile func(string) error
@@ -262,9 +271,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configDirty = dirty
 		if parseErr != nil {
 			m.configParseErr = parseErr.Error()
+			m.configNotApproved = errors.As(parseErr, new(*trust.NotApprovedError))
 			m.reloadErr = "" // parse error supersedes any prior reload error
 		} else {
 			m.configParseErr = ""
+			m.configNotApproved = false
 		}
 		return m, configScanCmd()
 
@@ -277,6 +288,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configDirty = false
 		m.reloadErr = ""
 		m.configParseErr = ""
+		m.configNotApproved = false
 		m = m.clampCursors()
 		m = m.refreshLogView()
 		// Re-arm event listening against the new engine's channel.
@@ -894,6 +906,9 @@ func (m Model) renderLogPath() string {
 func (m Model) renderFooter() string {
 	if m.confirmingQuit {
 		return quitConfirmStyle.Render("Press ^C again to shutdown daemon")
+	}
+	if m.configNotApproved {
+		return configDirtyStyle.Render("Updated configuration is not approved — run `env-starter allow` to review and apply it")
 	}
 	if m.configParseErr != "" {
 		return configDirtyStyle.Render("Updated configuration cannot be parsed — fix errors to reload")
