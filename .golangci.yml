@@ -7,6 +7,10 @@ linters:
     - ineffassign
     - staticcheck
     - gosec
+    - errorlint
+    - bodyclose
+    - misspell
+    - unconvert
   settings:
     gosec:
       excludes:
