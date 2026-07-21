@@ -18,7 +18,7 @@ func TestCheckPeerUID(t *testing.T) {
 }
 
 func TestCheckPeerAcceptsSameUser(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "peer.sock")
+	socketPath := filepath.Join(socketTempDir(t), "peer.sock")
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
