@@ -921,7 +921,10 @@ func (m Model) shortcutsLegend() string {
 	if m.focused == focusEnvs {
 		parts = append(parts, "s start", "x stop")
 	}
-	parts = append(parts, "R restart", "l logs", "r refresh logs", "^L open", "^D detach", "^C shutdown")
+	if m.focused == focusCmds {
+		parts = append(parts, "R restart")
+	}
+	parts = append(parts, "l logs", "r refresh logs", "^L open", "^D detach", "^C shutdown")
 	return strings.Join(parts, "  ")
 }
 

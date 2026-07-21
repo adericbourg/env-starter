@@ -1076,6 +1076,50 @@ func TestRenderFooter_logsFocused_hidesStartStop(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_cmdsFocused_showsRestart(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if !strings.Contains(footer, "R restart") {
+		t.Errorf("expected footer to contain 'R restart', got %q", footer)
+	}
+}
+
+func TestRenderFooter_envsFocused_hidesRestart(t *testing.T) {
+	// Given — default focus is the envs pane.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "R restart") {
+		t.Errorf("expected footer to hide 'R restart' outside cmds pane, got %q", footer)
+	}
+}
+
+func TestRenderFooter_logsFocused_hidesRestart(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "R restart") {
+		t.Errorf("expected footer to hide 'R restart' outside cmds pane, got %q", footer)
+	}
+}
+
 func TestView_rendersLogsTitleForSelectedEnvAndCommand(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
