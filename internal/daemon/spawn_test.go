@@ -57,7 +57,7 @@ func TestLockPath_returnsPathUnderCacheDir(t *testing.T) {
 
 func TestDialOnly_whenNoSocket_returnsNil(t *testing.T) {
 	// Given — a path to a socket that does not exist.
-	nonExistentPath := t.TempDir() + "/no-such-daemon.sock"
+	nonExistentPath := socketTempDir(t) + "/no-such-daemon.sock"
 
 	// When
 	client, err := DialOnly(nonExistentPath)
