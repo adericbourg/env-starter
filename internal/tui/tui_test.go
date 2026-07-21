@@ -769,7 +769,23 @@ func TestUpdate_whenEventMsg_healthyCmdAppearsInView(t *testing.T) {
 	}
 }
 
-func TestUpdate_whenTickMsg_advancesSpinnerFrame(t *testing.T) {
+func TestUpdate_whenSpinnerTickMsg_advancesSpinnerFrame(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	initial := m.spinnerFrame
+
+	// When
+	updated, _ := m.Update(spinnerTickMsg{})
+	m = updated.(Model)
+
+	// Then
+	if m.spinnerFrame != initial+1 {
+		t.Errorf("expected spinnerFrame %d, got %d", initial+1, m.spinnerFrame)
+	}
+}
+
+func TestUpdate_whenTickMsg_doesNotAdvanceSpinnerFrame(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
@@ -780,8 +796,8 @@ func TestUpdate_whenTickMsg_advancesSpinnerFrame(t *testing.T) {
 	m = updated.(Model)
 
 	// Then
-	if m.spinnerFrame != initial+1 {
-		t.Errorf("expected spinnerFrame %d, got %d", initial+1, m.spinnerFrame)
+	if m.spinnerFrame != initial {
+		t.Errorf("expected spinnerFrame to stay %d, got %d", initial, m.spinnerFrame)
 	}
 }
 

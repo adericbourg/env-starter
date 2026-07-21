@@ -67,6 +67,11 @@ type noticeResetMsg struct{}
 // for on-disk changes.
 type configScanMsg struct{}
 
+// spinnerTickMsg is sent by the dedicated spinner ticker to advance the
+// starting/stopping/restarting spinner frame, independently of the slower
+// log-refresh tick.
+type spinnerTickMsg struct{}
+
 // daemonGoneMsg is sent when the event stream from the daemon closes unexpectedly,
 // meaning the daemon was killed or crashed.
 type daemonGoneMsg struct{}
@@ -76,6 +81,11 @@ type daemonGoneMsg struct{}
 type reloadDoneMsg struct{ err error }
 
 const tickInterval = 500 * time.Millisecond
+
+// spinnerTickInterval is the spinner's own frame-advance cadence — kept
+// separate from tickInterval so a fast, fluid animation doesn't force
+// refreshLogView's full log re-wrap to run 3-6x more often.
+const spinnerTickInterval = 80 * time.Millisecond
 
 // configScanInterval is how often the config files are stat-ed for changes.
 // 2s is sufficient latency for a human-initiated banner; using a dedicated
@@ -122,7 +132,7 @@ type Model struct {
 	shutdownCmds      []string
 	shutdownPrefixes  map[string]string
 
-	// spinner advances on every tickMsg to animate starting-state indicators
+	// spinner advances on every spinnerTickMsg to animate starting-state indicators
 	spinnerFrame int
 
 	// quit flow
@@ -172,9 +182,10 @@ func New(ctrl Controller) Model {
 }
 
 // Init returns the initial commands: start listening for engine events, arm
-// the periodic refresh ticker, and arm the config-file scanner.
+// the periodic refresh ticker, arm the config-file scanner, and arm the
+// spinner ticker.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForEvent(m.ctrl), tickCmd(), configScanCmd())
+	return tea.Batch(waitForEvent(m.ctrl), tickCmd(), configScanCmd(), spinnerTickCmd())
 }
 
 // waitForEvent returns a Cmd that blocks until the next engine event, then
@@ -193,6 +204,12 @@ func waitForEvent(ctrl Controller) tea.Cmd {
 func tickCmd() tea.Cmd {
 	return tea.Tick(tickInterval, func(time.Time) tea.Msg {
 		return tickMsg{}
+	})
+}
+
+func spinnerTickCmd() tea.Cmd {
+	return tea.Tick(spinnerTickInterval, func(time.Time) tea.Msg {
+		return spinnerTickMsg{}
 	})
 }
 
@@ -252,12 +269,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		m.spinnerFrame++
 		m = m.refreshLogView()
 		if m.quitting {
 			m = m.refreshShutdownLogs()
 		}
 		return m, tickCmd()
+
+	case spinnerTickMsg:
+		m.spinnerFrame++
+		return m, spinnerTickCmd()
 
 	case quitResetMsg:
 		m.confirmingQuit = false
