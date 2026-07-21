@@ -1451,7 +1451,7 @@ func TestRenderFooter_whenConfigNotApproved_showsNotApprovedBanner(t *testing.T)
 	ctrl := newFakeController()
 	m := seed(New(ctrl))
 	m.configParseErr = `config "/path/config.yaml" has changed since it was approved; run ` + "`env-starter allow`" + ` to review and approve it`
-	m.configNotApproved = true
+	m.configApproved = false
 
 	// When
 	footer := ansi.Strip(m.renderFooter())
@@ -1469,7 +1469,7 @@ func TestRenderFooter_whenConfigNotApproved_showsNotApprovedBanner(t *testing.T)
 	}
 }
 
-func TestUpdate_configScanMsg_whenNotApprovedError_setsConfigNotApproved(t *testing.T) {
+func TestUpdate_configScanMsg_whenNotApprovedError_clearsConfigApproved(t *testing.T) {
 	// Given — the controller's ConfigChanged reports the exact error type
 	// resolveConfig's loadFn returns for an unapproved/changed config (see
 	// internal/trust.NotApprovedError).
@@ -1483,28 +1483,28 @@ func TestUpdate_configScanMsg_whenNotApprovedError_setsConfigNotApproved(t *test
 
 	// Then — the model detects the trust error via errors.As, not just the
 	// error string, so renderFooter can show the distinct banner.
-	if !m.configNotApproved {
-		t.Error("expected configNotApproved to be set for a *trust.NotApprovedError")
+	if m.configApproved {
+		t.Error("expected configApproved to be false for a *trust.NotApprovedError")
 	}
 	if !strings.Contains(m.configParseErr, "env-starter allow") {
 		t.Errorf("expected configParseErr to carry the actionable message, got %q", m.configParseErr)
 	}
 }
 
-func TestUpdate_configScanMsg_whenPlainParseError_leavesConfigNotApprovedFalse(t *testing.T) {
+func TestUpdate_configScanMsg_whenPlainParseError_leavesConfigApprovedTrue(t *testing.T) {
 	// Given — an ordinary YAML parse error, not a trust error.
 	ctrl := newFakeController()
 	ctrl.configParseErr = fmt.Errorf("yaml: line 3: did not find expected key")
 	m := seed(New(ctrl))
-	m.configNotApproved = true // stale from a previous scan; must be cleared
+	m.configApproved = false // stale from a previous scan; must be cleared
 
 	// When
 	updated, _ := m.Update(configScanMsg{})
 	m = updated.(Model)
 
 	// Then
-	if m.configNotApproved {
-		t.Error("expected configNotApproved to be false for a plain parse error")
+	if !m.configApproved {
+		t.Error("expected configApproved to be true for a plain parse error")
 	}
 }
 

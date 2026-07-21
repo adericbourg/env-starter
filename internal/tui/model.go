@@ -148,12 +148,12 @@ type Model struct {
 	// file next loads successfully or a reload succeeds.
 	configParseErr string
 
-	// configNotApproved is set when configParseErr is actually a
+	// configApproved is false when configParseErr is actually a
 	// *trust.NotApprovedError — the file is well-formed but was refused by
 	// the trust gate (unapproved, or changed since approval). The footer
 	// shows a distinct, actionable banner instead of the generic "cannot be
 	// parsed" message, since the file parses fine and just isn't trusted yet.
-	configNotApproved bool
+	configApproved bool
 
 	// openFile opens the given path in the OS default application. Defaults to
 	// openfile.Open; swapped out in tests.
@@ -167,6 +167,7 @@ func New(ctrl Controller) Model {
 		logView:         viewport.New(),
 		shutdownLogView: viewport.New(),
 		openFile:        openfile.Open,
+		configApproved:  true,
 	}
 }
 
@@ -271,11 +272,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configDirty = dirty
 		if parseErr != nil {
 			m.configParseErr = parseErr.Error()
-			m.configNotApproved = errors.As(parseErr, new(*trust.NotApprovedError))
+			m.configApproved = !errors.As(parseErr, new(*trust.NotApprovedError))
 			m.reloadErr = "" // parse error supersedes any prior reload error
 		} else {
 			m.configParseErr = ""
-			m.configNotApproved = false
+			m.configApproved = true
 		}
 		return m, configScanCmd()
 
@@ -288,7 +289,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configDirty = false
 		m.reloadErr = ""
 		m.configParseErr = ""
-		m.configNotApproved = false
+		m.configApproved = true
 		m = m.clampCursors()
 		m = m.refreshLogView()
 		// Re-arm event listening against the new engine's channel.
@@ -907,7 +908,7 @@ func (m Model) renderFooter() string {
 	if m.confirmingQuit {
 		return quitConfirmStyle.Render("Press ^C again to shutdown daemon")
 	}
-	if m.configNotApproved {
+	if !m.configApproved {
 		return configDirtyStyle.Render("Updated configuration is not approved — run `env-starter allow` to review and apply it")
 	}
 	if m.configParseErr != "" {
