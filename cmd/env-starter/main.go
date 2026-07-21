@@ -26,6 +26,7 @@ import (
 	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/linkscan"
+	"github.com/adericbourg/env-starter/internal/trust"
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
 )
@@ -977,20 +978,44 @@ func maybeSuggestUpdate() {
 	}
 }
 
+// configPaths resolves the absolute set of config file paths for the given
+// --config/--config-overlay flag values (defaulting the base path when
+// empty). Shared by resolveConfig (for hot-reload watching) and the `allow`
+// subcommand / trust pre-flight checks so they always agree on exactly which
+// files are in scope.
+func configPaths(baseFile, overlayFile string) []string {
+	basePath := baseFile
+	if basePath == "" {
+		basePath = defaultConfigPath()
+	}
+	paths := []string{basePath}
+	if overlayFile != "" {
+		paths = append(paths, overlayFile)
+	}
+	return paths
+}
+
 // resolveConfig loads the configuration from disk and returns:
 //   - the initially parsed *config.Config
 //   - a loadFn closure that re-runs the same load+merge logic for hot-reload
 //   - watchPaths: the set of files to stat for change detection
 //   - any error encountered during the initial load
 func resolveConfig(baseFile, overlayFile string) (*config.Config, func() (*config.Config, error), []string, error) {
-	basePath := baseFile
-	if basePath == "" {
-		basePath = defaultConfigPath()
-	}
+	watchPaths := configPaths(baseFile, overlayFile)
+	basePath := watchPaths[0]
 
 	// loadFn re-runs the full resolution (base + optional overlay) using the
 	// resolved paths captured here. It is safe to call repeatedly.
+	//
+	// The trust check runs first and gates every call, including hot-reload:
+	// this is the single chokepoint every *config.Config passed to
+	// engine.New flows through (see internal/trust and SECURITY.md), so a
+	// tampered or unapproved file is refused here before it is ever parsed
+	// or executed, on both initial start and hot-reload.
 	loadFn := func() (*config.Config, error) {
+		if err := trust.Check(watchPaths); err != nil {
+			return nil, err
+		}
 		base, err := config.Load(basePath)
 		if err != nil {
 			return nil, fmt.Errorf("loading config %q: %w", basePath, err)
@@ -1021,11 +1046,6 @@ func resolveConfig(baseFile, overlayFile string) (*config.Config, func() (*confi
 	// hot-reload via loadFn), so the user sees footguns without blocking startup.
 	for _, w := range cfg.Warnings() {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
-	}
-
-	watchPaths := []string{basePath}
-	if overlayFile != "" {
-		watchPaths = append(watchPaths, overlayFile)
 	}
 
 	return cfg, loadFn, watchPaths, nil

@@ -91,13 +91,33 @@ trusted on TLS alone and env-starter prints a startup warning. Set
 checksum a hard validation error (recommended for shared configs; an overlay
 can never relax it).
 
-## Config overlay trust
+## Config trust (approval on first use)
 
-`--config-overlay` files are trusted at the same level as the base config
-file. A command's `run`, `setup`, and `teardown` fields are passed directly
-to `sh -c`, so **a malicious overlay file is equivalent to code execution**.
-Only use overlay files from sources you control; never share or commit an
-overlay that contains untrusted data.
+A command's `run`, `setup`, `teardown`, and `readiness.shell` fields are
+passed directly to `sh -c`. This is intentional — they **are** shell scripts —
+so env-starter does not sanitize them; instead it gates *which* config files
+it will load from at all.
+
+Every config file (the base config and any `--config-overlay`) is hashed with
+sha256, and env-starter refuses to load, execute, or hot-reload a file whose
+current hash has not been explicitly approved. Approval is recorded under the
+owner-only cache dir (`trust.json`) and is invalidated the instant a file's
+content changes, so a later edit — legitimate or a tampered/slipped-in
+change — always requires a fresh review before anything from it runs.
+
+Review and approve a config with:
+
+```sh
+env-starter allow            # preview every run/setup/teardown/readiness.shell command, then prompt
+env-starter allow --print    # preview only, writes no approval
+env-starter allow --yes      # approve without prompting (e.g. in scripts)
+```
+
+This defends against a config or overlay that was tampered with or slipped in
+without your knowledge — it does **not** make the fields themselves any
+safer to author. Only write (or approve) `run`/`setup`/`teardown` commands
+you would be comfortable running yourself: **approving a config is equivalent
+to granting it code execution under your user account.**
 
 ## Command log confidentiality
 

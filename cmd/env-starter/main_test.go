@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/linkscan"
+	"github.com/adericbourg/env-starter/internal/trust"
 )
 
 // stubLogSource implements logSource for tests.
@@ -329,6 +331,26 @@ func writeConfig(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+// isolateCacheDir redirects os.UserCacheDir() (and therefore the trust
+// store) to a throwaway temp dir, so tests never read or write the
+// developer's real trust store. Mirrors the pattern in internal/trust's own
+// tests.
+func isolateCacheDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", "")
+}
+
+// approveConfig marks paths as trusted so resolveConfig's gate lets them
+// through. Tests that only care about load/merge behavior — not the trust
+// gate itself — call this in their Given step.
+func approveConfig(t *testing.T, paths ...string) {
+	t.Helper()
+	if err := trust.Approve(paths); err != nil {
+		t.Fatalf("trust.Approve: %v", err)
+	}
+}
+
 const minimalConfig = `
 env-starter:
   commands: []
@@ -337,6 +359,7 @@ env-starter:
 
 func TestResolveConfig_defaultMissing(t *testing.T) {
 	// Given: XDG_CONFIG_HOME points to an empty dir so the default file is absent.
+	isolateCacheDir(t)
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
@@ -353,9 +376,11 @@ func TestResolveConfig_defaultMissing(t *testing.T) {
 }
 
 func TestResolveConfig_explicitConfigOnly(t *testing.T) {
-	// Given
+	// Given: an approved config file.
+	isolateCacheDir(t)
 	dir := t.TempDir()
 	cfgPath := writeConfig(t, dir, "config.yaml", minimalConfig)
+	approveConfig(t, cfgPath)
 
 	// When
 	cfg, _, _, err := resolveConfig(cfgPath, "")
@@ -370,16 +395,18 @@ func TestResolveConfig_explicitConfigOnly(t *testing.T) {
 }
 
 func TestResolveConfig_overlayOnly(t *testing.T) {
-	// Given: XDG_CONFIG_HOME base + a separate overlay file.
+	// Given: XDG_CONFIG_HOME base + a separate, approved overlay file.
+	isolateCacheDir(t)
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	if err := os.MkdirAll(filepath.Join(dir, "env-starter"), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	writeConfig(t, dir, filepath.Join("env-starter", "config.yaml"), minimalConfig)
+	basePath := writeConfig(t, dir, filepath.Join("env-starter", "config.yaml"), minimalConfig)
 
 	overlayDir := t.TempDir()
 	overlayPath := writeConfig(t, overlayDir, "overlay.yaml", minimalConfig)
+	approveConfig(t, basePath, overlayPath)
 
 	// When
 	cfg, _, _, err := resolveConfig("", overlayPath)
@@ -394,10 +421,12 @@ func TestResolveConfig_overlayOnly(t *testing.T) {
 }
 
 func TestResolveConfig_bothConfigAndOverlay(t *testing.T) {
-	// Given
+	// Given: an approved base and overlay.
+	isolateCacheDir(t)
 	dir := t.TempDir()
 	basePath := writeConfig(t, dir, "base.yaml", minimalConfig)
 	overlayPath := writeConfig(t, dir, "overlay.yaml", minimalConfig)
+	approveConfig(t, basePath, overlayPath)
 
 	// When
 	cfg, _, _, err := resolveConfig(basePath, overlayPath)
@@ -411,8 +440,58 @@ func TestResolveConfig_bothConfigAndOverlay(t *testing.T) {
 	}
 }
 
+func TestResolveConfig_unapprovedConfig_returnsNotApprovedError(t *testing.T) {
+	// Given: a valid config file that has never been approved.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", minimalConfig)
+
+	// When
+	_, _, _, err := resolveConfig(cfgPath, "")
+
+	// Then — refused before it is ever parsed, with an actionable message.
+	var notApproved *trust.NotApprovedError
+	if !errors.As(err, &notApproved) {
+		t.Fatalf("expected a *trust.NotApprovedError, got: %v", err)
+	}
+}
+
+func TestResolveConfig_loadFn_whenConfigTamperedAfterApproval_returnsNotApprovedError(t *testing.T) {
+	// Given: a config approved once via resolveConfig, matching how the daemon
+	// gates both its initial load and every hot-reload through the same loadFn
+	// (see cmd/env-starter/main.go resolveConfig — the chokepoint every config
+	// passed to engine.New flows through).
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", minimalConfig)
+	approveConfig(t, cfgPath)
+
+	_, loadFn, _, err := resolveConfig(cfgPath, "")
+	if err != nil {
+		t.Fatalf("initial resolveConfig: unexpected error: %v", err)
+	}
+
+	// When: the file is edited after approval (a legitimate change or a
+	// tampered/slipped-in one — indistinguishable without review) and the same
+	// loadFn used for hot-reload is invoked again.
+	if err := os.WriteFile(cfgPath, []byte(minimalConfig+"# tampered\n"), 0o600); err != nil {
+		t.Fatalf("editing config: %v", err)
+	}
+	_, err = loadFn()
+
+	// Then — the changed file is refused, never reaching config.Load/Merge.
+	var notApproved *trust.NotApprovedError
+	if !errors.As(err, &notApproved) {
+		t.Fatalf("expected a *trust.NotApprovedError, got: %v", err)
+	}
+	if notApproved.Reason != trust.ReasonChanged {
+		t.Errorf("expected Reason=ReasonChanged, got %v", notApproved.Reason)
+	}
+}
+
 func TestResolveConfig_missingExplicitConfig(t *testing.T) {
 	// Given: a path that does not exist.
+	isolateCacheDir(t)
 	// When
 	_, _, _, err := resolveConfig("/nonexistent/path/config.yaml", "")
 
