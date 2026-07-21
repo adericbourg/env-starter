@@ -927,9 +927,9 @@ func (m Model) shortcutsLegend() string {
 		parts = append(parts, "R restart")
 	}
 	if m.focused == focusLogs {
-		parts = append(parts, "r refresh logs")
+		parts = append(parts, "r refresh logs", "^L open")
 	}
-	parts = append(parts, "l logs", "^L open", "^D detach", "^C shutdown")
+	parts = append(parts, "l logs", "^D detach", "^C shutdown")
 	return strings.Join(parts, "  ")
 }
 

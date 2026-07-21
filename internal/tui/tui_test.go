@@ -1153,6 +1153,50 @@ func TestRenderFooter_logsFocused_hidesRestart(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_logsFocused_showsOpenHint(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if !strings.Contains(footer, "^L open") {
+		t.Errorf("expected footer to contain '^L open', got %q", footer)
+	}
+}
+
+func TestRenderFooter_envsFocused_hidesOpenHint(t *testing.T) {
+	// Given — default focus is the envs pane.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "^L open") {
+		t.Errorf("expected footer to hide '^L open' outside logs pane, got %q", footer)
+	}
+}
+
+func TestRenderFooter_cmdsFocused_hidesOpenHint(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "^L open") {
+		t.Errorf("expected footer to hide '^L open' outside logs pane, got %q", footer)
+	}
+}
+
 func TestView_rendersLogsTitleForSelectedEnvAndCommand(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
