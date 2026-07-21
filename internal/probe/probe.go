@@ -132,9 +132,9 @@ func WaitReady(ctx context.Context, p Probe, timeout, interval time.Duration) er
 		case <-ctx.Done():
 			// Distinguish between overall timeout and caller cancellation.
 			if time.Now().Before(deadline) {
-				return fmt.Errorf("probe: context cancelled while waiting for readiness: %w (last error: %v)", ctx.Err(), lastErr)
+				return fmt.Errorf("probe: context cancelled while waiting for readiness: %w (last error: %w)", ctx.Err(), lastErr)
 			}
-			return fmt.Errorf("probe: %w after %s (last error: %v)", ErrTimeout, timeout, lastErr)
+			return fmt.Errorf("probe: %w after %s (last error: %w)", ErrTimeout, timeout, lastErr)
 		case <-time.After(interval):
 		}
 	}
