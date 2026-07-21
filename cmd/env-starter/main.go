@@ -740,6 +740,9 @@ func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathSta
 	_, _ = fmt.Fprintln(w, "\nCommands that will be executed as shell scripts:")
 	for _, cmd := range cfg.Commands {
 		_, _ = fmt.Fprintf(w, "\n  %s:\n", cmd.Name)
+		if src := formatSource(cmd.Source); src != "" {
+			_, _ = fmt.Fprintf(w, "    source:    %s\n", src)
+		}
 		for _, step := range cmd.Setup {
 			_, _ = fmt.Fprintf(w, "    setup:     %s\n", indentContinuation(step))
 		}
@@ -752,6 +755,35 @@ func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathSta
 		if cmd.Readiness != nil && cmd.Readiness.Shell != "" {
 			_, _ = fmt.Fprintf(w, "    readiness: %s\n", indentContinuation(cmd.Readiness.Shell))
 		}
+	}
+}
+
+// formatSource renders a command's source as a browsable URL or filesystem
+// path, so the operator can go inspect the actual code behind a run/teardown
+// shell string during `allow` review. Returns "" for a zero-value Source
+// (validation rejects configs with none of github/url/local set, so this
+// only happens for a Command built directly in Go, e.g. in tests).
+func formatSource(src config.Source) string {
+	switch {
+	case src.GitHub != nil:
+		branch := src.GitHub.Branch
+		if branch == "" {
+			branch = "main" // matches source.GitHub.effectiveBranch's default
+		}
+		url := fmt.Sprintf("https://github.com/%s/tree/%s", src.GitHub.Repo, branch)
+		if src.Subdir != "" {
+			url += "/" + src.Subdir
+		}
+		return url
+	case src.URLSource != nil:
+		return src.URLSource.URL
+	case src.Local != "":
+		if src.Subdir != "" {
+			return filepath.Join(src.Local, src.Subdir)
+		}
+		return src.Local
+	default:
+		return ""
 	}
 }
 

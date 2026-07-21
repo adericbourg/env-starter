@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/linkscan"
 	"github.com/adericbourg/env-starter/internal/trust"
 )
@@ -648,5 +649,146 @@ func TestDoAllow_invalidConfig_returnsError(t *testing.T) {
 	// Then
 	if err == nil {
 		t.Fatal("expected an error for an invalid config, got nil")
+	}
+}
+
+// ── formatSource ─────────────────────────────────────────────────────────────
+
+func TestFormatSource_ofGitHubWithoutBranch_defaultsToMain(t *testing.T) {
+	// Given
+	src := config.Source{GitHub: &config.GitHub{Repo: "acme/infra"}}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	want := "https://github.com/acme/infra/tree/main"
+	if got != want {
+		t.Errorf("formatSource() = %q; want %q", got, want)
+	}
+}
+
+func TestFormatSource_ofGitHubWithBranchAndSubdir_includesBoth(t *testing.T) {
+	// Given
+	src := config.Source{
+		GitHub: &config.GitHub{Repo: "acme/infra", Branch: "dev"},
+		Subdir: "scripts/database",
+	}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	want := "https://github.com/acme/infra/tree/dev/scripts/database"
+	if got != want {
+		t.Errorf("formatSource() = %q; want %q", got, want)
+	}
+}
+
+func TestFormatSource_ofURL_returnsURLVerbatim(t *testing.T) {
+	// Given
+	src := config.Source{URLSource: &config.URL{URL: "https://releases.example.com/auth-gateway/bin"}}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	want := "https://releases.example.com/auth-gateway/bin"
+	if got != want {
+		t.Errorf("formatSource() = %q; want %q", got, want)
+	}
+}
+
+func TestFormatSource_ofLocal_returnsPath(t *testing.T) {
+	// Given
+	src := config.Source{Local: "/home/user/scripts/migrate"}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	want := "/home/user/scripts/migrate"
+	if got != want {
+		t.Errorf("formatSource() = %q; want %q", got, want)
+	}
+}
+
+func TestFormatSource_ofLocalWithSubdir_joinsPath(t *testing.T) {
+	// Given
+	src := config.Source{Local: "/home/user/scripts", Subdir: "migrate"}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	want := "/home/user/scripts/migrate"
+	if got != want {
+		t.Errorf("formatSource() = %q; want %q", got, want)
+	}
+}
+
+func TestFormatSource_ofEmptySource_returnsEmptyString(t *testing.T) {
+	// Given
+	src := config.Source{}
+
+	// When
+	got := formatSource(src)
+
+	// Then
+	if got != "" {
+		t.Errorf("formatSource() = %q; want empty string", got)
+	}
+}
+
+// ── printAllowPreview source line ────────────────────────────────────────────
+
+const allowTestConfigMultiSource = `
+env-starter:
+  commands:
+    - name: web
+      type: service
+      source:
+        local: /tmp
+      run: echo hello
+      teardown: echo bye
+    - name: infra
+      type: task
+      source:
+        github:
+          repo: acme/infra
+          branch: dev
+        subdir: scripts/database
+      run: echo infra
+    - name: gateway
+      type: task
+      source:
+        url: https://releases.example.com/auth-gateway/bin
+      run: echo gateway
+  environments: []
+`
+
+func TestDoAllow_print_showsSourcePerCommand(t *testing.T) {
+	// Given: a fresh config with all three source kinds.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfigMultiSource)
+	var out bytes.Buffer
+
+	// When
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"source:    /tmp",
+		"source:    https://github.com/acme/infra/tree/dev/scripts/database",
+		"source:    https://releases.example.com/auth-gateway/bin",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected preview to contain %q, got:\n%s", want, got)
+		}
 	}
 }

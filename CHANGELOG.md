@@ -14,7 +14,9 @@ Releases follow [Semantic Versioning](https://semver.org/).
   fact — `run`/`setup`/`teardown`/`readiness.shell` are still executed
   verbatim as shell scripts by design. Review and approve with the new
   `env-starter allow` subcommand (`--print` to preview only, `--yes` to skip
-  the prompt). See SECURITY.md ("Config trust").
+  the prompt); the preview also shows each command's `source` as a browsable
+  URL or path, so you can go inspect the code behind a command before
+  approving it. See SECURITY.md ("Config trust").
 - Self-update now **fails closed** when `cosignPublicKeyPEM` is not configured:
   `Apply` returns an error instead of warning and proceeding with TLS-only
   integrity. Self-update is disabled until the maintainer embeds the cosign

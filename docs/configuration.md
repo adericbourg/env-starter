@@ -44,6 +44,11 @@ env-starter allow --yes                 # approve without prompting (e.g. in scr
 env-starter allow --config-overlay FILE # review an overlay alongside the base config
 ```
 
+The preview shows each command's [`source`](#source) as a browsable URL or path
+(e.g. `https://github.com/<repo>/tree/<branch>/<subdir>` for `github`, the exact
+URL for `url`, or the filesystem path for `local`), so you can go inspect the
+actual code behind a `run`/`setup`/`teardown` command before approving it.
+
 An unapproved or changed config is refused at load time, with a message
 pointing back to `env-starter allow`. While a daemon is running, editing a
 watched config file to something unapproved blocks the hot-reload — the
