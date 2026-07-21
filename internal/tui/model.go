@@ -368,15 +368,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.moveCursorDown()
 
 	case "s":
-		envs := m.ctrl.Environments()
-		if m.envCursor < len(envs) {
-			_ = m.ctrl.StartEnvironment(envs[m.envCursor].Name)
+		if m.focused == focusEnvs {
+			envs := m.ctrl.Environments()
+			if m.envCursor < len(envs) {
+				_ = m.ctrl.StartEnvironment(envs[m.envCursor].Name)
+			}
 		}
 
 	case "x":
-		envs := m.ctrl.Environments()
-		if m.envCursor < len(envs) {
-			_ = m.ctrl.StopEnvironment(envs[m.envCursor].Name)
+		if m.focused == focusEnvs {
+			envs := m.ctrl.Environments()
+			if m.envCursor < len(envs) {
+				_ = m.ctrl.StopEnvironment(envs[m.envCursor].Name)
+			}
 		}
 
 	case "r":
@@ -906,8 +910,19 @@ func (m Model) renderFooter() string {
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	shortcuts := "↑/↓ move  tab/←/→ focus  s start  x stop  R restart  l logs  r refresh logs  ^L open  ^D detach  ^C shutdown"
-	return footerStyle.Render(shortcuts)
+	return footerStyle.Render(m.shortcutsLegend())
+}
+
+// shortcutsLegend builds the footer's shortcut hints for the currently
+// focused pane — shortcuts whose behavior is scoped to one pane are only
+// shown while that pane is focused.
+func (m Model) shortcutsLegend() string {
+	parts := []string{"↑/↓ move", "tab/←/→ focus"}
+	if m.focused == focusEnvs {
+		parts = append(parts, "s start", "x stop")
+	}
+	parts = append(parts, "R restart", "l logs", "r refresh logs", "^L open", "^D detach", "^C shutdown")
+	return strings.Join(parts, "  ")
 }
 
 // initShutdownLog collects the ordered, deduplicated set of commands across all

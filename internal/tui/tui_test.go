@@ -282,6 +282,70 @@ func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
 	_ = m
 }
 
+func TestUpdate_whenS_withCmdsFocused_isNoOp(t *testing.T) {
+	// Given a model with the commands pane focused.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	m = sendKey(m, "s")
+
+	// Then
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call, got %v", ctrl.startedEnvs)
+	}
+	_ = m
+}
+
+func TestUpdate_whenS_withLogsFocused_isNoOp(t *testing.T) {
+	// Given a model with the logs pane focused.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	m = sendKey(m, "s")
+
+	// Then
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call, got %v", ctrl.startedEnvs)
+	}
+	_ = m
+}
+
+func TestUpdate_whenX_withCmdsFocused_isNoOp(t *testing.T) {
+	// Given a model with the commands pane focused.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	m = sendKey(m, "x")
+
+	// Then
+	if len(ctrl.stoppedEnvs) != 0 {
+		t.Errorf("expected no StopEnvironment call, got %v", ctrl.stoppedEnvs)
+	}
+	_ = m
+}
+
+func TestUpdate_whenX_withLogsFocused_isNoOp(t *testing.T) {
+	// Given a model with the logs pane focused.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	m = sendKey(m, "x")
+
+	// Then
+	if len(ctrl.stoppedEnvs) != 0 {
+		t.Errorf("expected no StopEnvironment call, got %v", ctrl.stoppedEnvs)
+	}
+	_ = m
+}
+
 func TestUpdate_whenR_withCmdsFocused_callsRestartCommand(t *testing.T) {
 	// Given a model with the commands pane focused and the first command selected.
 	ctrl := newFakeController()
@@ -965,6 +1029,50 @@ func TestRenderFooter_whenNotice_showsNoticeInsteadOfShortcuts(t *testing.T) {
 	}
 	if strings.Contains(footer, "↑/↓") {
 		t.Errorf("expected shortcuts to be suppressed while notice is shown, got %q", footer)
+	}
+}
+
+func TestRenderFooter_envsFocused_showsStartStop(t *testing.T) {
+	// Given — default focus is the envs pane.
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if !strings.Contains(footer, "s start") || !strings.Contains(footer, "x stop") {
+		t.Errorf("expected footer to contain 's start' and 'x stop', got %q", footer)
+	}
+}
+
+func TestRenderFooter_cmdsFocused_hidesStartStop(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "s start") || strings.Contains(footer, "x stop") {
+		t.Errorf("expected footer to hide 's start'/'x stop' outside envs pane, got %q", footer)
+	}
+}
+
+func TestRenderFooter_logsFocused_hidesStartStop(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then
+	if strings.Contains(footer, "s start") || strings.Contains(footer, "x stop") {
+		t.Errorf("expected footer to hide 's start'/'x stop' outside envs pane, got %q", footer)
 	}
 }
 

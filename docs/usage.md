@@ -77,8 +77,8 @@ env-starter run connect-order && echo "ready"
 |-----|--------|
 | `↑` / `↓` | Navigate items in the focused pane |
 | `Tab` / `←` / `→` | Switch between panes |
-| `s` | Start the selected environment |
-| `x` | Stop the selected environment |
+| `s` | Start the selected environment (Environments pane only) |
+| `x` | Stop the selected environment (Environments pane only) |
 | `R` (Shift+R) | Restart the selected command (command panel focused) |
 | `l` | Focus/scroll the logs pane |
 | `r` | Refresh |
