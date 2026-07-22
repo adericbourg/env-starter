@@ -1346,6 +1346,38 @@ func TestRenderCmdPane_whenErrorWithNoRetries_showsNoSuffix(t *testing.T) {
 	}
 }
 
+func TestRenderCmdPane_whenUnmanaged_showsUnmanagedLabel(t *testing.T) {
+	// Given a healthy command adopted as unmanaged.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdHealthy
+	ctrl.cmdUnmanaged = map[string]bool{"svc-a": true}
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then the unmanaged annotation appears next to the command name.
+	if !strings.Contains(ansi.Strip(pane), "svc-a (unmanaged)") {
+		t.Errorf("expected pane to contain 'svc-a (unmanaged)', got: %q", ansi.Strip(pane))
+	}
+}
+
+func TestRenderCmdPane_whenNotUnmanaged_showsNoUnmanagedLabel(t *testing.T) {
+	// Given a healthy command that env-starter launched itself.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdHealthy
+	// cmdUnmanaged not set → false
+	m := seed(New(ctrl))
+
+	// When the command pane is rendered.
+	pane := m.renderCmdPane(40, 10)
+
+	// Then no unmanaged annotation is appended.
+	if strings.Contains(ansi.Strip(pane), "(unmanaged)") {
+		t.Errorf("expected no unmanaged suffix for a managed command, got: %q", ansi.Strip(pane))
+	}
+}
+
 // ── Config hot-reload model tests ─────────────────────────────────────────────
 
 func TestRenderFooter_normalState_hidesConfigReloadHint(t *testing.T) {

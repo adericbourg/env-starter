@@ -829,7 +829,7 @@ func (m Model) renderCmdPane(width, height int) string {
 		state := m.ctrl.CmdState(cmd)
 		indicator := cmdStateIndicator(state, m.spinnerFrame)
 		retryAttempts, retryMax := m.ctrl.CmdRetries(cmd)
-		label := cmd + cmdRetrySuffix(state, retryAttempts, retryMax)
+		label := cmd + cmdRetrySuffix(state, retryAttempts, retryMax) + cmdUnmanagedSuffix(m.ctrl.IsUnmanaged(cmd))
 		line := fmt.Sprintf("%s %s", indicator, label)
 		if i == m.cmdCursor && m.focused == focusCmds {
 			line = selectedLine.Render("> " + line)
@@ -1165,4 +1165,15 @@ func cmdRetrySuffix(state engine.CmdState, attempts, max int) string {
 		}
 	}
 	return ""
+}
+
+// cmdUnmanagedSuffix returns a short dimmed annotation appended after the
+// command name when it is healthy only because an external process already
+// satisfied its readiness probe before env-starter spawned anything. Returns
+// an empty string otherwise.
+func cmdUnmanagedSuffix(unmanaged bool) string {
+	if !unmanaged {
+		return ""
+	}
+	return " " + lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Render("(unmanaged)")
 }
