@@ -6,6 +6,25 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.1] — 2026-07-22
+
+### Changed
+- The env inspector's flat list is now a searchable, filterable Key/Origin
+  table (values are never shown here): a search field filters rows by
+  case-insensitive key substring, and origin facets (`F5` All, `F6`
+  OS/user, `F7` environment, `F8` command) narrow the table by source.
+  `Enter` on a row opens a details screen with its Value, Origin, and
+  Overrides — still masked by default, `Space` reveals. See
+  `docs/usage.md` ("Env inspector").
+
+### Fixed
+- The env inspector details screen no longer shifts position when
+  toggling reveal: the block is rendered at a fixed, clamped width before
+  centering, so a long value wraps onto extra lines instead of widening
+  (and re-centering) the block.
+- The TUI footer shortcut label for the env inspector was corrected from
+  "e env" to "e env inspector".
+
 ## [1.6.0] — 2026-07-22
 
 ### Changed
@@ -293,7 +312,8 @@ Initial release.
 - `github`, `url`, and `local` source types.
 - Config overlay merge support.
 
-[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.6.1...HEAD
+[1.6.1]: https://github.com/adericbourg/env-starter/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/adericbourg/env-starter/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/adericbourg/env-starter/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/adericbourg/env-starter/compare/v1.5.0...v1.5.1
