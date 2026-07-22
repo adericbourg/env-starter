@@ -27,6 +27,12 @@ Releases follow [Semantic Versioning](https://semver.org/).
   supervisor and daemon hub.
 
 ### Added
+- Commands with a `readiness` probe now check it once *before* spawning
+  anything. If it already passes, the command is adopted as healthy but
+  **unmanaged** instead of launching a duplicate process: a warning is logged
+  and the TUI shows `(unmanaged)` next to the command name. env-starter keeps
+  watching it in the background and takes over with a normal managed start
+  the moment the probe fails.
 - golangci-lint (`staticcheck`, `errcheck`, `gosec`, `ineffassign`) and
   govulncheck steps added to CI.
 - Releases now include an SPDX SBOM per archive and a Sigstore build-provenance

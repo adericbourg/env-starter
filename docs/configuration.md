@@ -361,6 +361,17 @@ Exactly one probe type must be set (`tcp` or `shell`). Specifying more than one 
 
 > **Note:** `http` and `log` probe types are reserved for future support. The current version rejects them with a clear error message. Use `tcp` or `shell` in the meantime.
 
+> **Adopting an already-running process.** Before spawning anything, env-starter
+> runs the readiness probe (if configured) once. If it already passes — e.g. the
+> command was left running from a previous session, or started manually outside
+> env-starter — the command is treated as healthy but **unmanaged**: no
+> duplicate process is spawned, a warning is logged, and the TUI shows
+> `(unmanaged)` next to the command name. env-starter keeps probing it in the
+> background; the moment the probe fails, it takes over with a normal managed
+> start (fetch source, run setup, launch) and the label disappears. This applies
+> automatically to any command with a `readiness` probe — there is no separate
+> opt-in setting.
+
 ### `readiness.tcp`
 
 | | |
