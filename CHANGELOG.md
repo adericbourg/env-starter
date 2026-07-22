@@ -27,6 +27,11 @@ Releases follow [Semantic Versioning](https://semver.org/).
   supervisor and daemon hub.
 
 ### Added
+- Environments can now declare `env`, applied to every command in their
+  `workflow`. For a command shared by several environments, the effective env
+  is the union of the sharing environments' `env`, overridden by the command's
+  own `env`. Two sharing environments setting the same key to different values
+  is rejected at load time (see `docs/configuration.md`).
 - Commands with a `readiness` probe now check it once *before* spawning
   anything. If it already passes, the command is adopted as healthy but
   **unmanaged** instead of launching a duplicate process: a warning is logged

@@ -43,6 +43,86 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := validateSharedEnvConflicts(c); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateEnvMap rejects env keys that sh/exec cannot represent as a
+// "KEY=VALUE" pair: empty, or containing '='.
+func validateEnvMap(ownerKind, ownerName string, env map[string]string) error {
+	for key := range env {
+		if key == "" {
+			return fmt.Errorf("%s %q: env has an empty key", ownerKind, ownerName)
+		}
+		if strings.Contains(key, "=") {
+			return fmt.Errorf("%s %q: env key %q must not contain '='", ownerKind, ownerName, key)
+		}
+	}
+	return nil
+}
+
+// validateSharedEnvConflicts rejects environment-level env vars that would
+// resolve differently depending on which environment started a shared
+// command. A command runs once globally (see internal/engine), so if two
+// environments referencing the same command set the same key to different
+// values, the resulting process env would depend on start order rather than
+// on the config — this is caught here instead, at load time. A key the
+// command itself sets is exempt: the command's Env always overrides
+// environment-level Env, so there is no observable conflict.
+func validateSharedEnvConflicts(c *Config) error {
+	cmdEnv := make(map[string]map[string]string, len(c.Commands))
+	for _, cmd := range c.Commands {
+		cmdEnv[cmd.Name] = cmd.Env
+	}
+
+	type owner struct {
+		envName string
+		value   string
+	}
+	// firstOwner[commandName][key] = the first environment (and value) seen
+	// setting that key for that command.
+	firstOwner := make(map[string]map[string]owner)
+
+	for _, env := range c.Environments {
+		if len(env.Env) == 0 {
+			continue
+		}
+		// A workflow may reference the same command more than once (e.g. with
+		// different depends-on); only count it once per environment.
+		seenCommands := make(map[string]struct{}, len(env.Workflow))
+		for _, step := range env.Workflow {
+			if _, dup := seenCommands[step.Command]; dup {
+				continue
+			}
+			seenCommands[step.Command] = struct{}{}
+
+			overrides := cmdEnv[step.Command]
+			for key, value := range env.Env {
+				if _, overridden := overrides[key]; overridden {
+					continue
+				}
+				byKey := firstOwner[step.Command]
+				if byKey == nil {
+					byKey = make(map[string]owner)
+					firstOwner[step.Command] = byKey
+				}
+				prior, ok := byKey[key]
+				if !ok {
+					byKey[key] = owner{envName: env.Name, value: value}
+					continue
+				}
+				if prior.value != value {
+					return fmt.Errorf(
+						"command %q: environments %q and %q set env %q to conflicting values; duplicate the command to give each environment its own",
+						step.Command, prior.envName, env.Name, key)
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -66,6 +146,9 @@ func validateCommand(idx int, cmd Command, requireChecksums bool) error {
 		if strings.TrimSpace(step) == "" {
 			return fmt.Errorf("command %q: setup[%d] must not be empty", cmd.Name, i)
 		}
+	}
+	if err := validateEnvMap("command", cmd.Name, cmd.Env); err != nil {
+		return err
 	}
 	if err := validateSource(cmd.Name, cmd.Source, requireChecksums); err != nil {
 		return err
@@ -225,6 +308,9 @@ func validateEnvironment(idx int, env Environment, commandNames map[string]struc
 	}
 	if len(env.Workflow) == 0 {
 		return fmt.Errorf("environment %q: workflow must be non-empty", env.Name)
+	}
+	if err := validateEnvMap("environment", env.Name, env.Env); err != nil {
+		return err
 	}
 
 	// Collect the set of command names used in this workflow (for depends-on validation).

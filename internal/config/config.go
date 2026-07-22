@@ -147,9 +147,17 @@ type WorkflowStep struct {
 
 // Environment groups a named set of workflow steps.
 type Environment struct {
-	Name        string         `yaml:"name"`
-	Description string         `yaml:"description,omitempty"`
-	Workflow    []WorkflowStep `yaml:"workflow"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description,omitempty"`
+	// Env holds variables applied to every command in this environment's
+	// workflow. A command runs once globally and can be shared by several
+	// environments (see internal/engine), so the variables actually applied to
+	// a running command are the union of Env from every environment currently
+	// holding it, overridden by that command's own Env. Validate rejects
+	// environments that would set the same key to conflicting values for a
+	// shared command.
+	Env      map[string]string `yaml:"env,omitempty"`
+	Workflow []WorkflowStep    `yaml:"workflow"`
 }
 
 // Config is the root configuration object.

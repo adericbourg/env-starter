@@ -1338,3 +1338,193 @@ func TestMerge_environmentsMergedByName(t *testing.T) {
 		t.Errorf("expected third env to be staging, got %q", result.Environments[2].Name)
 	}
 }
+
+// ---- Environment env tests ---------------------------------------------------
+
+func TestLoad_ofEnvironmentEnv_parsesMap(t *testing.T) {
+	// Given a config with an environment-level env map
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: db
+      type: service
+      source:
+        local: /tmp/db
+      run: ./start.sh
+  environments:
+    - name: dev
+      env:
+        FOO_BAR_KEY: foo
+        SUPER_SECRET_KEY: aaa
+      workflow:
+        - command: db
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	want := map[string]string{"FOO_BAR_KEY": "foo", "SUPER_SECRET_KEY": "aaa"}
+	if got := cfg.Environments[0].Env; len(got) != len(want) || got["FOO_BAR_KEY"] != "foo" || got["SUPER_SECRET_KEY"] != "aaa" {
+		t.Errorf("expected env %v, got %v", want, got)
+	}
+}
+
+func TestValidate_whenCommandEnvKeyEmpty_returnsError(t *testing.T) {
+	// Given a command with an empty env key
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}, Env: map[string]string{"": "x"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for empty env key, got nil")
+	}
+}
+
+func TestValidate_whenCommandEnvKeyHasEquals_returnsError(t *testing.T) {
+	// Given a command with an env key containing '='
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}, Env: map[string]string{"FOO=BAR": "x"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for env key containing '=', got nil")
+	}
+}
+
+func TestValidate_whenEnvironmentEnvKeyEmpty_returnsError(t *testing.T) {
+	// Given an environment with an empty env key
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"": "x"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected error for empty env key, got nil")
+	}
+}
+
+func TestValidate_whenSharedCommandEnvConflicts_returnsError(t *testing.T) {
+	// Given two environments sharing command "db" that set the same key to
+	// different values
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"PORT": "5432"}, Workflow: []WorkflowStep{{Command: "db"}}},
+			{Name: "dev-debug", Env: map[string]string{"PORT": "5433"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err == nil {
+		t.Fatal("expected conflict error, got nil")
+	}
+	if !strings.Contains(err.Error(), "db") || !strings.Contains(err.Error(), "PORT") {
+		t.Errorf("expected error to mention command %q and key %q, got: %v", "db", "PORT", err)
+	}
+}
+
+func TestValidate_whenSharedCommandEnvAgrees_returnsNil(t *testing.T) {
+	// Given two environments sharing command "db" that set the same key to the
+	// same value — not a conflict
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"PORT": "5432"}, Workflow: []WorkflowStep{{Command: "db"}}},
+			{Name: "dev-mirror", Env: map[string]string{"PORT": "5432"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidate_whenCommandEnvOverridesConflictingKey_returnsNil(t *testing.T) {
+	// Given two environments that would conflict on "PORT", but the shared
+	// command itself sets "PORT" — the command always wins, so there is no
+	// observable conflict.
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}, Env: map[string]string{"PORT": "9999"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"PORT": "5432"}, Workflow: []WorkflowStep{{Command: "db"}}},
+			{Name: "dev-debug", Env: map[string]string{"PORT": "5433"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err != nil {
+		t.Errorf("expected no error (command env overrides), got: %v", err)
+	}
+}
+
+func TestValidate_whenEnvsConflictOnDifferentCommands_returnsNil(t *testing.T) {
+	// Given two environments that each set the same key, but for different
+	// (unshared) commands — no conflict, since the key never has to be
+	// resolved for a single shared process.
+	cfg := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+			{Name: "api", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"PORT": "5432"}, Workflow: []WorkflowStep{{Command: "db"}}},
+			{Name: "prod", Env: map[string]string{"PORT": "5433"}, Workflow: []WorkflowStep{{Command: "api"}}},
+		},
+	}
+
+	// When
+	err := cfg.Validate()
+
+	// Then
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}

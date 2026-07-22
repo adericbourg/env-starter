@@ -583,6 +583,29 @@ Human-readable description shown in the TUI.
 description: Start the connect-order stack locally
 ```
 
+### `env`
+
+| | |
+|---|---|
+| Type | map of string → string |
+| Required | no |
+
+Extra environment variables applied to every command in this environment's `workflow`. Values must be strings.
+
+```yaml
+env:
+  FOO_BAR_KEY: foo
+  SUPER_SECRET_KEY: aaa
+```
+
+**Precedence**: a command's own [`env`](#env) always overrides an environment's `env` for the same key.
+
+**Shared commands**: a command can be shared by several environments (see [Shared commands](#shared-commands)). The variables actually applied to a running shared command are the **union** of `env` from every environment currently holding it. Two environments that share a command and set the **same key to different values** is a load-time validation error — see [Validation rules](#validation-rules) — suggesting the command be duplicated so each environment gets its own instance. A key the command itself overrides is exempt from this check, since the command's value always wins regardless.
+
+Starting or stopping an environment that changes the merged `env` of an already-running shared command **restarts that command** to apply the new set; `env-starter` logs a warning before doing so.
+
+**Secrets**: `env` (at either level) is the right place for secrets — values passed via `env` are not visible in `ps`/`/proc/<pid>/cmdline`, unlike values interpolated into `run`. Never commit or share secrets in the base config. Put them in a separate, **non-committed, non-shared** file and apply it with [`--config-overlay`](#cli-overrides).
+
 ### `workflow[]`
 
 | | |
@@ -662,6 +685,8 @@ workflow:
 
 When the same command name appears in multiple environments, it runs as a single process. `env-starter` reference-counts it: the process starts when the first environment that needs it starts, and stops only when the last environment using it stops.
 
+If the environments sharing a command declare [`env`](#env), the process receives the **union** of their `env` maps (overridden by the command's own `env`). Starting or stopping a sharing environment that changes this merged set restarts the command to apply it, with a warning logged first. Conflicting values for the same key across sharing environments are rejected at load time — see [Validation rules](#validation-rules).
+
 ### Foreground supervision
 
 All launched processes are children of the `env-starter` TUI process. Quitting the TUI (or sending SIGINT/SIGTERM to `env-starter`) triggers a graceful shutdown of all running commands.
@@ -709,8 +734,10 @@ The following conditions cause `env-starter` to fail at startup with a descripti
 | `readiness` probe must be `tcp` or `shell` | `http` and `log` probes are not yet supported. Specifying more than one of `tcp`/`shell` is also rejected. |
 | `restart` on a task requires a `readiness` probe | A task with a `restart` block (and restart not explicitly disabled) must also declare a `readiness` probe. Without a probe, liveness monitoring is impossible for a task. |
 | `restart.max-retries` must not be negative | Negative values are rejected. |
+| `env` keys must be non-empty and not contain `=` | Applies to both `command.env` and `environment.env`. |
 | `environment.name` is required | An environment entry has no `name`. |
 | `environment.workflow` must be non-empty | An environment with an empty workflow list is rejected. |
 | `workflow[].command` must reference a defined command | Unknown command names in a workflow are rejected. |
 | `workflow[].depends-on` entries must be in the same workflow | Referencing a command not present in the same environment's workflow is rejected. |
 | No dependency cycles | Circular `depends-on` chains are detected by DFS and rejected. |
+| No conflicting `env` for a shared command | Two environments referencing the same command must not set the same `env` key to different values, unless the command itself overrides that key. |
