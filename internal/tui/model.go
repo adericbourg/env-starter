@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -174,18 +175,76 @@ type Model struct {
 	envInspector *envInspectorState
 }
 
+// envInspectorFocus tracks which widget owns keyboard input on the env
+// inspector's list screen: the search field or the table.
+type envInspectorFocus int
+
+const (
+	envInspectorFocusSearch envInspectorFocus = iota
+	envInspectorFocusTable
+)
+
+// envInspectorScreen tracks which screen the env inspector overlay is
+// currently showing.
+type envInspectorScreen int
+
+const (
+	envInspectorScreenList envInspectorScreen = iota
+	envInspectorScreenDetail
+)
+
+// envOriginFilter narrows the table to variables won by one source, or
+// envOriginFilterAll to show every row.
+type envOriginFilter string
+
+const envOriginFilterAll envOriginFilter = "all"
+
 // envInspectorState is the state of the open env-inspector overlay: the
-// resolved, provenance-tagged variables for one environment or command, plus
-// which row is selected and whether its value is currently revealed.
+// resolved, provenance-tagged variables for one environment or command, the
+// search/origin filters narrowing the table, which row is selected, which
+// screen (table list or a row's details) is shown, and whether the details
+// screen's value is currently revealed.
 //
-// Values are masked by default and reveal is scoped to the selected row only
-// — moving the cursor or closing the overlay re-masks — so at most one secret
-// is ever shown on screen at a time.
+// Values are masked by default and reveal is scoped to the details screen of
+// one row at a time — leaving that screen re-masks — so at most one secret is
+// ever shown on screen at once.
 type envInspectorState struct {
-	title    string // e.g. `environment "dev"` or `command "api"`
-	vars     []engine.ResolvedEnvVar
-	cursor   int
-	revealed bool
+	title        string // e.g. `environment "dev"` or `command "api"`
+	allVars      []engine.ResolvedEnvVar
+	search       textinput.Model
+	originFilter envOriginFilter
+	focus        envInspectorFocus
+	screen       envInspectorScreen
+	cursor       int                   // index into filteredVars()
+	scroll       int                   // index of the first visible table row
+	detail       engine.ResolvedEnvVar // snapshot of the row shown on the details screen
+	revealed     bool
+}
+
+// filteredVars returns allVars narrowed by the origin filter and a
+// case-insensitive "key contains" search. Values are never searched.
+func (insp *envInspectorState) filteredVars() []engine.ResolvedEnvVar {
+	query := strings.ToLower(insp.search.Value())
+	out := make([]engine.ResolvedEnvVar, 0, len(insp.allVars))
+	for _, v := range insp.allVars {
+		if insp.originFilter != envOriginFilterAll && envOriginFilter(v.Winning.Source) != insp.originFilter {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(v.Key), query) {
+			continue
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// selectedRow returns the row at cursor within the current filtered set.
+func (insp *envInspectorState) selectedRow() (engine.ResolvedEnvVar, bool) {
+	vars := insp.filteredVars()
+	if insp.cursor < 0 || insp.cursor >= len(vars) {
+		return engine.ResolvedEnvVar{}, false
+	}
+	return vars[insp.cursor], true
 }
 
 // New creates a TUI model driven by the given controller.
@@ -480,44 +539,174 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// envInspectorChromeLines approximates the number of non-row lines rendered
+// around the table on the list screen (title, facets, search box with its
+// border, table header/separator, footer) so the visible row window can be
+// sized to the terminal height.
+const envInspectorChromeLines = 12
+
+// envInspectorVisibleRows returns how many table rows fit in the current
+// terminal height, floored so a very short terminal still shows something.
+func (m Model) envInspectorVisibleRows() int {
+	rows := m.height - envInspectorChromeLines
+	if rows < 3 {
+		rows = 3
+	}
+	return rows
+}
+
+// clampEnvInspectorList keeps cursor within the current filtered set and
+// scroll within a window that keeps cursor visible.
+func (m Model) clampEnvInspectorList(insp *envInspectorState) {
+	if n := len(insp.filteredVars()); insp.cursor >= n {
+		insp.cursor = n - 1
+	}
+	if insp.cursor < 0 {
+		insp.cursor = 0
+	}
+	visible := m.envInspectorVisibleRows()
+	if insp.cursor < insp.scroll {
+		insp.scroll = insp.cursor
+	}
+	if insp.cursor >= insp.scroll+visible {
+		insp.scroll = insp.cursor - visible + 1
+	}
+	if insp.scroll < 0 {
+		insp.scroll = 0
+	}
+}
+
 // openEnvInspector resolves the env variables for envName (an environment) or
 // command (a command) — exactly one should be non-empty — and opens the
-// inspector overlay on them, selecting the first row.
+// inspector overlay on them, selecting the first table row.
 func (m Model) openEnvInspector(command, envName string) (tea.Model, tea.Cmd) {
 	title := fmt.Sprintf("environment %q", envName)
 	if command != "" {
 		title = fmt.Sprintf("command %q", command)
 	}
+
+	searchWidth := m.width - 8
+	if searchWidth < 10 {
+		searchWidth = 10
+	}
+	search := textinput.New()
+	search.Placeholder = "search by key…"
+	search.SetWidth(searchWidth)
+
 	m.envInspector = &envInspectorState{
-		title: title,
-		vars:  m.ctrl.ResolveEnv(envName, command),
+		title:        title,
+		allVars:      m.ctrl.ResolveEnv(envName, command),
+		search:       search,
+		originFilter: envOriginFilterAll,
+		focus:        envInspectorFocusTable,
 	}
 	return m, nil
 }
 
 // handleEnvInspectorKey handles all key input while the env inspector overlay
-// is open: moving the selection re-masks (at most one secret is ever shown at
-// once); esc/q/e closes it.
+// is open. F5–F8 change the origin filter regardless of screen or focus;
+// everything else is dispatched to the current screen's handler.
 func (m Model) handleEnvInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "f5":
+		return m.setEnvInspectorOriginFilter(envOriginFilterAll)
+	case "f6":
+		return m.setEnvInspectorOriginFilter(envOriginFilter(engine.EnvSourceOS))
+	case "f7":
+		return m.setEnvInspectorOriginFilter(envOriginFilter(engine.EnvSourceEnvironment))
+	case "f8":
+		return m.setEnvInspectorOriginFilter(envOriginFilter(engine.EnvSourceCommand))
+	}
+
+	if m.envInspector.screen == envInspectorScreenDetail {
+		return m.handleEnvInspectorDetailKey(msg)
+	}
+	return m.handleEnvInspectorListKey(msg)
+}
+
+// setEnvInspectorOriginFilter applies an origin filter, resets the selection
+// to the top of the newly-filtered set, and re-clamps scrolling.
+func (m Model) setEnvInspectorOriginFilter(f envOriginFilter) (tea.Model, tea.Cmd) {
+	insp := *m.envInspector
+	insp.originFilter = f
+	insp.cursor = 0
+	insp.scroll = 0
+	m.envInspector = &insp
+	return m, nil
+}
+
+// handleEnvInspectorListKey handles key input on the table/search list
+// screen. Esc always closes the overlay; q/e only close it while the table
+// (not the search field) has focus, so those letters remain typeable in a
+// search query.
+func (m Model) handleEnvInspectorListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		m.envInspector = nil
+		return m, nil
+	}
+
+	insp := *m.envInspector
+
+	if insp.focus == envInspectorFocusSearch {
+		switch msg.String() {
+		case "down":
+			insp.focus = envInspectorFocusTable
+			insp.search.Blur()
+			insp.cursor = 0
+			m.clampEnvInspectorList(&insp)
+			m.envInspector = &insp
+			return m, nil
+		case "enter":
+			// No row is "current" while typing; enter has no effect here.
+			return m, nil
+		}
+		var cmd tea.Cmd
+		insp.search, cmd = insp.search.Update(msg)
+		insp.cursor = 0
+		m.clampEnvInspectorList(&insp)
+		m.envInspector = &insp
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "q", "e":
+		m.envInspector = nil
+		return m, nil
+	case "up":
+		if insp.cursor == 0 {
+			insp.focus = envInspectorFocusSearch
+			insp.search.Focus()
+		} else {
+			insp.cursor--
+		}
+	case "down":
+		if insp.cursor < len(insp.filteredVars())-1 {
+			insp.cursor++
+		}
+	case "enter":
+		if v, ok := insp.selectedRow(); ok {
+			insp.screen = envInspectorScreenDetail
+			insp.detail = v
+			insp.revealed = false
+		}
+	}
+	m.clampEnvInspectorList(&insp)
+	m.envInspector = &insp
+	return m, nil
+}
+
+// handleEnvInspectorDetailKey handles key input on the details screen: space
+// toggles revealing the value (and everything it overrides); esc/q/e return
+// to the list screen with search/filter/selection intact.
+func (m Model) handleEnvInspectorDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	insp := *m.envInspector
 	switch msg.String() {
 	case "esc", "q", "e":
-		m.envInspector = nil
-		return m, nil
-	case "up", "k":
-		if insp.cursor > 0 {
-			insp.cursor--
-			insp.revealed = false
-		}
-	case "down", "j":
-		if insp.cursor < len(insp.vars)-1 {
-			insp.cursor++
-			insp.revealed = false
-		}
-	case "enter", " ":
-		if len(insp.vars) > 0 {
-			insp.revealed = !insp.revealed
-		}
+		insp.screen = envInspectorScreenList
+		insp.revealed = false
+		m.clampEnvInspectorList(&insp)
+	case "space":
+		insp.revealed = !insp.revealed
 	}
 	m.envInspector = &insp
 	return m, nil
@@ -846,6 +1035,18 @@ var (
 	logsTitleStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("212"))
+
+	// envFacetKeyStyle dims an origin-facet button's function-key hint (e.g.
+	// "F6") so it reads as a shortcut rather than part of the label.
+	envFacetKeyStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("241"))
+
+	// envFacetSelectedStyle highlights the currently active origin facet.
+	// Color 39 is distinct from both the table's selected-row color (212)
+	// and the warning/danger color (214/9) used elsewhere.
+	envFacetSelectedStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("39"))
 )
 
 // ── Render helpers ────────────────────────────────────────────────────────────
@@ -1192,35 +1393,148 @@ func (m Model) renderShutdown() string {
 // length is not leaked either.
 const envMaskedValue = "••••••••"
 
-// renderEnvInspector renders the env-inspector overlay: every resolved
-// variable's key and provenance, value masked except on the selected row when
-// revealed — never more than one value in plaintext at a time.
+// renderEnvInspector dispatches to whichever screen the inspector overlay is
+// currently showing.
 func (m Model) renderEnvInspector() string {
-	insp := m.envInspector
-
-	rows := []string{logsTitleStyle.Render("Environment variables — " + insp.title), ""}
-
-	if len(insp.vars) == 0 {
-		rows = append(rows, "  (no variables)")
+	if m.envInspector.screen == envInspectorScreenDetail {
+		return m.renderEnvInspectorDetail()
 	}
-	for i, v := range insp.vars {
-		selected := i == insp.cursor
-		value := envMaskedValue
-		if selected && insp.revealed {
-			value = v.Winning.Value
-		}
-		line := fmt.Sprintf("%s=%s  (%s)", v.Key, value, envSourceLabel(v.Winning.Source))
-		if selected {
-			line = selectedLine.Render("> " + line)
-		} else {
-			line = "  " + line
-		}
-		rows = append(rows, line)
+	return m.renderEnvInspectorList()
+}
 
-		if selected && insp.revealed {
-			for _, s := range v.Shadowed {
-				rows = append(rows, fmt.Sprintf("    ↳ %s  (%s, overridden)", s.Value, envSourceLabel(s.Source)))
+// envOriginFacet is one selectable origin-filter button shown above the
+// search field.
+type envOriginFacet struct {
+	key    string
+	label  string
+	filter envOriginFilter
+}
+
+var envOriginFacets = []envOriginFacet{
+	{"F5", "All", envOriginFilterAll},
+	{"F6", "OS/user", envOriginFilter(engine.EnvSourceOS)},
+	{"F7", "environment", envOriginFilter(engine.EnvSourceEnvironment)},
+	{"F8", "command", envOriginFilter(engine.EnvSourceCommand)},
+}
+
+// renderEnvOriginFacets renders the "F5 All  F6 OS/user  ..." filter row,
+// highlighting whichever facet is active.
+func renderEnvOriginFacets(active envOriginFilter) string {
+	buttons := make([]string, 0, len(envOriginFacets))
+	for _, f := range envOriginFacets {
+		if f.filter == active {
+			buttons = append(buttons, envFacetSelectedStyle.Render(f.key+" "+f.label))
+		} else {
+			buttons = append(buttons, envFacetKeyStyle.Render(f.key)+" "+f.label)
+		}
+	}
+	return strings.Join(buttons, "   ")
+}
+
+// padCell right-pads s with spaces to width (no-op if s is already as long).
+func padCell(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
+
+// envInspectorOriginColumn renders a row's Origin column: the winning
+// source's label alone, or annotated with the nearest layer it overrides.
+func envInspectorOriginColumn(v engine.ResolvedEnvVar) string {
+	label := envSourceLabel(v.Winning.Source)
+	if len(v.Shadowed) == 0 {
+		return label
+	}
+	return fmt.Sprintf("%s (overrides %s)", label, envSourceLabel(v.Shadowed[0].Source))
+}
+
+// renderEnvInspectorList renders the origin facets, search field, and the
+// Key/Origin table (values are never shown here — see the details screen).
+func (m Model) renderEnvInspectorList() string {
+	insp := m.envInspector
+	vars := insp.filteredVars()
+
+	searchBox := paneStyle(insp.focus == envInspectorFocusSearch).
+		Width(m.width - 4).
+		Render(insp.search.View())
+
+	rows := []string{
+		logsTitleStyle.Render("Environment variables — " + insp.title),
+		"",
+		renderEnvOriginFacets(insp.originFilter),
+		"",
+		searchBox,
+		"",
+	}
+
+	keyWidth := len("Key")
+	originWidth := len("Origin")
+	for _, v := range vars {
+		if l := len(v.Key); l > keyWidth {
+			keyWidth = l
+		}
+		if l := len(envInspectorOriginColumn(v)); l > originWidth {
+			originWidth = l
+		}
+	}
+	rows = append(rows,
+		fmt.Sprintf("| %s | %s |", padCell("Key", keyWidth), padCell("Origin", originWidth)),
+		fmt.Sprintf("|%s|%s|", strings.Repeat("-", keyWidth+2), strings.Repeat("-", originWidth+2)),
+	)
+
+	if len(vars) == 0 {
+		rows = append(rows, "  (no matching variables)")
+	} else {
+		visible := m.envInspectorVisibleRows()
+		start := insp.scroll
+		end := start + visible
+		if end > len(vars) {
+			end = len(vars)
+		}
+		for i := start; i < end; i++ {
+			v := vars[i]
+			line := fmt.Sprintf("| %s | %s |", padCell(v.Key, keyWidth), padCell(envInspectorOriginColumn(v), originWidth))
+			if i == insp.cursor && insp.focus == envInspectorFocusTable {
+				line = selectedLine.Render(line)
 			}
+			rows = append(rows, line)
+		}
+	}
+
+	rows = append(rows, "", footerStyle.Render("↑/↓ move   enter details   F5-F8 filter origin   esc close"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+}
+
+// renderEnvInspectorDetail renders the details screen for the row snapshot
+// captured when the row was selected: its value, origin, and every
+// lower-priority value it overrides — all masked unless revealed.
+func (m Model) renderEnvInspectorDetail() string {
+	insp := m.envInspector
+	v := insp.detail
+
+	value := envMaskedValue
+	if insp.revealed {
+		value = v.Winning.Value
+	}
+
+	rows := []string{
+		logsTitleStyle.Render(v.Key),
+		"",
+		fmt.Sprintf("Value      %s", value),
+		fmt.Sprintf("Origin     %s", envSourceLabel(v.Winning.Source)),
+	}
+
+	if len(v.Shadowed) > 0 {
+		rows = append(rows, "", "Overrides:")
+		for _, s := range v.Shadowed {
+			shadowValue := envMaskedValue
+			if insp.revealed {
+				shadowValue = s.Value
+			}
+			rows = append(rows, fmt.Sprintf("  %-12s (was %s)", envSourceLabel(s.Source), shadowValue))
 		}
 	}
 
@@ -1228,13 +1542,15 @@ func (m Model) renderEnvInspector() string {
 	if insp.revealed {
 		rows = append(rows, quitConfirmStyle.Render("⚠ value shown — visible to anyone viewing/recording your screen"))
 	}
-	rows = append(rows, footerStyle.Render("↑/↓ move   enter/space reveal selected   esc close"))
+	rows = append(rows, footerStyle.Render("space reveal   esc back"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
 }
 
-// envSourceLabel renders an engine.EnvSource for display.
+// envSourceLabel renders an engine.EnvSource for display. OS-sourced
+// variables display as "user" since that's how the OS environment reaches
+// the app in practice — the same source is offered as the "OS/user" facet.
 func envSourceLabel(s engine.EnvSource) string {
 	switch s {
 	case engine.EnvSourceCommand:
@@ -1242,7 +1558,7 @@ func envSourceLabel(s engine.EnvSource) string {
 	case engine.EnvSourceEnvironment:
 		return "environment"
 	default:
-		return "OS"
+		return "user"
 	}
 }
 

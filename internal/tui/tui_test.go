@@ -165,6 +165,15 @@ func sendSpecialKey(m Model, kt rune) Model {
 	return updated.(Model)
 }
 
+// typeText sends each rune of text as a separate key press, simulating typing
+// into a focused text field one character at a time.
+func typeText(m Model, text string) Model {
+	for _, r := range text {
+		m = sendKey(m, string(r))
+	}
+	return m
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 func TestView_initial_rendersEnvNameAndFooterShortcut(t *testing.T) {
@@ -2090,8 +2099,14 @@ func TestUpdate_whenE_withEnvsFocused_opensEnvInspectorForEnvironment(t *testing
 	if !strings.Contains(m.envInspector.title, "alpha") {
 		t.Errorf("expected title to mention environment %q, got %q", "alpha", m.envInspector.title)
 	}
-	if len(m.envInspector.vars) != 1 || m.envInspector.vars[0].Key != "FOO" {
-		t.Errorf("expected resolved vars for alpha, got %+v", m.envInspector.vars)
+	if len(m.envInspector.allVars) != 1 || m.envInspector.allVars[0].Key != "FOO" {
+		t.Errorf("expected resolved vars for alpha, got %+v", m.envInspector.allVars)
+	}
+	if m.envInspector.focus != envInspectorFocusTable {
+		t.Error("expected the table to have focus by default")
+	}
+	if m.envInspector.originFilter != envOriginFilterAll {
+		t.Error("expected the origin filter to default to \"all\"")
 	}
 }
 
@@ -2116,7 +2131,7 @@ func TestUpdate_whenE_withCmdsFocused_opensEnvInspectorForCommand(t *testing.T) 
 	}
 }
 
-func TestRenderEnvInspector_masksValuesByDefault(t *testing.T) {
+func TestRenderEnvInspectorList_showsKeyAndOriginButNeverTheValue(t *testing.T) {
 	// Given an open inspector with a known secret value.
 	ctrl := newFakeController()
 	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
@@ -2128,56 +2143,239 @@ func TestRenderEnvInspector_masksValuesByDefault(t *testing.T) {
 	// When
 	view := m.render()
 
-	// Then: the key is shown but the value never appears in plaintext.
+	// Then: the key and its origin are shown, but the value never appears —
+	// the list screen doesn't render values at all (see the details screen).
 	if !strings.Contains(view, "SUPER_SECRET_KEY") {
-		t.Error("expected view to contain the key name")
+		t.Error("expected the table to contain the key name")
+	}
+	if !strings.Contains(view, "environment") {
+		t.Error("expected the table to contain the origin label")
 	}
 	if strings.Contains(view, "top-secret-value") {
-		t.Error("expected value to be masked by default, found it in plaintext")
+		t.Error("expected the list screen to never show the value")
 	}
-	if !strings.Contains(view, envMaskedValue) {
-		t.Error("expected view to contain the masked placeholder")
+	if strings.Contains(view, envMaskedValue) {
+		t.Error("expected the list screen to not even show the masked placeholder — there's no value column")
 	}
 }
 
-func TestRenderEnvInspector_revealShowsOnlySelectedRow(t *testing.T) {
-	// Given an open inspector with two vars.
+func TestRenderEnvInspectorList_showsOverridesAnnotationForShadowedVar(t *testing.T) {
+	// Given a var whose command-sourced value overrides an OS-sourced one.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{
+			Key:      "BAR",
+			Winning:  engine.EnvLayer{Value: "cmd-value", Source: engine.EnvSourceCommand},
+			Shadowed: []engine.EnvLayer{{Value: "user-value", Source: engine.EnvSourceOS}},
+		}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When
+	view := m.render()
+
+	// Then
+	if !strings.Contains(view, "command (overrides user)") {
+		t.Errorf("expected the Origin column to annotate the override, got view:\n%s", view)
+	}
+}
+
+func TestUpdate_envInspectorList_searchFiltersByKeySubstring(t *testing.T) {
+	// Given six vars, only some of which contain "foo".
 	ctrl := newFakeController()
 	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
 		"env:alpha": {
-			{Key: "FIRST", Winning: engine.EnvLayer{Value: "first-secret", Source: engine.EnvSourceEnvironment}},
-			{Key: "SECOND", Winning: engine.EnvLayer{Value: "second-secret", Source: engine.EnvSourceEnvironment}},
+			{Key: "FOO_BAR", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "BAR_FOO", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "AFOOA", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "FOO", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "FAR", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "BAR", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
 		},
 	}
 	m := seed(New(ctrl))
 	m = sendKey(m, "e")
 
-	// When the first (selected) row is revealed.
-	m = sendSpecialKey(m, tea.KeyEnter)
-	view := m.render()
-
-	// Then: only the selected row's value is in plaintext; the other stays masked.
-	if !strings.Contains(view, "first-secret") {
-		t.Error("expected the selected row's value to be revealed")
+	// When moving up from the first table row reaches the search field, and
+	// "foo" is typed into it.
+	m = sendSpecialKey(m, tea.KeyUp)
+	if m.envInspector.focus != envInspectorFocusSearch {
+		t.Fatal("expected up from the first row to focus the search field")
 	}
-	if strings.Contains(view, "second-secret") {
-		t.Error("expected the non-selected row's value to remain masked")
+	m = typeText(m, "foo")
+
+	// Then: only keys containing "foo" (case-insensitively) remain.
+	got := m.envInspector.filteredVars()
+	wantKeys := []string{"FOO_BAR", "BAR_FOO", "AFOOA", "FOO"}
+	if len(got) != len(wantKeys) {
+		t.Fatalf("expected %d filtered vars, got %d: %+v", len(wantKeys), len(got), got)
+	}
+	for i, want := range wantKeys {
+		if got[i].Key != want {
+			t.Errorf("filtered[%d] = %q, want %q", i, got[i].Key, want)
+		}
 	}
 
-	// When the selection moves down.
+	// And: moving back down returns focus to the table's first row.
 	m = sendSpecialKey(m, tea.KeyDown)
-	view = m.render()
-
-	// Then: moving off the row re-masks it, and the new row is masked too.
-	if strings.Contains(view, "first-secret") || strings.Contains(view, "second-secret") {
-		t.Error("expected both values to be masked after moving the selection")
-	}
-	if m.envInspector.revealed {
-		t.Error("expected revealed to reset to false after moving the selection")
+	if m.envInspector.focus != envInspectorFocusTable || m.envInspector.cursor != 0 {
+		t.Error("expected down from the search field to focus the table's first row")
 	}
 }
 
-func TestUpdate_envInspector_escCloses(t *testing.T) {
+func TestUpdate_envInspectorList_searchFocused_lettersQAndEDoNotClose(t *testing.T) {
+	// Given the search field is focused.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "QUEUE"}}}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendSpecialKey(m, tea.KeyUp)
+
+	// When typing letters that are close shortcuts everywhere else.
+	m = typeText(m, "qe")
+
+	// Then: the overlay stays open and the letters landed in the search box.
+	if m.envInspector == nil {
+		t.Fatal("expected the inspector to remain open while typing in the search field")
+	}
+	if m.envInspector.search.Value() != "qe" {
+		t.Errorf("expected the search field to contain %q, got %q", "qe", m.envInspector.search.Value())
+	}
+}
+
+func TestUpdate_envInspectorList_originFacetKeysFilterAndAreTracked(t *testing.T) {
+	// Given vars from all three sources.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {
+			{Key: "HOME", Winning: engine.EnvLayer{Source: engine.EnvSourceOS}},
+			{Key: "APP_ENV", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "APP_CMD", Winning: engine.EnvLayer{Source: engine.EnvSourceCommand}},
+		},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When F7 (environment) is pressed.
+	m = sendSpecialKey(m, tea.KeyF7)
+
+	// Then: only the environment-sourced var remains, and the filter is tracked.
+	if m.envInspector.originFilter != envOriginFilter(engine.EnvSourceEnvironment) {
+		t.Errorf("expected origin filter to be %q, got %q", engine.EnvSourceEnvironment, m.envInspector.originFilter)
+	}
+	got := m.envInspector.filteredVars()
+	if len(got) != 1 || got[0].Key != "APP_ENV" {
+		t.Errorf("expected only APP_ENV after filtering by environment, got %+v", got)
+	}
+
+	// When F5 (All) is pressed.
+	m = sendSpecialKey(m, tea.KeyF5)
+
+	// Then: every var is visible again.
+	if len(m.envInspector.filteredVars()) != 3 {
+		t.Errorf("expected all 3 vars after selecting the \"All\" facet, got %d", len(m.envInspector.filteredVars()))
+	}
+}
+
+func TestUpdate_envInspectorList_enterOpensDetailScreen(t *testing.T) {
+	// Given an open inspector on its list screen.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "FOO_BAR_KEY", Winning: engine.EnvLayer{Value: "bar", Source: engine.EnvSourceCommand}}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When
+	m = sendSpecialKey(m, tea.KeyEnter)
+
+	// Then
+	if m.envInspector.screen != envInspectorScreenDetail {
+		t.Fatal("expected enter to open the details screen")
+	}
+	if m.envInspector.detail.Key != "FOO_BAR_KEY" {
+		t.Errorf("expected the details screen to snapshot the selected row, got %+v", m.envInspector.detail)
+	}
+}
+
+func TestRenderEnvInspectorDetail_masksByDefaultAndSpaceRevealsValueAndOverrides(t *testing.T) {
+	// Given a var with one shadowed layer, on the details screen.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{
+			Key:      "FOO_BAR_KEY",
+			Winning:  engine.EnvLayer{Value: "top-secret-value", Source: engine.EnvSourceCommand},
+			Shadowed: []engine.EnvLayer{{Value: "old-secret-value", Source: engine.EnvSourceOS}},
+		}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendSpecialKey(m, tea.KeyEnter)
+
+	// When rendered before revealing.
+	view := m.render()
+
+	// Then: masked, no plaintext values leaked.
+	if strings.Contains(view, "top-secret-value") {
+		t.Error("expected the value to be masked before reveal")
+	}
+	if strings.Contains(view, "old-secret-value") {
+		t.Error("expected the overridden value to be masked before reveal")
+	}
+	if !strings.Contains(view, envMaskedValue) {
+		t.Error("expected the masked placeholder to be shown")
+	}
+
+	// When space toggles reveal.
+	m = sendSpecialKey(m, tea.KeySpace)
+	view = m.render()
+
+	// Then: both the value and its override are shown in plaintext.
+	if !strings.Contains(view, "top-secret-value") {
+		t.Error("expected the value to be revealed")
+	}
+	if !strings.Contains(view, "old-secret-value") {
+		t.Error("expected the overridden value to be revealed")
+	}
+	if !strings.Contains(view, "user") {
+		t.Error("expected the overridden layer's origin (OS -> \"user\") to be shown")
+	}
+}
+
+func TestUpdate_envInspectorDetail_escReturnsToListPreservingFilters(t *testing.T) {
+	// Given the details screen open with a search query and origin filter set.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "FOO", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendSpecialKey(m, tea.KeyUp)
+	m = typeText(m, "fo")
+	m = sendSpecialKey(m, tea.KeyDown)
+	m = sendSpecialKey(m, tea.KeyF7) // environment
+	m = sendSpecialKey(m, tea.KeyEnter)
+	if m.envInspector.screen != envInspectorScreenDetail {
+		t.Fatal("expected the details screen to be open")
+	}
+
+	// When
+	m = sendSpecialKey(m, tea.KeyEscape)
+
+	// Then
+	if m.envInspector.screen != envInspectorScreenList {
+		t.Error("expected esc to return to the list screen")
+	}
+	if m.envInspector.search.Value() != "fo" {
+		t.Errorf("expected the search query to be preserved, got %q", m.envInspector.search.Value())
+	}
+	if m.envInspector.originFilter != envOriginFilter(engine.EnvSourceEnvironment) {
+		t.Errorf("expected the origin filter to be preserved, got %q", m.envInspector.originFilter)
+	}
+}
+
+func TestUpdate_envInspector_escFromListCloses(t *testing.T) {
 	// Given an open inspector.
 	ctrl := newFakeController()
 	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "FOO"}}}
@@ -2197,7 +2395,7 @@ func TestUpdate_envInspector_escCloses(t *testing.T) {
 }
 
 func TestUpdate_envInspectorOpen_blocksOtherKeys(t *testing.T) {
-	// Given an open inspector.
+	// Given an open inspector with the table focused.
 	ctrl := newFakeController()
 	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "FOO"}}}
 	m := seed(New(ctrl))

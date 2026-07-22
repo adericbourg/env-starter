@@ -91,17 +91,34 @@ env-starter run connect-order && echo "ready"
 
 Press `e` from the Environments, Commands, or Logs pane to open a read-only
 overlay listing every environment variable visible to the selected
-environment or command, with its provenance (`OS`, `environment`, or
-`command`).
+environment or command, with its provenance (`user`, `environment`, or
+`command` — `user` covers OS-inherited variables). The list is a table of
+**Key** and **Origin** only; values are never shown here — open a row's
+details screen to inspect its value.
 
-Values are **masked by default**. Move the selection with `↑`/`↓`; press
-`Enter` or `Space` to reveal the **selected row's value only** — every other
-row stays masked, and moving the selection or closing the overlay re-masks it.
-A revealed row also shows any lower-priority value it overrides (e.g. the
-environment-level or OS value a command's own `env` shadows), labelled
-`overridden`. A warning is shown while a value is revealed, since it is
-visible to anyone viewing or recording your screen. Press `Esc`, `q`, or `e`
-to close.
+**Search and filter.** A search field above the table narrows the list to
+keys containing the typed text (case-insensitive, key only — values aren't
+searched). `↑` from the first table row moves focus to the search field;
+`↓` from the search field returns to the table's first row. Origin facets
+narrow the table by source:
+
+| Key | Facet |
+|-----|-------|
+| `F5` | All |
+| `F6` | OS/user |
+| `F7` | environment |
+| `F8` | command |
+
+**Details screen.** Press `Enter` on a table row to open its details:
+the value, its origin, and any lower-priority value it overrides. Values are
+**masked by default** — press `Space` to reveal the value and every value it
+overrides; a warning is shown while revealed, since it is visible to anyone
+viewing or recording your screen. Press `Esc`, `q`, or `e` to return to the
+table.
+
+Press `Esc` from the table to close the overlay entirely (`q`/`e` also close
+it when the table, not the search field, has focus — so those letters remain
+typeable in a search query).
 
 ## Shell completion
 
