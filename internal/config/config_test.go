@@ -1528,3 +1528,163 @@ func TestValidate_whenEnvsConflictOnDifferentCommands_returnsNil(t *testing.T) {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
+
+// ---- Overlay env merge tests --------------------------------------------------
+
+func TestMerge_commandEnv_mergesPerKeyOverlayWins(t *testing.T) {
+	// Given a base command with two env keys and an overlay that shares the
+	// command name, sets one shared key to a new value, and adds a new key.
+	base := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Source: Source{Local: "/tmp/db"},
+				Env: map[string]string{"PGPORT": "5432", "LOG_LEVEL": "info"}},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "db", Env: map[string]string{"LOG_LEVEL": "debug", "SUPER_SECRET_KEY": "aaa"}},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then: base-only key kept, shared key overridden, overlay-only key added.
+	got := result.Commands[0].Env
+	want := map[string]string{"PGPORT": "5432", "LOG_LEVEL": "debug", "SUPER_SECRET_KEY": "aaa"}
+	if len(got) != len(want) {
+		t.Fatalf("expected env %v, got %v", want, got)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("key %q: expected %q, got %q", k, v, got[k])
+		}
+	}
+}
+
+func TestMerge_environmentEnv_mergesPerKeyOverlayWins(t *testing.T) {
+	// Given a base environment with an env key and an overlay that shares the
+	// environment name and adds a secret.
+	base := &Config{
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"FOO_BAR_KEY": "foo"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"SUPER_SECRET_KEY": "aaa"}},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	got := result.Environments[0].Env
+	if got["FOO_BAR_KEY"] != "foo" || got["SUPER_SECRET_KEY"] != "aaa" || len(got) != 2 {
+		t.Errorf("expected merged env {FOO_BAR_KEY: foo, SUPER_SECRET_KEY: aaa}, got %v", got)
+	}
+}
+
+func TestMerge_whenOverlayIsNameAndEnvOnly_preservesBaseWorkflowAndRun(t *testing.T) {
+	// Given a base command and environment with a real definition, and an
+	// overlay — the shape a secrets file takes — that names each entry and
+	// sets only env, touching nothing else. This is the case the field-level
+	// merge exists for: a secrets overlay must not have to repeat the whole
+	// command/workflow just to add a variable.
+	base := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "run.sh", Teardown: "down.sh", Source: Source{Local: "/tmp/db"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Description: "local dev", Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "db", Env: map[string]string{"SUPER_SECRET_KEY": "aaa"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"FOO_BAR_KEY": "foo"}},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then: base fields the overlay left unset survive untouched.
+	cmd := result.Commands[0]
+	if cmd.Type != "service" || cmd.Run != "run.sh" || cmd.Teardown != "down.sh" || cmd.Source.Local != "/tmp/db" {
+		t.Errorf("expected base command fields preserved, got %+v", cmd)
+	}
+	if cmd.Env["SUPER_SECRET_KEY"] != "aaa" {
+		t.Errorf("expected overlay env applied, got %v", cmd.Env)
+	}
+
+	env := result.Environments[0]
+	if env.Description != "local dev" || len(env.Workflow) != 1 || env.Workflow[0].Command != "db" {
+		t.Errorf("expected base environment fields preserved, got %+v", env)
+	}
+	if env.Env["FOO_BAR_KEY"] != "foo" {
+		t.Errorf("expected overlay env applied, got %v", env.Env)
+	}
+}
+
+func TestMerge_whenOverlaySetsFullCommand_stillReplacesUnsetFields(t *testing.T) {
+	// Given an overlay that (unlike the secrets-only case) does specify run/type/
+	// source — those must still take effect, matching the pre-field-merge
+	// behavior for a fully-specified overlay entry.
+	base := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "original.sh", Source: Source{Local: "/tmp/base"}},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "task", Run: "overlay.sh", Source: Source{Local: "/tmp/overlay"}},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	got := result.Commands[0]
+	if got.Type != "task" || got.Run != "overlay.sh" || got.Source.Local != "/tmp/overlay" {
+		t.Errorf("expected overlay fields to win, got %+v", got)
+	}
+}
+
+func TestMerge_env_doesNotMutateInputs(t *testing.T) {
+	// Given base and overlay commands/environments with env maps.
+	base := &Config{
+		Commands: []Command{
+			{Name: "db", Type: "service", Run: "db.sh", Source: Source{Local: "/tmp/db"}, Env: map[string]string{"A": "1"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"B": "2"}, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "db", Env: map[string]string{"A": "overlay", "C": "3"}},
+		},
+		Environments: []Environment{
+			{Name: "dev", Env: map[string]string{"D": "4"}},
+		},
+	}
+
+	// When
+	_ = Merge(base, overlay)
+
+	// Then: neither input's env map was mutated in place.
+	if base.Commands[0].Env["A"] != "1" || len(base.Commands[0].Env) != 1 {
+		t.Errorf("base command env was mutated: %v", base.Commands[0].Env)
+	}
+	if base.Environments[0].Env["B"] != "2" || len(base.Environments[0].Env) != 1 {
+		t.Errorf("base environment env was mutated: %v", base.Environments[0].Env)
+	}
+	if overlay.Commands[0].Env["A"] != "overlay" || len(overlay.Commands[0].Env) != 2 {
+		t.Errorf("overlay command env was mutated: %v", overlay.Commands[0].Env)
+	}
+}

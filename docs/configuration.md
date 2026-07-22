@@ -18,7 +18,7 @@ This document is the complete reference for `env-starter`'s YAML configuration.
 | Flag | Behaviour |
 |------|-----------|
 | `--config FILE` | Replace the default config entirely with `FILE`. The default path is not read. |
-| `--config-overlay FILE` | Load `FILE` and merge it on top of the base config. Entries are keyed by `name`; the overlay wins on any conflict. Commands and environments from the overlay that share a name with the base replace their counterpart; new names are appended. |
+| `--config-overlay FILE` | Load `FILE` and merge it on top of the base config. Entries are keyed by `name`; new names are appended. A command/environment in the overlay that shares a name with the base is field-merged onto it: each field the overlay sets wins, any field it omits is inherited from the base, and `env` maps merge key-by-key (overlay wins per key) rather than replacing wholesale. This is what lets an overlay declare only `{name, env}` and still inherit the base entry's `run`/`workflow`/etc. — see [Secrets and overrides](#secrets-and-overrides). |
 
 > **Security note — configs are trusted as code.**
 > A base config or overlay can define any command's `run`, `setup`, and
@@ -57,6 +57,45 @@ reviewed and re-approved.
 
 See [SECURITY.md](../SECURITY.md#config-trust-approval-on-first-use) for the
 full trust model.
+
+### Secrets and overrides
+
+Never commit or share secrets (API keys, passwords, tokens) in the base
+config. Keep them in a separate, **non-committed, non-shared** overlay file
+and apply it with `--config-overlay`:
+
+```sh
+env-starter --config-overlay ~/secrets.env-starter.yaml
+```
+
+```yaml
+# ~/secrets.env-starter.yaml — kept out of version control
+env-starter:
+  commands:
+    - name: api
+      env:
+        SUPER_SECRET_KEY: aaa
+  environments:
+    - name: my-app
+      env:
+        SUPER_SECRET_KEY: aaa
+```
+
+Add the overlay path to `.gitignore` (or keep it entirely outside the repo)
+so it can never be committed by accident:
+
+```gitignore
+secrets.env-starter.yaml
+```
+
+Because overlay merging is field-level (see [CLI overrides](#cli-overrides)
+above) and `env` merges key-by-key, a secrets overlay only needs to name the
+command/environment and set `env` — it does not need to repeat `run`,
+`source`, `workflow`, or any other field.
+
+The overlay still goes through the same [approval](#approving-configs) gate
+as the base config, so a tampered or unexpected overlay is refused rather
+than silently loaded.
 
 ### Top-level wrapper key
 
@@ -583,7 +622,7 @@ Human-readable description shown in the TUI.
 description: Start the connect-order stack locally
 ```
 
-### `env`
+### `env` (environment-level)
 
 | | |
 |---|---|
@@ -685,7 +724,7 @@ workflow:
 
 When the same command name appears in multiple environments, it runs as a single process. `env-starter` reference-counts it: the process starts when the first environment that needs it starts, and stops only when the last environment using it stops.
 
-If the environments sharing a command declare [`env`](#env), the process receives the **union** of their `env` maps (overridden by the command's own `env`). Starting or stopping a sharing environment that changes this merged set restarts the command to apply it, with a warning logged first. Conflicting values for the same key across sharing environments are rejected at load time — see [Validation rules](#validation-rules).
+If the environments sharing a command declare [`env`](#env-environment-level), the process receives the **union** of their `env` maps (overridden by the command's own `env`). Starting or stopping a sharing environment that changes this merged set restarts the command to apply it, with a warning logged first. Conflicting values for the same key across sharing environments are rejected at load time — see [Validation rules](#validation-rules).
 
 ### Foreground supervision
 

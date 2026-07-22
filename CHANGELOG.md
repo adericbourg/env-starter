@@ -25,6 +25,13 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ### Changed
 - CI test step runs with `-race` to catch data races in the concurrent
   supervisor and daemon hub.
+- `--config-overlay` now field-merges a same-named command/environment onto
+  its base counterpart instead of replacing it wholesale: each field the
+  overlay sets wins, fields it omits are inherited from the base, and `env`
+  maps merge key-by-key (overlay wins per key). This lets a secrets overlay
+  declare only `{name, env}` and still inherit the base entry's
+  `run`/`source`/`workflow`/etc. — see `docs/configuration.md`
+  ("Secrets and overrides").
 
 ### Added
 - Environments can now declare `env`, applied to every command in their

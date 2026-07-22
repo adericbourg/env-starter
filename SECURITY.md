@@ -119,6 +119,37 @@ safer to author. Only write (or approve) `run`/`setup`/`teardown` commands
 you would be comfortable running yourself: **approving a config is equivalent
 to granting it code execution under your user account.**
 
+## Secrets in configuration
+
+Commands and environments can declare `env` (environment variables) — see
+[Configuration reference: `env`](docs/configuration.md#env) and
+[Secrets and overrides](docs/configuration.md#secrets-and-overrides). This is
+the intended place for secrets such as API keys and tokens:
+
+- **Never commit or share secrets in the base config.** Put them in a
+  separate, non-committed, non-shared file and apply it with
+  `--config-overlay`, added to `.gitignore`. The overlay still goes through
+  the same [approval gate](#config-trust-approval-on-first-use) as the base
+  config.
+- **Prefer `env` over inlining secrets into `run`/`setup`/`teardown`.**
+  Values passed via `env` are not visible in `ps` or
+  `/proc/<pid>/cmdline`, unlike values interpolated directly into a command
+  string. (`/proc/<pid>/environ` remains readable by the same user or root —
+  standard OS behavior, unrelated to env-starter.)
+- **env-starter never logs env values.** Configuration validation errors
+  (including the conflict check for a shared command's `env`, see
+  [Configuration reference: Validation rules](docs/configuration.md#validation-rules))
+  reference key names and environment names only, never values.
+- A shared/overlaid `env` that sets a variable like `PATH` or
+  `LD_PRELOAD`/`DYLD_INSERT_LIBRARIES` can influence another environment's
+  command the next time it starts. This is equivalent to arbitrary code via
+  `run`/`setup`/`teardown` and is covered by the same config-trust boundary
+  above — only approve configs and overlays you trust.
+- Command output is **not redacted** (see
+  [Command log confidentiality](#command-log-confidentiality) below): a
+  process that echoes an env var containing a secret will have it appear in
+  its log.
+
 ## Command log confidentiality
 
 Command stdout/stderr is stored in log files under
