@@ -317,7 +317,7 @@ source:
 
 ### `source.local`
 
-Use a directory already present on disk. The path is used as-is; no caching or refresh occurs.
+Use a directory already present on disk. The path is used as-is; no caching or refresh occurs — even if the path is itself a git working copy, `env-starter` never runs git against it.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
