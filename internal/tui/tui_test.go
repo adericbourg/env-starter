@@ -1596,6 +1596,55 @@ func TestRenderFooter_whenConfigDirtyWithReloadErr_showsErrorInBanner(t *testing
 	}
 }
 
+func TestRenderFooter_whenVersionSet_showsVersionAtRight(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.version = "1.2.3"
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — version is appended after the shortcuts legend, right-aligned.
+	if !strings.HasSuffix(footer, "v1.2.3") {
+		t.Errorf("expected footer to end with version 'v1.2.3', got %q", footer)
+	}
+	if !strings.Contains(footer, "shutdown") {
+		t.Errorf("expected footer to still contain shortcuts legend, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenVersionEmpty_omitsVersion(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — no version set means the footer is exactly the shortcuts legend.
+	if footer != m.shortcutsLegend() {
+		t.Errorf("expected footer to be unchanged when no version is set, got %q", footer)
+	}
+}
+
+func TestRenderFooter_whenNarrowWidth_omitsVersionRatherThanOverflow(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.version = "1.2.3-does-not-fit-in-a-narrow-terminal"
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 40})
+	m = updated.(Model)
+
+	// When
+	footer := ansi.Strip(m.renderFooter())
+
+	// Then — falls back to the plain legend instead of overflowing the width.
+	if footer != m.shortcutsLegend() {
+		t.Errorf("expected version to be omitted when it doesn't fit, got %q", footer)
+	}
+}
+
 func TestUpdate_whenConfigScanMsg_andChanged_setsDirty(t *testing.T) {
 	// Given
 	ctrl := newFakeController()

@@ -6,6 +6,10 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- The TUI footer now shows the running build's version (e.g. `v1.2.3`) at
+  the bottom right, alongside the shortcut hints.
+
 ## [1.6.1] — 2026-07-22
 
 ### Changed

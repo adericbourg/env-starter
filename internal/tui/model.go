@@ -109,6 +109,10 @@ const shutdownGrace = 35 * time.Second
 type Model struct {
 	ctrl Controller
 
+	// version is the build version shown at the bottom right of the default
+	// footer. Empty means "no version to show" — set by Run after New.
+	version string
+
 	// selection state
 	envCursor int
 	cmdCursor int
@@ -1252,7 +1256,22 @@ func (m Model) renderFooter() string {
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	return footerStyle.Render(m.shortcutsLegend())
+	return footerStyle.Render(m.footerLine())
+}
+
+// footerLine returns the shortcuts legend, right-padded with the build
+// version when one is set and it fits within the terminal width.
+func (m Model) footerLine() string {
+	legend := m.shortcutsLegend()
+	if m.version == "" {
+		return legend
+	}
+	versionLabel := "v" + m.version
+	pad := m.width - lipgloss.Width(legend) - lipgloss.Width(versionLabel)
+	if pad < 1 {
+		return legend
+	}
+	return legend + strings.Repeat(" ", pad) + versionLabel
 }
 
 // shortcutsLegend builds the footer's shortcut hints for the currently

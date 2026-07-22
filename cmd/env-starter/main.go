@@ -353,7 +353,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	detached, tuiErr := tui.Run(client)
+	detached, tuiErr := tui.Run(client, version)
 	if detached {
 		fmt.Println("Detached. Your environments keep running in the background — run `env-starter` again to resume this session, or `env-starter shutdown` to stop everything.")
 		// On detach: release client resources without shutting down the daemon.
