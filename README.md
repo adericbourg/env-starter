@@ -35,7 +35,7 @@ env-starter:
     - name: database
       type: service
       source:
-        local: ./scripts/database
+        local: ./docs/examples/database
       run: docker compose up
       teardown: docker compose down
       readiness:
@@ -45,7 +45,7 @@ env-starter:
     - name: migrate
       type: task
       source:
-        local: ./scripts/migrate
+        local: ./docs/examples/migrate
       run: ./migrate.sh up
 
   environments:
