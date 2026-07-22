@@ -6,6 +6,8 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-07-22
+
 ### Changed
 - `--config-overlay` now field-merges a same-named command/environment onto
   its base counterpart instead of replacing it wholesale: each field the
@@ -291,7 +293,8 @@ Initial release.
 - `github`, `url`, and `local` source types.
 - Config overlay merge support.
 
-[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.5.2...HEAD
+[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/adericbourg/env-starter/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/adericbourg/env-starter/compare/v1.5.1...v1.5.2
 [1.5.1]: https://github.com/adericbourg/env-starter/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/adericbourg/env-starter/compare/v1.4.0...v1.5.0
