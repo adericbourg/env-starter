@@ -6,25 +6,7 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Security
-- Config files (base and overlay) now require explicit approval before
-  env-starter will load them: each file's sha256 is checked against a trust
-  store, and approval is invalidated the instant the file's content changes.
-  Defends against a config that was tampered with or slipped in after the
-  fact — `run`/`setup`/`teardown`/`readiness.shell` are still executed
-  verbatim as shell scripts by design. Review and approve with the new
-  `env-starter allow` subcommand (`--print` to preview only, `--yes` to skip
-  the prompt); the preview also shows each command's `source` as a browsable
-  URL or path, so you can go inspect the code behind a command before
-  approving it. See SECURITY.md ("Config trust").
-- Self-update now **fails closed** when `cosignPublicKeyPEM` is not configured:
-  `Apply` returns an error instead of warning and proceeding with TLS-only
-  integrity. Self-update is disabled until the maintainer embeds the cosign
-  public key and cuts a signed release.
-
 ### Changed
-- CI test step runs with `-race` to catch data races in the concurrent
-  supervisor and daemon hub.
 - `--config-overlay` now field-merges a same-named command/environment onto
   its base counterpart instead of replacing it wholesale: each field the
   overlay sets wins, fields it omits are inherited from the base, and `env`
@@ -52,10 +34,167 @@ Releases follow [Semantic Versioning](https://semver.org/).
   and the TUI shows `(unmanaged)` next to the command name. env-starter keeps
   watching it in the background and takes over with a normal managed start
   the moment the probe fails.
+
+### Fixed
+- GitHub source refresh now fetches and hard-resets to the tip of the
+  configured branch/tag (`fetch` + `reset --hard FETCH_HEAD` + `clean -fd`)
+  instead of `git pull --ff-only`, so a force-pushed remote, a diverged
+  clone, or a dirty cache no longer breaks the refresh. A regression test
+  pins that `local` sources are never git-touched.
+
+## [1.5.2] — 2026-07-21
+
+### Fixed
+- The starting/stopping spinner now animates on its own 80ms ticker instead
+  of piggybacking on the 500ms log-refresh tick, which read as sluggish (a
+  full rotation took 5s).
+
+## [1.5.1] — 2026-07-21
+
+### Added
+- The `allow` preview now shows each command's `source` as a browsable URL
+  or filesystem path, so you can go inspect the code behind a command
+  before approving it. See `docs/configuration.md`.
+
+## [1.5.0] — 2026-07-21
+
+### Security
+- Config files (base and overlay) now require explicit approval before
+  env-starter will load them: each file's sha256 is checked against a trust
+  store, and approval is invalidated the instant the file's content changes.
+  Defends against a config that was tampered with or slipped in after the
+  fact — `run`/`setup`/`teardown`/`readiness.shell` are still executed
+  verbatim as shell scripts by design. Review and approve with the new
+  `env-starter allow` subcommand (`--print` to preview only, `--yes` to skip
+  the prompt). Hot-reload now surfaces an unapproved/changed config as a
+  distinct, actionable banner in the TUI footer instead of the generic
+  parse-error message. See SECURITY.md ("Config trust").
+
+### Changed
+- Keyboard shortcuts are now scoped to the pane they act on instead of
+  firing globally: `s`/`x` (start/stop) only in the Environments pane,
+  `Shift+R` (restart) only in the Commands pane, and `r` (refresh logs) /
+  `Ctrl+L` (open log file) only in the Logs pane. The redundant `l`
+  jump-to-logs shortcut was removed now that focus is pane-scoped.
+
+### Added
+- CI now collects test coverage and reports it as a monitor-only breakdown
+  on every run (it never fails the build); `CONTRIBUTING.md` documents the
+  local coverage command and corrects the CI table.
+- golangci-lint set expanded with `errorlint`, `bodyclose`, `misspell`, and
+  `unconvert`.
+- An end-to-end shell script (`e2e/e2e.sh`) exercises the compiled binary
+  through the full config-approval and lifecycle flow; it runs in CI on
+  every pull request and push to main, plus a weekly scheduled run on
+  Ubuntu and macOS.
+
+## [1.4.0] — 2026-07-21
+
+### Added
+- New `interactive-auth` command flag for commands whose `run` performs an
+  interactive browser-based login (e.g. SSO). Most providers reject
+  parallel login attempts, so env-starter now serializes every command
+  flagged `interactive-auth: true` behind a single global lock held from
+  just before launch until the command is healthy or done — logins never
+  overlap, on both initial start and restart. Commands without the flag are
+  unaffected. See `docs/configuration.md` ("interactive-auth").
+
+## [1.3.0] — 2026-07-16
+
+### Added
+- Commands can now be restarted individually without restarting their
+  whole environment: `Shift+R` in the TUI (Commands pane focused), or
+  headlessly via `env-starter command restart <name>`. `env-starter command
+  list` shows every started command and its state. The restart preserves
+  environment holders and ignores the command's `restart` policy — it
+  recycles even when auto-restart is disabled. Shell completion now also
+  completes `command` verbs and command names. See `docs/usage.md`.
+
+## [1.2.1] — 2026-07-16
+
+### Fixed
+- Zsh completion install instructions now recommend a dedicated
+  `~/.zsh/completions` directory (added to `fpath` explicitly) instead of
+  `${fpath[1]}`, which is arbitrary and depends on plugin load order. The
+  embedded completion script's own header comment is updated to match.
+
+## [1.2.0] — 2026-07-10
+
+### Added
+- `require-checksums` config option: a `url` source without a `checksum`
+  becomes a validation error instead of a startup warning, and checksum
+  format (`sha256`, 64 hex chars) is now validated at config load instead
+  of failing at fetch time. See `docs/configuration.md`.
+- Command names are now validated against a safe file-name character set
+  (must start with a letter/digit; only letters, digits, `.`, `_`, `-`, and
+  spaces) — a name like `../../evil` could otherwise escape the logs
+  directory since names are used verbatim as `<name>.log`.
+- Releases now include an SPDX SBOM per archive and a Sigstore build-
+  provenance attestation, verifiable with `gh attestation verify`.
+- The source cache is now serialized across processes with a sibling
+  `<name>.lock` advisory file lock on top of the existing in-process mutex,
+  so two `env-starter` processes sharing the OS cache never race on the
+  same clone/download.
+
+### Fixed
+- Logs were silently written to a shared, world-writable temp directory
+  (`os.TempDir()`) when the per-user cache directory couldn't be resolved.
+  env-starter now fails to start instead.
+
+### Security
+- The daemon is now hardened against other local users: its socket
+  directory is tightened to owner-only (`0700`) even if it pre-existed with
+  looser permissions, the unix socket is created under a restrictive
+  umask, and each connecting peer's uid is checked against the daemon's
+  own (`SO_PEERCRED`/`LOCAL_PEERCRED`), rejecting mismatches. Previously
+  filesystem permissions were the only barrier, and any connected peer
+  could start the owner's configured commands or shut the daemon down.
+- Source cache directories (GitHub clones and URL downloads) are
+  predictable by name; a pre-existing directory is now only trusted after
+  verifying it's owner-only and privately owned, rather than reused as-is.
+- Self-update's release-tag parsing and artifact download are now as
+  strict as source downloads: the tag is validated against a release-tag
+  pattern before being interpolated into download URLs, and downloads
+  enforce an https-only, bounded-redirect policy.
+- GitHub Actions in every workflow are now pinned to a full commit SHA
+  (tag kept as a trailing comment) instead of a mutable version tag,
+  maintained going forward by Renovate's `helpers:pinGitHubActionDigests`
+  preset.
+- `SECURITY.md` documents the local, per-user trust model underlying the
+  hardening above and adds a section on `url` source integrity /
+  `require-checksums`.
+
+## [1.1.1] — 2026-07-07
+
+### Added
 - golangci-lint (`staticcheck`, `errcheck`, `gosec`, `ineffassign`) and
-  govulncheck steps added to CI.
-- Releases now include an SPDX SBOM per archive and a Sigstore build-provenance
-  attestation, verifiable with `gh attestation verify`.
+  govulncheck steps added to CI, followed by an action upgrade (Go 1.25
+  support), a migration to the v2 config schema, and a cleanup of the 50
+  issues the v2 migration surfaced.
+
+### Changed
+- CI test step runs with `-race` to catch data races in the concurrent
+  supervisor and daemon hub.
+
+### Fixed
+- Windows builds failed outright: a whole-file `//go:build !windows` tag
+  hid daemon spawn helpers from the Windows compiler even though `main.go`
+  references them unconditionally. OS-specific pieces are now isolated
+  into `spawn_unix.go`/`spawn_windows.go`, and CI cross-compiles
+  Windows/amd64, Darwin/arm64, and Linux/arm64 on every PR.
+- Self-update's archive download could silently write a truncated or
+  corrupted binary: a `Close` flush error on the destination file was
+  discarded. The download now propagates it as the operation's error.
+
+### Security
+- Self-update now **fails closed** when `cosignPublicKeyPEM` is not
+  configured: `Apply` returns an error instead of warning and proceeding
+  with TLS-only integrity. Self-update is disabled until the maintainer
+  embeds the cosign public key and cuts a signed release.
+- Added `SECURITY.md` documenting the vulnerability-reporting process and
+  the self-update trust model; the README and `docs/configuration.md` now
+  flag that `--config-overlay` files execute as code and that command logs
+  are stored unredacted (`0600`).
 
 ## [1.0.0] — 2026-06-26
 
@@ -152,7 +291,15 @@ Initial release.
 - `github`, `url`, and `local` source types.
 - Config overlay merge support.
 
-[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.5.2...HEAD
+[1.5.2]: https://github.com/adericbourg/env-starter/compare/v1.5.1...v1.5.2
+[1.5.1]: https://github.com/adericbourg/env-starter/compare/v1.5.0...v1.5.1
+[1.5.0]: https://github.com/adericbourg/env-starter/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/adericbourg/env-starter/compare/v1.3.0...v1.4.0
+[1.3.0]: https://github.com/adericbourg/env-starter/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/adericbourg/env-starter/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/adericbourg/env-starter/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/adericbourg/env-starter/compare/v1.0.0...v1.1.1
 [1.0.0]: https://github.com/adericbourg/env-starter/compare/v0.4.1...v1.0.0
 [0.4.1]: https://github.com/adericbourg/env-starter/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/adericbourg/env-starter/compare/v0.3.0...v0.4.0
