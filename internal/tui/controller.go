@@ -17,6 +17,10 @@ type Controller interface {
 	// cycle and the configured maximum. Both are 0 for commands that are not
 	// (or cannot be) auto-restarted.
 	CmdRetries(command string) (attempts, max int)
+	// IsUnmanaged reports whether command is currently healthy only because an
+	// external process already satisfied its readiness probe before
+	// env-starter spawned anything.
+	IsUnmanaged(command string) bool
 	Logs(command string) []string
 	LogPath(command string) string
 	StartEnvironment(env string) error

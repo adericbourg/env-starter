@@ -228,6 +228,12 @@ func (c *reloadController) CmdRetries(cmd string) (int, int) {
 	return c.eng.CmdRetries(cmd)
 }
 
+func (c *reloadController) IsUnmanaged(cmd string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.eng.IsUnmanaged(cmd)
+}
+
 func (c *reloadController) Logs(cmd string) []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

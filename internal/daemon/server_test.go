@@ -28,6 +28,7 @@ type mockController struct {
 	envStates    map[string]engine.EnvState
 	cmdStates    map[string]engine.CmdState
 	cmdRetries   map[string][2]int
+	cmdUnmanaged map[string]bool
 	logPaths     map[string]string
 	logs         map[string][]string
 	stoppingCmds []engine.StoppingCommand
@@ -58,6 +59,7 @@ func newMockController() *mockController {
 		envStates:    make(map[string]engine.EnvState),
 		cmdStates:    make(map[string]engine.CmdState),
 		cmdRetries:   make(map[string][2]int),
+		cmdUnmanaged: make(map[string]bool),
 		logPaths:     make(map[string]string),
 		logs:         make(map[string][]string),
 		eventsWrite:  ch,
@@ -94,6 +96,12 @@ func (m *mockController) CmdRetries(command string) (int, int) {
 	defer m.mu.Unlock()
 	r := m.cmdRetries[command]
 	return r[0], r[1]
+}
+
+func (m *mockController) IsUnmanaged(command string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cmdUnmanaged[command]
 }
 
 func (m *mockController) Logs(command string) []string {

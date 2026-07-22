@@ -41,6 +41,7 @@ type ClientController struct {
 	envStates    map[string]engine.EnvState
 	cmdStates    map[string]engine.CmdState
 	cmdRetries   map[string][2]int
+	cmdUnmanaged map[string]bool
 	environments []engine.EnvInfo
 	workflowCmds map[string][]string
 	logPaths     map[string]string
@@ -115,6 +116,7 @@ func Connect(socketPath string) (*ClientController, error) {
 		envStates:    snap.EnvStates,
 		cmdStates:    snap.CmdStates,
 		cmdRetries:   snap.CmdRetries,
+		cmdUnmanaged: snap.CmdUnmanaged,
 		environments: snap.Environments,
 		workflowCmds: snap.WorkflowCmds,
 		logPaths:     snap.LogPaths,
@@ -128,6 +130,9 @@ func Connect(socketPath string) (*ClientController, error) {
 	}
 	if c.cmdRetries == nil {
 		c.cmdRetries = make(map[string][2]int)
+	}
+	if c.cmdUnmanaged == nil {
+		c.cmdUnmanaged = make(map[string]bool)
 	}
 	if c.workflowCmds == nil {
 		c.workflowCmds = make(map[string][]string)
@@ -163,6 +168,7 @@ func (c *ClientController) runEventStream(scan *bufio.Scanner) {
 		if w.Kind == "command" && w.Command != "" {
 			c.cmdStates[w.Command] = w.CmdState
 			c.cmdRetries[w.Command] = [2]int{w.RetryAttempts, w.RetryMax}
+			c.cmdUnmanaged[w.Command] = w.Unmanaged
 		}
 		c.mirrorMu.Unlock()
 
@@ -219,6 +225,13 @@ func (c *ClientController) CmdRetries(command string) (attempts, max int) {
 	defer c.mirrorMu.RUnlock()
 	r := c.cmdRetries[command]
 	return r[0], r[1]
+}
+
+// IsUnmanaged returns the unmanaged flag from the local mirror.
+func (c *ClientController) IsUnmanaged(command string) bool {
+	c.mirrorMu.RLock()
+	defer c.mirrorMu.RUnlock()
+	return c.cmdUnmanaged[command]
 }
 
 // LogPath returns the log file path from the local mirror (seeded from snapshot).

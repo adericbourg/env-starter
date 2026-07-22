@@ -207,7 +207,7 @@ func (s *server) runHub(ctx context.Context, ln net.Listener, events <-chan engi
 				return
 			}
 			attempts, max := s.ctrl.CmdRetries(ev.Command)
-			wire := EventToWire(ev, attempts, max)
+			wire := EventToWire(ev, attempts, max, s.ctrl.IsUnmanaged(ev.Command))
 			for sub := range subscribers {
 				select {
 				case sub <- wire:
@@ -492,10 +492,12 @@ func buildSnapshot(ctrl tui.Controller) Snapshot {
 
 	cmdStates := make(map[string]engine.CmdState, len(seen))
 	cmdRetries := make(map[string][2]int, len(seen))
+	cmdUnmanaged := make(map[string]bool, len(seen))
 	for cmd := range seen {
 		cmdStates[cmd] = ctrl.CmdState(cmd)
 		attempts, max := ctrl.CmdRetries(cmd)
 		cmdRetries[cmd] = [2]int{attempts, max}
+		cmdUnmanaged[cmd] = ctrl.IsUnmanaged(cmd)
 		logPaths[cmd] = ctrl.LogPath(cmd)
 	}
 
@@ -503,6 +505,7 @@ func buildSnapshot(ctrl tui.Controller) Snapshot {
 		EnvStates:    envStates,
 		CmdStates:    cmdStates,
 		CmdRetries:   cmdRetries,
+		CmdUnmanaged: cmdUnmanaged,
 		Environments: envs,
 		WorkflowCmds: workflowCmds,
 		LogPaths:     logPaths,

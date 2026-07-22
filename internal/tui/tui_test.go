@@ -17,14 +17,15 @@ import (
 // ── Fake controller ───────────────────────────────────────────────────────────
 
 type fakeController struct {
-	envs       []engine.EnvInfo
-	commands   map[string][]string
-	envState   map[string]engine.EnvState
-	cmdState   map[string]engine.CmdState
-	cmdRetries map[string][2]int // [attempts, max]
-	logs       map[string][]string
-	events     chan engine.Event
-	stopping   []engine.StoppingCommand
+	envs         []engine.EnvInfo
+	commands     map[string][]string
+	envState     map[string]engine.EnvState
+	cmdState     map[string]engine.CmdState
+	cmdRetries   map[string][2]int // [attempts, max]
+	cmdUnmanaged map[string]bool
+	logs         map[string][]string
+	events       chan engine.Event
+	stopping     []engine.StoppingCommand
 
 	startedEnvs       []string
 	stoppedEnvs       []string
@@ -90,6 +91,8 @@ func (f *fakeController) CmdRetries(cmd string) (attempts, max int) {
 	}
 	return 0, 0
 }
+
+func (f *fakeController) IsUnmanaged(cmd string) bool { return f.cmdUnmanaged[cmd] }
 
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
 

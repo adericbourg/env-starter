@@ -114,6 +114,9 @@ type Snapshot struct {
 	CmdStates map[string]engine.CmdState `json:"cmdStates"`
 	// CmdRetries maps each command name to [attempts, max].
 	CmdRetries map[string][2]int `json:"cmdRetries"`
+	// CmdUnmanaged maps each command name to whether it is currently healthy
+	// only because an external process already satisfied its readiness probe.
+	CmdUnmanaged map[string]bool `json:"cmdUnmanaged"`
 	// Environments is the ordered list of environments known to the engine.
 	// It lets a connecting client seed its local mirror without a separate
 	// environments RPC.
@@ -145,11 +148,13 @@ type WireEvent struct {
 	Err           string          `json:"err,omitempty"`
 	RetryAttempts int             `json:"retryAttempts,omitempty"`
 	RetryMax      int             `json:"retryMax,omitempty"`
+	Unmanaged     bool            `json:"unmanaged,omitempty"`
 }
 
-// EventToWire converts an engine.Event plus retry counters to a WireEvent
-// ready for JSON encoding. If ev.Err is nil the Err field is left empty.
-func EventToWire(ev engine.Event, attempts, max int) WireEvent {
+// EventToWire converts an engine.Event plus retry counters and the unmanaged
+// flag to a WireEvent ready for JSON encoding. If ev.Err is nil the Err field
+// is left empty.
+func EventToWire(ev engine.Event, attempts, max int, unmanaged bool) WireEvent {
 	w := WireEvent{
 		Kind:          ev.Kind,
 		Environment:   ev.Environment,
@@ -158,6 +163,7 @@ func EventToWire(ev engine.Event, attempts, max int) WireEvent {
 		CmdState:      ev.CmdState,
 		RetryAttempts: attempts,
 		RetryMax:      max,
+		Unmanaged:     unmanaged,
 	}
 	if ev.Err != nil {
 		w.Err = ev.Err.Error()

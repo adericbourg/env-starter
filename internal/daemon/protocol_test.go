@@ -21,7 +21,7 @@ func TestEventToWire_ofCommandEventWithError_setsAllFields(t *testing.T) {
 	}
 
 	// When
-	w := EventToWire(ev, 2, 3)
+	w := EventToWire(ev, 2, 3, false)
 
 	// Then
 	if w.Kind != "command" {
@@ -42,6 +42,26 @@ func TestEventToWire_ofCommandEventWithError_setsAllFields(t *testing.T) {
 	if w.RetryMax != 3 {
 		t.Errorf("RetryMax: want 3, got %d", w.RetryMax)
 	}
+	if w.Unmanaged {
+		t.Error("Unmanaged: want false, got true")
+	}
+}
+
+func TestEventToWire_ofUnmanagedCommandEvent_setsUnmanaged(t *testing.T) {
+	// Given
+	ev := engine.Event{
+		Kind:     "command",
+		Command:  "api",
+		CmdState: engine.CmdHealthy,
+	}
+
+	// When
+	w := EventToWire(ev, 0, 0, true)
+
+	// Then
+	if !w.Unmanaged {
+		t.Error("Unmanaged: want true, got false")
+	}
 }
 
 func TestEventToWire_whenNoError_errFieldEmpty(t *testing.T) {
@@ -53,7 +73,7 @@ func TestEventToWire_whenNoError_errFieldEmpty(t *testing.T) {
 	}
 
 	// When
-	w := EventToWire(ev, 0, 3)
+	w := EventToWire(ev, 0, 3, false)
 
 	// Then
 	if w.Err != "" {
@@ -69,7 +89,7 @@ func TestWireToEvent_ofCommandEventWithError_roundTrip(t *testing.T) {
 		CmdState: engine.CmdError,
 		Err:      errors.New("exit status 1"),
 	}
-	wire := EventToWire(original, 2, 3)
+	wire := EventToWire(original, 2, 3, false)
 
 	// When
 	recovered := WireToEvent(wire)
@@ -116,7 +136,7 @@ func TestWireEvent_jsonRoundTrip(t *testing.T) {
 		CmdState: engine.CmdRestarting,
 		Err:      errors.New("signal: killed"),
 	}
-	w := EventToWire(ev, 1, 3)
+	w := EventToWire(ev, 1, 3, true)
 
 	// When — marshal then unmarshal.
 	data, err := json.Marshal(w)
@@ -147,6 +167,9 @@ func TestWireEvent_jsonRoundTrip(t *testing.T) {
 	if decoded.RetryMax != w.RetryMax {
 		t.Errorf("RetryMax: want %d, got %d", w.RetryMax, decoded.RetryMax)
 	}
+	if decoded.Unmanaged != w.Unmanaged {
+		t.Errorf("Unmanaged: want %v, got %v", w.Unmanaged, decoded.Unmanaged)
+	}
 }
 
 // ── Snapshot construction and JSON round-trip ─────────────────────────────────
@@ -165,6 +188,10 @@ func TestSnapshot_jsonRoundTrip(t *testing.T) {
 		CmdRetries: map[string][2]int{
 			"api": {1, 3},
 			"db":  {0, 3},
+		},
+		CmdUnmanaged: map[string]bool{
+			"api": true,
+			"db":  false,
 		},
 	}
 
@@ -201,6 +228,14 @@ func TestSnapshot_jsonRoundTrip(t *testing.T) {
 	if decoded.CmdRetries["db"] != [2]int{0, 3} {
 		t.Errorf("CmdRetries[db]: want [0 3], got %v", decoded.CmdRetries["db"])
 	}
+
+	// Then — unmanaged flags are preserved.
+	if decoded.CmdUnmanaged["api"] != true {
+		t.Errorf("CmdUnmanaged[api]: want true, got %v", decoded.CmdUnmanaged["api"])
+	}
+	if decoded.CmdUnmanaged["db"] != false {
+		t.Errorf("CmdUnmanaged[db]: want false, got %v", decoded.CmdUnmanaged["db"])
+	}
 }
 
 func TestSnapshot_emptyMaps_marshalWithoutError(t *testing.T) {
@@ -209,6 +244,7 @@ func TestSnapshot_emptyMaps_marshalWithoutError(t *testing.T) {
 		EnvStates:    map[string]engine.EnvState{},
 		CmdStates:    map[string]engine.CmdState{},
 		CmdRetries:   map[string][2]int{},
+		CmdUnmanaged: map[string]bool{},
 		Environments: []engine.EnvInfo{},
 		WorkflowCmds: map[string][]string{},
 		LogPaths:     map[string]string{},
@@ -240,7 +276,7 @@ func TestEventToWire_ofEnvironmentEvent_setsAllFields(t *testing.T) {
 	}
 
 	// When
-	w := EventToWire(ev, 0, 0)
+	w := EventToWire(ev, 0, 0, false)
 
 	// Then — environment fields are propagated.
 	if w.Kind != "environment" {
