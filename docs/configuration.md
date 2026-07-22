@@ -708,6 +708,8 @@ The TUI shows `(retry N/max)` during a restart cycle and `(failed after N retrie
 
 To disable auto-restart for a specific command, set `restart.enabled: false`.
 
+This setting only governs failure-recovery restarts. The restart a shared command undergoes to apply a changed merged `env` (see [Shared commands](#shared-commands)) is a separate, always-on trigger — it happens regardless of `restart.enabled`.
+
 ### Logs
 
 Each command's output is captured in two places:

@@ -196,6 +196,12 @@ type command struct {
 	exited    chan struct{}
 	exitErr   error
 	writeOnce sync.Once
+
+	// appliedEnv is the env map last applied to this command's running process
+	// (set in launchProcess/relaunch). Compared against effectiveEnv to decide
+	// whether a holder join/leave must restart the process to apply a changed
+	// merged env.
+	appliedEnv map[string]string
 }
 
 // Engine supervises environments and their commands.
@@ -231,6 +237,11 @@ type Engine struct {
 	// runEnvironment) to recompute environment state after a restart.
 	envsOf map[string][]string
 
+	// envEnvOf maps an environment name to its configured Env. Read-only after
+	// New (like cmdOf/envsOf), used by effectiveEnv to compute the merged env of
+	// a shared command from its current holders.
+	envEnvOf map[string]map[string]string
+
 	// logsDir is where per-command log files are written. Resolved once at
 	// construction; New fails when no per-user cache dir is available rather
 	// than falling back to a shared location like os.TempDir(), because command
@@ -255,9 +266,11 @@ func New(cfg *config.Config) (*Engine, error) {
 	envOrder := make([]string, 0, len(cfg.Environments))
 	envState := make(map[string]EnvState, len(cfg.Environments))
 	envsOf := make(map[string][]string)
+	envEnvOf := make(map[string]map[string]string, len(cfg.Environments))
 	for _, env := range cfg.Environments {
 		envOrder = append(envOrder, env.Name)
 		envState[env.Name] = EnvStopped
+		envEnvOf[env.Name] = env.Env
 		for _, step := range env.Workflow {
 			if _, ok := cmdOf[step.Command]; !ok {
 				return nil, fmt.Errorf("engine: environment %q references unknown command %q", env.Name, step.Command)
@@ -281,6 +294,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		envOrder:      envOrder,
 		cmdOf:         cmdOf,
 		envsOf:        envsOf,
+		envEnvOf:      envEnvOf,
 		logsDir:       filepath.Join(cacheDir, "logs"),
 		events:        make(chan Event, eventBufferSize),
 	}, nil

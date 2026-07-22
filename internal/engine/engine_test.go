@@ -2061,3 +2061,250 @@ func TestStartEnvironment_whenSubdirMissing_logsErrorToCommandLog(t *testing.T) 
 		t.Errorf("expected log to contain 'nonexistent', got: %v", logs)
 	}
 }
+
+// ---- Environment-level env tests ---------------------------------------------
+
+func TestLaunchProcess_appliesEnvironmentLevelEnv(t *testing.T) {
+	// Given an environment with an env-level var and a command that writes it
+	// to a file.
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "echoer",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    fmt.Sprintf("printf %%s \"$FOO\" > %q", out),
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name:     "dev",
+				Env:      map[string]string{"FOO": "from-env"},
+				Workflow: []config.WorkflowStep{{Command: "echoer"}},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "echoer", CmdDone, 5*time.Second)
+
+	// Then
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "from-env" {
+		t.Errorf("expected FOO=%q in process env, got %q", "from-env", got)
+	}
+}
+
+func TestLaunchProcess_commandEnvOverridesEnvironmentEnv(t *testing.T) {
+	// Given a command that sets FOO itself, in an environment that also sets
+	// FOO to a different value — the command's own env must win.
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:   "echoer",
+				Type:   "task",
+				Source: localSource(dir),
+				Run:    fmt.Sprintf("printf %%s \"$FOO\" > %q", out),
+				Env:    map[string]string{"FOO": "from-command"},
+			},
+		},
+		Environments: []config.Environment{
+			{
+				Name:     "dev",
+				Env:      map[string]string{"FOO": "from-env"},
+				Workflow: []config.WorkflowStep{{Command: "echoer"}},
+			},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "echoer", CmdDone, 5*time.Second)
+
+	// Then
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(got) != "from-command" {
+		t.Errorf("expected FOO=%q (command overrides environment), got %q", "from-command", got)
+	}
+}
+
+func TestSharedCommandEnv_joinAndLeave_restartsWithMergedEnv(t *testing.T) {
+	// Given two environments sharing a command, each contributing a distinct
+	// env key (no conflict, as config validation requires). Joining a second
+	// holder must restart the shared process so it picks up the merged env;
+	// the last holder leaving must restart it back down to the shrunk set.
+	dir := t.TempDir()
+	out := filepath.Join(dir, "out")
+	ready := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("echo \"$FOO,$BAR\" > %q; touch %q; sleep 30", out, ready),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "a", Env: map[string]string{"FOO": "foo"}, Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "b", Env: map[string]string{"BAR": "bar"}, Workflow: []config.WorkflowStep{{Command: "shared"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	// When "a" starts alone.
+	if err := e.StartEnvironment("a"); err != nil {
+		t.Fatalf("StartEnvironment a: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+
+	// Then only a's var is present.
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "foo," {
+		t.Fatalf("expected initial env %q, got %q", "foo,", got)
+	}
+
+	// When "b" joins, adding a new key — the shared process must restart.
+	if err := os.Remove(ready); err != nil {
+		t.Fatalf("remove ready marker: %v", err)
+	}
+	if err := e.StartEnvironment("b"); err != nil {
+		t.Fatalf("StartEnvironment b: %v", err)
+	}
+	waitForEnv(t, e, "b", EnvRunning, 5*time.Second)
+
+	// Then the restarted process sees the merged env.
+	got, err = os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output after join: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "foo,bar" {
+		t.Errorf("expected merged env %q after join, got %q", "foo,bar", got)
+	}
+
+	// And a warning was logged explaining the restart.
+	logs := e.Logs("shared")
+	found := false
+	for _, line := range logs {
+		if strings.Contains(line, "restarting") && strings.Contains(line, `"b"`) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a restart warning mentioning environment %q, got: %v", "b", logs)
+	}
+
+	// When "b" leaves, the shared process must restart back down.
+	if err := os.Remove(ready); err != nil {
+		t.Fatalf("remove ready marker: %v", err)
+	}
+	if err := e.StopEnvironment("b"); err != nil {
+		t.Fatalf("StopEnvironment b: %v", err)
+	}
+	waitForEnv(t, e, "b", EnvStopped, 5*time.Second)
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+
+	// Then the restarted process sees only a's var again.
+	got, err = os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read output after leave: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != "foo," {
+		t.Errorf("expected shrunk env %q after leave, got %q", "foo,", got)
+	}
+
+	// And stopping the sole remaining holder tears the command down.
+	if err := e.StopEnvironment("a"); err != nil {
+		t.Fatalf("StopEnvironment a: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdStopped, 3*time.Second)
+}
+
+func TestSharedCommandEnv_concurrentJoinLeave_noDeadlock(t *testing.T) {
+	// Given two environments sharing a command, each contributing a distinct
+	// env key. Repeatedly starting/stopping the second concurrently with the
+	// first staying up must never deadlock and must leave a consistent state.
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "shared",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 30", ready),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "a", Env: map[string]string{"FOO": "foo"}, Workflow: []config.WorkflowStep{{Command: "shared"}}},
+			{Name: "b", Env: map[string]string{"BAR": "bar"}, Workflow: []config.WorkflowStep{{Command: "shared"}}},
+		},
+	}
+
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("a"); err != nil {
+		t.Fatalf("StartEnvironment a: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 5; i++ {
+			_ = e.StartEnvironment("b")
+			time.Sleep(20 * time.Millisecond)
+			_ = e.StopEnvironment("b")
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent join/leave cycles: possible deadlock")
+	}
+
+	// Then "a" alone still ends up healthy, and stopping it cleanly tears the
+	// command down — a consistent final state regardless of how the
+	// concurrent cycles interleaved.
+	waitForCmd(t, e, "shared", CmdHealthy, 5*time.Second)
+	if err := e.StopEnvironment("a"); err != nil {
+		t.Fatalf("StopEnvironment a: %v", err)
+	}
+	waitForCmd(t, e, "shared", CmdStopped, 3*time.Second)
+}

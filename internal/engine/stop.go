@@ -51,6 +51,10 @@ func (e *Engine) releaseCommand(envName, name string) {
 	e.mu.Unlock()
 
 	if !shouldStop {
+		// Still held by other environments: releasing envName's hold may have
+		// shrunk the merged env for this shared command. Restart in place to
+		// apply it; a no-op if the effective env did not actually change.
+		e.maybeRestartForEnvChange(c, envName, "stopped")
 		return
 	}
 
@@ -207,7 +211,7 @@ func (e *Engine) runTeardown(c *command) {
 	if c.runDir != "" {
 		cmd.Dir = c.runDir
 	}
-	cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
+	cmd.Env = append(os.Environ(), envSlice(e.teardownEnv(c))...)
 	cmd.Stdout = w
 	cmd.Stderr = w
 	setSysProcAttr(cmd)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -143,8 +144,10 @@ func (e *Engine) acquireAndStart(envName, name string) bool {
 	if !first {
 		// Another environment already started (or is starting) this command, or
 		// envName already holds it (retry of a still-healthy command). Wait for it
-		// to settle, then report its health.
+		// to settle, then — if envName joining changed the merged env — restart in
+		// place to apply it, before reporting health.
 		<-startDone
+		e.maybeRestartForEnvChange(c, envName, "started")
 		return e.isHealthy(name)
 	}
 
@@ -334,17 +337,22 @@ func (e *Engine) doStart(c *command) {
 // already been closed (i.e. the old process has fully exited), because resetting
 // writeOnce is only safe after the old reaper has run.
 func (e *Engine) launchProcess(c *command) error {
+	// c.appliedEnv records exactly what this process got, so a later holder
+	// join/leave can tell whether the merged env actually changed.
+	eff := e.effectiveEnv(c)
+
 	// Reset single-use per-process state under the lock so concurrent readers
 	// (superviseService, releaseCommand, Shutdown) see a consistent channel.
 	e.mu.Lock()
 	c.exited = make(chan struct{})
 	c.exitErr = nil
 	c.writeOnce = sync.Once{}
+	c.appliedEnv = eff
 	e.mu.Unlock()
 
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", c.cfg.Run)
 	cmd.Dir = c.runDir
-	cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
+	cmd.Env = append(os.Environ(), envSlice(eff)...)
 	cmd.Stdout = c.writer
 	cmd.Stderr = c.writer
 	setSysProcAttr(cmd)
@@ -935,10 +943,11 @@ func (e *Engine) logPath(cmdName string) string {
 // runSetup executes each setup command sequentially in runDir, streaming output
 // to the shared writer. It returns on the first command that exits non-zero.
 func (e *Engine) runSetup(ctx context.Context, c *command, runDir string) error {
+	eff := e.effectiveEnv(c)
 	for _, step := range c.cfg.Setup {
 		cmd := exec.CommandContext(ctx, "sh", "-c", step)
 		cmd.Dir = runDir
-		cmd.Env = append(os.Environ(), envSlice(c.cfg.Env)...)
+		cmd.Env = append(os.Environ(), envSlice(eff)...)
 		cmd.Stdout = c.writer
 		cmd.Stderr = c.writer
 		setSysProcAttr(cmd)
@@ -947,6 +956,72 @@ func (e *Engine) runSetup(ctx context.Context, c *command, runDir string) error 
 		}
 	}
 	return nil
+}
+
+// effectiveEnv computes the environment variables that should be applied to
+// c's process: the union of Env from every environment currently holding it
+// (c.holders), overridden by the command's own cfg.Env. Config validation
+// (see internal/config) guarantees the holder union never has a real
+// conflict — two environments disagreeing on a key the command itself does
+// not override is rejected at load time — so this is a plain last-write-wins
+// union, safe to recompute on every call.
+func (e *Engine) effectiveEnv(c *command) map[string]string {
+	e.mu.Lock()
+	holders := make([]string, 0, len(c.holders))
+	for h := range c.holders {
+		holders = append(holders, h)
+	}
+	cmdEnv := c.cfg.Env
+	e.mu.Unlock()
+
+	out := make(map[string]string)
+	for _, h := range holders {
+		// envEnvOf is read-only after New (like cmdOf/envsOf): safe without e.mu.
+		for k, v := range e.envEnvOf[h] {
+			out[k] = v
+		}
+	}
+	for k, v := range cmdEnv {
+		out[k] = v
+	}
+	return out
+}
+
+// teardownEnv returns the env that should be applied to a command's teardown
+// script: the env that was actually applied to its running process
+// (c.appliedEnv), so teardown cleans up exactly what run set up — even if a
+// holder has already been released (and so excluded from a fresh
+// effectiveEnv) by the time teardown runs. Falls back to a fresh
+// effectiveEnv when the process was never successfully launched (e.g. a setup
+// failure before launchProcess ran).
+func (e *Engine) teardownEnv(c *command) map[string]string {
+	e.mu.Lock()
+	applied := c.appliedEnv
+	e.mu.Unlock()
+	if applied != nil {
+		return applied
+	}
+	return e.effectiveEnv(c)
+}
+
+// maybeRestartForEnvChange restarts a healthy, running shared command in
+// place when a holder join/leave (holderName, action) changed its effective
+// env (see effectiveEnv), so the process picks up the new merged set. It is a
+// no-op when the command is not currently healthy, or when the effective env
+// did not actually change.
+func (e *Engine) maybeRestartForEnvChange(c *command, holderName, action string) {
+	if !e.isHealthy(c.cfg.Name) {
+		return
+	}
+	eff := e.effectiveEnv(c)
+	e.mu.Lock()
+	unchanged := maps.Equal(c.appliedEnv, eff)
+	e.mu.Unlock()
+	if unchanged {
+		return
+	}
+	e.logCmdWarn(c, fmt.Sprintf("restarting %q to apply environment variables (environment %q %s)", c.cfg.Name, holderName, action))
+	e.restartCommandInPlace(c)
 }
 
 // envSlice converts an env map to the "KEY=VALUE" slice form exec expects.
