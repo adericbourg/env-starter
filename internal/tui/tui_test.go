@@ -2343,6 +2343,44 @@ func TestRenderEnvInspectorDetail_masksByDefaultAndSpaceRevealsValueAndOverrides
 	}
 }
 
+func TestRenderEnvInspectorDetail_revealDoesNotShiftBlockHorizontally(t *testing.T) {
+	// Given a details screen for a value long enough to have previously
+	// widened — and re-centered — the block once revealed.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{
+			Key:     "DOCKER_HOST",
+			Winning: engine.EnvLayer{Value: "unix:///Users/alban.dericbourg/.colima/default/docker.sock", Source: engine.EnvSourceOS},
+		}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendSpecialKey(m, tea.KeyEnter)
+	maskedIndent := valueLineIndent(t, ansi.Strip(m.render()))
+
+	// When revealed.
+	m = sendSpecialKey(m, tea.KeySpace)
+	revealedIndent := valueLineIndent(t, ansi.Strip(m.render()))
+
+	// Then: the block's horizontal position (indent before the "Value" line)
+	// is unchanged — only its content wraps, never the block itself.
+	if maskedIndent != revealedIndent {
+		t.Errorf("details block shifted horizontally: masked indent %d, revealed indent %d", maskedIndent, revealedIndent)
+	}
+}
+
+// valueLineIndent returns the column at which the "Value" line's text starts
+// in a stripped (ANSI-free) view.
+func valueLineIndent(t *testing.T, view string) int {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "Value") {
+			return strings.Index(line, "Value")
+		}
+	}
+	t.Fatal("expected a line containing \"Value\"")
+	return -1
+}
+
 func TestUpdate_envInspectorDetail_escReturnsToListPreservingFilters(t *testing.T) {
 	// Given the details screen open with a search query and origin filter set.
 	ctrl := newFakeController()

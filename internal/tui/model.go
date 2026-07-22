@@ -555,6 +555,31 @@ func (m Model) envInspectorVisibleRows() int {
 	return rows
 }
 
+// envInspectorDetailMinWidth and envInspectorDetailMaxWidth clamp the details
+// screen to a comfortably-sized fixed panel — wide enough for most values,
+// but not stretched edge-to-edge on a wide terminal.
+const (
+	envInspectorDetailMinWidth = 40
+	envInspectorDetailMaxWidth = 90
+)
+
+// envInspectorDetailWidth returns the details screen's fixed content width.
+// Rendering at a fixed width (rather than letting the block size itself to
+// the value) keeps the block's horizontal position constant when Space
+// toggles between the short masked placeholder and a much longer real
+// value — a long value wraps onto extra lines instead of widening the block
+// and shifting it sideways.
+func (m Model) envInspectorDetailWidth() int {
+	w := m.width - 16
+	if w > envInspectorDetailMaxWidth {
+		w = envInspectorDetailMaxWidth
+	}
+	if w < envInspectorDetailMinWidth {
+		w = envInspectorDetailMinWidth
+	}
+	return w
+}
+
 // clampEnvInspectorList keeps cursor within the current filtered set and
 // scroll within a window that keeps cursor visible.
 func (m Model) clampEnvInspectorList(insp *envInspectorState) {
@@ -1545,6 +1570,7 @@ func (m Model) renderEnvInspectorDetail() string {
 	rows = append(rows, footerStyle.Render("space reveal   esc back"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	content = lipgloss.NewStyle().Width(m.envInspectorDetailWidth()).Render(content)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
 }
 
