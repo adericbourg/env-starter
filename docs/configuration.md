@@ -261,13 +261,13 @@ Controls automatic restart behaviour when a service becomes unhealthy. See the [
 
 Describes where the command's working directory comes from. Exactly one of `github`, `url`, or `local` must be set — specifying none or more than one is a validation error.
 
-Sources are **always refreshed before a run** (git pull / re-download). An optional `subdir` selects a sub-path within the fetched source as the working directory.
+Sources are **always refreshed before a run**. For `github`, an existing clone is fetched and **hard-reset to the tip of the configured `branch` or tag** — any local divergence (a force-pushed remote, a dirty cache, a diverged clone) is discarded rather than causing the refresh to fail. `url` sources are re-downloaded. An optional `subdir` selects a sub-path within the fetched source as the working directory.
 
 Cached content lives under the OS cache directory (e.g. `~/.cache/env-starter/` on Linux).
 
 ### `source.github`
 
-Clone or pull a GitHub repository.
+Clone a GitHub repository, or refresh an existing clone to the top of its ref.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|

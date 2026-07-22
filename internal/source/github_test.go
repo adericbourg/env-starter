@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,7 +71,7 @@ func TestGitHub_Fetch_whenCacheAbsent_clonesRepo(t *testing.T) {
 	}
 }
 
-func TestGitHub_Fetch_whenCachePresent_pullsRepo(t *testing.T) {
+func TestGitHub_Fetch_whenCachePresent_fetchesAndHardResets(t *testing.T) {
 	// Given
 	cacheBase := t.TempDir()
 	git := &callRecorder{}
@@ -95,12 +96,57 @@ func TestGitHub_Fetch_whenCachePresent_pullsRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(git.calls) == 0 {
-		t.Fatal("expected git pull call, got none")
+	want := [][]string{
+		{"-C", dir, "fetch", "origin", "main"},
+		{"-C", dir, "reset", "--hard", "FETCH_HEAD"},
+		{"-C", dir, "clean", "-fd"},
 	}
-	// The pull call contains "-C" as first arg.
-	if git.calls[0][0] != "-C" {
-		t.Errorf("expected pull (-C ...) call, got %v", git.calls[0])
+	if len(git.calls) != len(want) {
+		t.Fatalf("git calls = %v, want %v", git.calls, want)
+	}
+	for i, call := range want {
+		if !slices.Equal(git.calls[i], call) {
+			t.Errorf("git call %d = %v, want %v", i, git.calls[i], call)
+		}
+	}
+}
+
+func TestGitHub_Fetch_whenCachePresentTag_fetchesRefAndResets(t *testing.T) {
+	// Given a cache directory keyed by a tag rather than a branch.
+	cacheBase := t.TempDir()
+	git := &callRecorder{}
+
+	g := newGitHub(cacheBase, "owner/repo", "v1.2.3", "ssh", "")
+
+	dir, err := g.cacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mkdirAll(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	g.runGit = git.successRunner
+
+	// When
+	_, err = g.Fetch(context.Background())
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := [][]string{
+		{"-C", dir, "fetch", "origin", "v1.2.3"},
+		{"-C", dir, "reset", "--hard", "FETCH_HEAD"},
+		{"-C", dir, "clean", "-fd"},
+	}
+	if len(git.calls) != len(want) {
+		t.Fatalf("git calls = %v, want %v", git.calls, want)
+	}
+	for i, call := range want {
+		if !slices.Equal(git.calls[i], call) {
+			t.Errorf("git call %d = %v, want %v", i, git.calls[i], call)
+		}
 	}
 }
 
@@ -239,7 +285,7 @@ func TestGitHub_Fetch_whenConcurrentSameRef_clonesOnce(t *testing.T) {
 	// Given
 	cacheBase := t.TempDir()
 
-	var cloneCount, pullCount atomic.Int32
+	var cloneCount, refreshCount atomic.Int32
 	fakeGit := func(_ context.Context, args ...string) error {
 		if args[0] == "clone" {
 			// Create the target directory (last arg) so subsequent Fetch calls see it.
@@ -247,9 +293,10 @@ func TestGitHub_Fetch_whenConcurrentSameRef_clonesOnce(t *testing.T) {
 				return err
 			}
 			cloneCount.Add(1)
-		} else {
-			// pull: -C <dir> pull --ff-only
-			pullCount.Add(1)
+		} else if len(args) > 2 && args[2] == "fetch" {
+			// refresh: -C <dir> fetch origin <ref> (also -C <dir> reset ... and
+			// -C <dir> clean -fd, counted once per Fetch via the leading "fetch").
+			refreshCount.Add(1)
 		}
 		return nil
 	}
@@ -279,8 +326,8 @@ func TestGitHub_Fetch_whenConcurrentSameRef_clonesOnce(t *testing.T) {
 	if got := cloneCount.Load(); got != 1 {
 		t.Errorf("clone count = %d, want 1 (shared clones should not race)", got)
 	}
-	if got := pullCount.Load(); got != int32(n-1) {
-		t.Errorf("pull count = %d, want %d", got, n-1)
+	if got := refreshCount.Load(); got != int32(n-1) {
+		t.Errorf("refresh count = %d, want %d", got, n-1)
 	}
 }
 

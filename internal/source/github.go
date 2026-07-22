@@ -166,8 +166,8 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 	info, statErr := os.Stat(dir)
 	if statErr == nil && info.IsDir() {
 		// Directory already exists — refresh.
-		if err := runGit(ctx, "-C", dir, "pull", "--ff-only"); err != nil {
-			return "", fmt.Errorf("git pull failed for %s: %w", g.Repo, err)
+		if err := g.refresh(ctx, dir, runGit); err != nil {
+			return "", err
 		}
 	} else {
 		// Need to clone.
@@ -192,6 +192,26 @@ func (g *GitHub) Fetch(ctx context.Context) (string, error) {
 		}
 	}
 	return target, nil
+}
+
+// refresh brings an existing clone to the exact tip of the configured ref
+// (branch or tag), discarding any local divergence. Fetching the ref into
+// FETCH_HEAD and hard-resetting works for branches and detached-HEAD tags
+// alike, and recovers from force-pushes and a dirty working tree; clean -fd
+// drops untracked files left over from a previous ref so the run dir is a
+// pristine checkout.
+func (g *GitHub) refresh(ctx context.Context, dir string, runGit func(context.Context, ...string) error) error {
+	ref := g.effectiveBranch()
+	if err := runGit(ctx, "-C", dir, "fetch", "origin", ref); err != nil {
+		return fmt.Errorf("git fetch failed for %s (%s): %w", g.Repo, ref, err)
+	}
+	if err := runGit(ctx, "-C", dir, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("git reset failed for %s (%s): %w", g.Repo, ref, err)
+	}
+	if err := runGit(ctx, "-C", dir, "clean", "-fd"); err != nil {
+		return fmt.Errorf("git clean failed for %s (%s): %w", g.Repo, ref, err)
+	}
+	return nil
 }
 
 // clone picks the right method (or tries them in order) and performs the clone.
