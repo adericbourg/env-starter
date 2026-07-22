@@ -966,12 +966,29 @@ func (e *Engine) runSetup(ctx context.Context, c *command, runDir string) error 
 // not override is rejected at load time — so this is a plain last-write-wins
 // union, safe to recompute on every call.
 func (e *Engine) effectiveEnv(c *command) map[string]string {
+	out := e.holderEnvUnion(c)
+
+	e.mu.Lock()
+	cmdEnv := c.cfg.Env
+	e.mu.Unlock()
+
+	for k, v := range cmdEnv {
+		out[k] = v
+	}
+	return out
+}
+
+// holderEnvUnion returns the union of Env from every environment currently
+// holding c (c.holders), without the command's own override layer. Split out
+// from effectiveEnv so the env inspector (see resolve_env.go) can resolve the
+// environment-level and command-level layers separately for provenance,
+// while still sharing this exact holder-union logic with the launch path.
+func (e *Engine) holderEnvUnion(c *command) map[string]string {
 	e.mu.Lock()
 	holders := make([]string, 0, len(c.holders))
 	for h := range c.holders {
 		holders = append(holders, h)
 	}
-	cmdEnv := c.cfg.Env
 	e.mu.Unlock()
 
 	out := make(map[string]string)
@@ -980,9 +997,6 @@ func (e *Engine) effectiveEnv(c *command) map[string]string {
 		for k, v := range e.envEnvOf[h] {
 			out[k] = v
 		}
-	}
-	for k, v := range cmdEnv {
-		out[k] = v
 	}
 	return out
 }

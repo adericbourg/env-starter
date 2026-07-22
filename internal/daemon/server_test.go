@@ -32,6 +32,8 @@ type mockController struct {
 	logPaths     map[string]string
 	logs         map[string][]string
 	stoppingCmds []engine.StoppingCommand
+	// resolvedEnv is keyed by "env:<name>" or "cmd:<name>".
+	resolvedEnv map[string][]engine.ResolvedEnvVar
 
 	startErr   error
 	stopErr    error
@@ -62,6 +64,7 @@ func newMockController() *mockController {
 		cmdUnmanaged: make(map[string]bool),
 		logPaths:     make(map[string]string),
 		logs:         make(map[string][]string),
+		resolvedEnv:  make(map[string][]engine.ResolvedEnvVar),
 		eventsWrite:  ch,
 		eventsCh:     ch,
 	}
@@ -114,6 +117,15 @@ func (m *mockController) LogPath(command string) string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.logPaths[command]
+}
+
+func (m *mockController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if command != "" {
+		return m.resolvedEnv["cmd:"+command]
+	}
+	return m.resolvedEnv["env:"+envName]
 }
 
 func (m *mockController) StartEnvironment(env string) error {
@@ -422,6 +434,62 @@ func TestServe_restartCommand_whenError_returnsError(t *testing.T) {
 	// Then
 	if !strings.Contains(resp.Error, "is not running") {
 		t.Errorf("want error containing %q, got %q", "is not running", resp.Error)
+	}
+}
+
+func TestServe_resolveEnv_forwardsCommandAndReturnsVars(t *testing.T) {
+	// Given a controller with resolved env registered for command "api".
+	ctrl := newMockController()
+	ctrl.resolvedEnv["cmd:api"] = []engine.ResolvedEnvVar{
+		{Key: "FOO", Winning: engine.EnvLayer{Value: "bar", Source: engine.EnvSourceCommand}},
+	}
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	_, scanner, enc := dialDaemon(t, socketPath)
+	params, _ := json.Marshal(ResolveEnvParams{Command: "api"})
+
+	// When
+	resp := rpc(t, enc, scanner, Request{Method: MethodResolveEnv, Params: params})
+
+	// Then
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	var result ResolveEnvResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.Vars) != 1 || result.Vars[0].Key != "FOO" || result.Vars[0].Winning.Value != "bar" {
+		t.Errorf("expected resolved FOO=bar, got %+v", result.Vars)
+	}
+}
+
+func TestServe_resolveEnv_forwardsEnvName(t *testing.T) {
+	// Given a controller with resolved env registered for environment "dev".
+	ctrl := newMockController()
+	ctrl.resolvedEnv["env:dev"] = []engine.ResolvedEnvVar{
+		{Key: "FOO_BAR_KEY", Winning: engine.EnvLayer{Value: "foo", Source: engine.EnvSourceEnvironment}},
+	}
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	_, scanner, enc := dialDaemon(t, socketPath)
+	params, _ := json.Marshal(ResolveEnvParams{Env: "dev"})
+
+	// When
+	resp := rpc(t, enc, scanner, Request{Method: MethodResolveEnv, Params: params})
+
+	// Then
+	if resp.Error != "" {
+		t.Fatalf("unexpected error: %s", resp.Error)
+	}
+	var result ResolveEnvResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(result.Vars) != 1 || result.Vars[0].Key != "FOO_BAR_KEY" || result.Vars[0].Winning.Value != "foo" {
+		t.Errorf("expected resolved FOO_BAR_KEY=foo, got %+v", result.Vars)
 	}
 }
 

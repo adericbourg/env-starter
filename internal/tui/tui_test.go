@@ -26,6 +26,8 @@ type fakeController struct {
 	logs         map[string][]string
 	events       chan engine.Event
 	stopping     []engine.StoppingCommand
+	// resolvedEnv is keyed by "env:<name>" or "cmd:<name>".
+	resolvedEnv map[string][]engine.ResolvedEnvVar
 
 	startedEnvs       []string
 	stoppedEnvs       []string
@@ -97,6 +99,13 @@ func (f *fakeController) IsUnmanaged(cmd string) bool { return f.cmdUnmanaged[cm
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
 
 func (f *fakeController) LogPath(cmd string) string { return "/tmp/logs/" + cmd + ".log" }
+
+func (f *fakeController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
+	if command != "" {
+		return f.resolvedEnv["cmd:"+command]
+	}
+	return f.resolvedEnv["env:"+envName]
+}
 
 func (f *fakeController) StartEnvironment(env string) error {
 	f.startedEnvs = append(f.startedEnvs, env)
@@ -2058,5 +2067,150 @@ func TestRender_withContextLinks_doesNotExceedTerminalHeight(t *testing.T) {
 	lines := strings.Split(view, "\n")
 	if len(lines) > termHeight {
 		t.Errorf("render produced %d lines, exceeds terminal height %d", len(lines), termHeight)
+	}
+}
+
+// ── Env inspector ───────────────────────────────────────────────────────────
+
+func TestUpdate_whenE_withEnvsFocused_opensEnvInspectorForEnvironment(t *testing.T) {
+	// Given
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "FOO", Winning: engine.EnvLayer{Value: "bar", Source: engine.EnvSourceEnvironment}}},
+	}
+	m := seed(New(ctrl))
+
+	// When
+	m = sendKey(m, "e")
+
+	// Then
+	if m.envInspector == nil {
+		t.Fatal("expected env inspector to be open")
+	}
+	if !strings.Contains(m.envInspector.title, "alpha") {
+		t.Errorf("expected title to mention environment %q, got %q", "alpha", m.envInspector.title)
+	}
+	if len(m.envInspector.vars) != 1 || m.envInspector.vars[0].Key != "FOO" {
+		t.Errorf("expected resolved vars for alpha, got %+v", m.envInspector.vars)
+	}
+}
+
+func TestUpdate_whenE_withCmdsFocused_opensEnvInspectorForCommand(t *testing.T) {
+	// Given a model with the commands pane focused and "svc-a" selected.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"cmd:svc-a": {{Key: "FOO", Winning: engine.EnvLayer{Value: "bar", Source: engine.EnvSourceCommand}}},
+	}
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a"
+
+	// When
+	m = sendKey(m, "e")
+
+	// Then
+	if m.envInspector == nil {
+		t.Fatal("expected env inspector to be open")
+	}
+	if !strings.Contains(m.envInspector.title, "svc-a") {
+		t.Errorf("expected title to mention command %q, got %q", "svc-a", m.envInspector.title)
+	}
+}
+
+func TestRenderEnvInspector_masksValuesByDefault(t *testing.T) {
+	// Given an open inspector with a known secret value.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "SUPER_SECRET_KEY", Winning: engine.EnvLayer{Value: "top-secret-value", Source: engine.EnvSourceEnvironment}}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When
+	view := m.render()
+
+	// Then: the key is shown but the value never appears in plaintext.
+	if !strings.Contains(view, "SUPER_SECRET_KEY") {
+		t.Error("expected view to contain the key name")
+	}
+	if strings.Contains(view, "top-secret-value") {
+		t.Error("expected value to be masked by default, found it in plaintext")
+	}
+	if !strings.Contains(view, envMaskedValue) {
+		t.Error("expected view to contain the masked placeholder")
+	}
+}
+
+func TestRenderEnvInspector_revealShowsOnlySelectedRow(t *testing.T) {
+	// Given an open inspector with two vars.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {
+			{Key: "FIRST", Winning: engine.EnvLayer{Value: "first-secret", Source: engine.EnvSourceEnvironment}},
+			{Key: "SECOND", Winning: engine.EnvLayer{Value: "second-secret", Source: engine.EnvSourceEnvironment}},
+		},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When the first (selected) row is revealed.
+	m = sendSpecialKey(m, tea.KeyEnter)
+	view := m.render()
+
+	// Then: only the selected row's value is in plaintext; the other stays masked.
+	if !strings.Contains(view, "first-secret") {
+		t.Error("expected the selected row's value to be revealed")
+	}
+	if strings.Contains(view, "second-secret") {
+		t.Error("expected the non-selected row's value to remain masked")
+	}
+
+	// When the selection moves down.
+	m = sendSpecialKey(m, tea.KeyDown)
+	view = m.render()
+
+	// Then: moving off the row re-masks it, and the new row is masked too.
+	if strings.Contains(view, "first-secret") || strings.Contains(view, "second-secret") {
+		t.Error("expected both values to be masked after moving the selection")
+	}
+	if m.envInspector.revealed {
+		t.Error("expected revealed to reset to false after moving the selection")
+	}
+}
+
+func TestUpdate_envInspector_escCloses(t *testing.T) {
+	// Given an open inspector.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "FOO"}}}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	if m.envInspector == nil {
+		t.Fatal("expected env inspector to be open")
+	}
+
+	// When
+	m = sendSpecialKey(m, tea.KeyEscape)
+
+	// Then
+	if m.envInspector != nil {
+		t.Error("expected env inspector to be closed")
+	}
+}
+
+func TestUpdate_envInspectorOpen_blocksOtherKeys(t *testing.T) {
+	// Given an open inspector.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "FOO"}}}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When a key unrelated to the inspector is pressed (e.g. "s" for start).
+	m = sendKey(m, "s")
+
+	// Then: the inspector stays open and the unrelated action did not fire.
+	if m.envInspector == nil {
+		t.Error("expected env inspector to remain open")
+	}
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call while inspector is open, got %v", ctrl.startedEnvs)
 	}
 }

@@ -23,6 +23,10 @@ type Controller interface {
 	IsUnmanaged(command string) bool
 	Logs(command string) []string
 	LogPath(command string) string
+	// ResolveEnv resolves the env variables visible to the given environment or
+	// command (exactly one should be non-empty), with full layer provenance.
+	// Returns nil for an unknown name.
+	ResolveEnv(envName, command string) []engine.ResolvedEnvVar
 	StartEnvironment(env string) error
 	StopEnvironment(env string) error
 	// RestartCommand restarts a single running command in place, preserving its

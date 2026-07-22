@@ -434,6 +434,15 @@ func (s *server) handleRPC(ctx context.Context, req Request, enc *json.Encoder) 
 		}
 		writeResultOf(enc, StoppingCommandsResult{Commands: wire})
 
+	case MethodResolveEnv:
+		var p ResolveEnvParams
+		if err := json.Unmarshal(req.Params, &p); err != nil {
+			writeError(enc, "invalid params: "+err.Error())
+			return
+		}
+		vars := s.ctrl.ResolveEnv(p.Env, p.Command)
+		writeResultOf(enc, ResolveEnvResult{Vars: vars})
+
 	case MethodConfigChanged:
 		changed, err := s.ctrl.ConfigChanged()
 		result := ConfigChangedResult{Changed: changed}

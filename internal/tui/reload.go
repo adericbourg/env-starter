@@ -246,6 +246,12 @@ func (c *reloadController) LogPath(cmd string) string {
 	return c.eng.LogPath(cmd)
 }
 
+func (c *reloadController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.eng.ResolveEnv(envName, command)
+}
+
 func (c *reloadController) StartEnvironment(env string) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

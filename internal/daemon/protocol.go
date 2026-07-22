@@ -32,6 +32,7 @@ const (
 	MethodConfigChanged    = "configChanged"
 	MethodReload           = "reload"
 	MethodStoppingCommands = "stoppingCommands"
+	MethodResolveEnv       = "resolveEnv"
 )
 
 // ── Envelope types ────────────────────────────────────────────────────────────
@@ -100,6 +101,19 @@ type WireStoppingCommand struct {
 // StoppingCommandsResult carries all currently-stopping commands.
 type StoppingCommandsResult struct {
 	Commands []WireStoppingCommand `json:"commands"`
+}
+
+// ResolveEnvParams carries exactly one of Env or Command for the resolveEnv
+// RPC: Command resolves what that command's process receives; Env resolves
+// what its workflow inherits before command-level overrides.
+type ResolveEnvParams struct {
+	Env     string `json:"env,omitempty"`
+	Command string `json:"command,omitempty"`
+}
+
+// ResolveEnvResult carries the resolved, provenance-tagged env variables.
+type ResolveEnvResult struct {
+	Vars []engine.ResolvedEnvVar `json:"vars"`
 }
 
 // ── Snapshot ──────────────────────────────────────────────────────────────────

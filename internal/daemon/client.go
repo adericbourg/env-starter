@@ -317,6 +317,21 @@ func (c *ClientController) StoppingCommands() []engine.StoppingCommand {
 	return out
 }
 
+// ResolveEnv fetches the resolved, provenance-tagged env variables for envName
+// or command (exactly one should be non-empty) via RPC.
+func (c *ClientController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
+	params, _ := json.Marshal(ResolveEnvParams{Env: envName, Command: command})
+	resp, err := c.rpc(Request{Method: MethodResolveEnv, Params: params})
+	if err != nil || resp.Error != "" {
+		return nil
+	}
+	var result ResolveEnvResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		return nil
+	}
+	return result.Vars
+}
+
 // ConfigChanged fetches the config-changed status via RPC.
 func (c *ClientController) ConfigChanged() (bool, error) {
 	resp, err := c.rpc(Request{Method: MethodConfigChanged})

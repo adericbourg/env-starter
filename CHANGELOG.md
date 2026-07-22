@@ -34,6 +34,13 @@ Releases follow [Semantic Versioning](https://semver.org/).
   ("Secrets and overrides").
 
 ### Added
+- New TUI env inspector (`e` key, from the Environments/Commands/Logs pane):
+  a read-only overlay listing every environment variable visible to the
+  selected environment or command, with its provenance (`OS`, `environment`,
+  `command`). Values are masked by default; revealing (`Enter`/`Space`)
+  shows only the selected row's value — never the whole list — along with
+  any lower-priority value it overrides, and re-masks when the selection
+  moves or the overlay closes. See `docs/usage.md` ("Env inspector").
 - Environments can now declare `env`, applied to every command in their
   `workflow`. For a command shared by several environments, the effective env
   is the union of the sharing environments' `env`, overridden by the command's

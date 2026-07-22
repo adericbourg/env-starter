@@ -168,6 +168,24 @@ type Model struct {
 	// openFile opens the given path in the OS default application. Defaults to
 	// openfile.Open; swapped out in tests.
 	openFile func(string) error
+
+	// envInspector, when non-nil, is the currently open env-inspector overlay.
+	// While open it takes over rendering and all key input (see handleKey).
+	envInspector *envInspectorState
+}
+
+// envInspectorState is the state of the open env-inspector overlay: the
+// resolved, provenance-tagged variables for one environment or command, plus
+// which row is selected and whether its value is currently revealed.
+//
+// Values are masked by default and reveal is scoped to the selected row only
+// — moving the cursor or closing the overlay re-masks — so at most one secret
+// is ever shown on screen at a time.
+type envInspectorState struct {
+	title    string // e.g. `environment "dev"` or `command "api"`
+	vars     []engine.ResolvedEnvVar
+	cursor   int
+	revealed bool
 }
 
 // New creates a TUI model driven by the given controller.
@@ -341,6 +359,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// While the env inspector overlay is open, it owns all key input.
+	if m.envInspector != nil {
+		return m.handleEnvInspectorKey(msg)
+	}
+
 	if msg.String() == "ctrl+d" {
 		m.detaching = true
 		m.ctrl.Detach()
@@ -426,6 +449,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case "e":
+		switch m.focused {
+		case focusEnvs:
+			if name := m.selectedEnvName(); name != "" {
+				return m.openEnvInspector("", name)
+			}
+		case focusCmds, focusLogs:
+			if cmd := m.selectedCommand(); cmd != "" {
+				return m.openEnvInspector(cmd, "")
+			}
+		}
+
 	case "c":
 		if !m.configDirty || m.configParseErr != "" {
 			// "c" is inert when no valid change is pending (or file is unparseable).
@@ -442,6 +477,49 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	return m, nil
+}
+
+// openEnvInspector resolves the env variables for envName (an environment) or
+// command (a command) — exactly one should be non-empty — and opens the
+// inspector overlay on them, selecting the first row.
+func (m Model) openEnvInspector(command, envName string) (tea.Model, tea.Cmd) {
+	title := fmt.Sprintf("environment %q", envName)
+	if command != "" {
+		title = fmt.Sprintf("command %q", command)
+	}
+	m.envInspector = &envInspectorState{
+		title: title,
+		vars:  m.ctrl.ResolveEnv(envName, command),
+	}
+	return m, nil
+}
+
+// handleEnvInspectorKey handles all key input while the env inspector overlay
+// is open: moving the selection re-masks (at most one secret is ever shown at
+// once); esc/q/e closes it.
+func (m Model) handleEnvInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	insp := *m.envInspector
+	switch msg.String() {
+	case "esc", "q", "e":
+		m.envInspector = nil
+		return m, nil
+	case "up", "k":
+		if insp.cursor > 0 {
+			insp.cursor--
+			insp.revealed = false
+		}
+	case "down", "j":
+		if insp.cursor < len(insp.vars)-1 {
+			insp.cursor++
+			insp.revealed = false
+		}
+	case "enter", " ":
+		if len(insp.vars) > 0 {
+			insp.revealed = !insp.revealed
+		}
+	}
+	m.envInspector = &insp
 	return m, nil
 }
 
@@ -718,6 +796,10 @@ func (m Model) render() string {
 		return m.renderShutdown()
 	}
 
+	if m.envInspector != nil {
+		return m.renderEnvInspector()
+	}
+
 	top := m.renderTopRow()
 	logs := m.renderLogsPane()
 	footer := m.renderFooter()
@@ -961,6 +1043,7 @@ func (m Model) shortcutsLegend() string {
 	if m.focused == focusLogs {
 		parts = append(parts, "r refresh logs", "^L open")
 	}
+	parts = append(parts, "e env")
 	parts = append(parts, "^D detach", "^C shutdown")
 	return strings.Join(parts, "  ")
 }
@@ -1102,6 +1185,65 @@ func (m Model) renderShutdown() string {
 
 	status := lipgloss.Place(m.width, statusHeight, lipgloss.Center, lipgloss.Center, statusContent)
 	return lipgloss.JoinVertical(lipgloss.Left, status, m.renderShutdownLogPanel())
+}
+
+// envMaskedValue is shown in place of every env value by default. It is a
+// fixed placeholder rather than one sized to the real value, so a value's
+// length is not leaked either.
+const envMaskedValue = "••••••••"
+
+// renderEnvInspector renders the env-inspector overlay: every resolved
+// variable's key and provenance, value masked except on the selected row when
+// revealed — never more than one value in plaintext at a time.
+func (m Model) renderEnvInspector() string {
+	insp := m.envInspector
+
+	rows := []string{logsTitleStyle.Render("Environment variables — " + insp.title), ""}
+
+	if len(insp.vars) == 0 {
+		rows = append(rows, "  (no variables)")
+	}
+	for i, v := range insp.vars {
+		selected := i == insp.cursor
+		value := envMaskedValue
+		if selected && insp.revealed {
+			value = v.Winning.Value
+		}
+		line := fmt.Sprintf("%s=%s  (%s)", v.Key, value, envSourceLabel(v.Winning.Source))
+		if selected {
+			line = selectedLine.Render("> " + line)
+		} else {
+			line = "  " + line
+		}
+		rows = append(rows, line)
+
+		if selected && insp.revealed {
+			for _, s := range v.Shadowed {
+				rows = append(rows, fmt.Sprintf("    ↳ %s  (%s, overridden)", s.Value, envSourceLabel(s.Source)))
+			}
+		}
+	}
+
+	rows = append(rows, "")
+	if insp.revealed {
+		rows = append(rows, quitConfirmStyle.Render("⚠ value shown — visible to anyone viewing/recording your screen"))
+	}
+	rows = append(rows, footerStyle.Render("↑/↓ move   enter/space reveal selected   esc close"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
+}
+
+// envSourceLabel renders an engine.EnvSource for display.
+func envSourceLabel(s engine.EnvSource) string {
+	switch s {
+	case engine.EnvSourceCommand:
+		return "command"
+	case engine.EnvSourceEnvironment:
+		return "environment"
+	default:
+		return "OS"
+	}
 }
 
 // ── State indicators ──────────────────────────────────────────────────────────

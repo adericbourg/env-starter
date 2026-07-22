@@ -82,9 +82,26 @@ env-starter run connect-order && echo "ready"
 | `x` | Stop the selected environment (Environments pane only) |
 | `R` (Shift+R) | Restart the selected command (Commands pane only) |
 | `r` | Refresh logs (Logs pane only) |
+| `e` | Open the env inspector for the selected environment or command (Environments/Commands/Logs panes) — see below |
 | `Ctrl+L` | Open the selected command's log file in the default application (Logs pane only) |
 | `Ctrl+C` | First press shows confirmation; a second `Ctrl+C` within 3 seconds performs a graceful shutdown — stops all environments **and shuts down the daemon** |
 | `Ctrl+D` | Detach — exits the TUI immediately while leaving all environments running in the daemon. The daemon keeps running; run `env-starter` again to reconnect, or `env-starter shutdown` to stop everything. |
+
+### Env inspector
+
+Press `e` from the Environments, Commands, or Logs pane to open a read-only
+overlay listing every environment variable visible to the selected
+environment or command, with its provenance (`OS`, `environment`, or
+`command`).
+
+Values are **masked by default**. Move the selection with `↑`/`↓`; press
+`Enter` or `Space` to reveal the **selected row's value only** — every other
+row stays masked, and moving the selection or closing the overlay re-masks it.
+A revealed row also shows any lower-priority value it overrides (e.g. the
+environment-level or OS value a command's own `env` shadows), labelled
+`overridden`. A warning is shown while a value is revealed, since it is
+visible to anyone viewing or recording your screen. Press `Esc`, `q`, or `e`
+to close.
 
 ## Shell completion
 
