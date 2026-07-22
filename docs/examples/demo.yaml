@@ -1,56 +1,32 @@
-# Self-contained demo config used to record docs/images/demo.gif (see demo.tape)
-# and referenced from the README as a runnable example.
+# Runnable version of the README's minimal example, used to record
+# docs/images/demo.gif (see demo.tape) and to let readers run it themselves.
 #
-# One service runs IN Docker (nginx:alpine), one runs locally WITHOUT Docker
-# (a python3 HTTP server), and a task waits for both. Requirements — all standard
-# on a dev machine: Docker running, python3, curl, and free ports 8080 + 9000.
-# Windows users: replace the "/tmp" source paths with an existing dir.
+# One service (Postgres, via Docker Compose) and one dependent task (a
+# migration script) that only starts once Postgres accepts connections.
+# Requirements — standard on a dev machine: Docker running and free port
+# 5432.
 env-starter:
   commands:
-    # --- Runs IN Docker -------------------------------------------------------
-    - name: docker-web
+    - name: database
       type: service
       source:
-        local: /tmp                 # cwd is irrelevant; Docker pulls the image itself
-      run: docker run --rm --name env-starter-demo-nginx -p 8080:80 nginx:alpine
-      teardown: docker stop env-starter-demo-nginx
+        local: ./scripts/database
+      run: docker compose up
+      teardown: docker compose down
       readiness:
-        tcp: "localhost:8080"
-        timeout: 60s                # first run pulls the image
+        tcp: "localhost:5432"
+        timeout: 60s
         interval: 1s
 
-    # --- Runs NOT in Docker ---------------------------------------------------
-    - name: local-web
-      type: service
-      source:
-        local: /tmp
-      setup:
-        - mkdir -p /tmp/env-starter-demo
-        - printf '<!doctype html><title>env-starter</title><h1>Hello from env-starter</h1><p>This server runs locally, <b>not</b> in Docker.</p>\n' > /tmp/env-starter-demo/index.html
-      run: python3 -m http.server 9000 --directory /tmp/env-starter-demo
-      readiness:
-        tcp: "localhost:9000"
-        timeout: 15s
-        interval: 1s
-
-    # --- Runs NOT in Docker, depends on both servers --------------------------
-    - name: greet
+    - name: migrate
       type: task
       source:
-        local: /tmp
-      run: |
-        echo "Both services are up:"
-        echo "  docker-web (in Docker)  -> http://localhost:8080"
-        echo "  local-web  (no Docker)  -> http://localhost:9000"
-        echo
-        echo "Headers from the Dockerized nginx:"
-        curl -sfI http://localhost:8080
+        local: ./scripts/migrate
+      run: ./migrate.sh up
 
   environments:
-    - name: demo
-      description: One service in Docker, one local service, and a dependent task
+    - name: my-app
       workflow:
-        - command: docker-web        # starts in parallel with local-web
-        - command: local-web
-        - command: greet
-          depends-on: [docker-web, local-web]
+        - command: database
+        - command: migrate
+          depends-on: [database]

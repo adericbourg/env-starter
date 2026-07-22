@@ -23,9 +23,9 @@ your job.
 
 ![env-starter starting a dependency-ordered environment](docs/images/demo.gif)
 
-Two independent services (an `nginx` container and a local `python3` HTTP
-server) start in parallel; a `greet` task runs once both are healthy. One press
-of `s`.
+A `database` service (Postgres) starts, and a `migrate` task runs once it
+accepts connections — the exact config below, runnable as-is. One press of
+`s`.
 
 ## A minimal example
 
@@ -63,10 +63,10 @@ env-starter run my-app && echo "ready"
 Here `migrate` runs only once Postgres accepts connections. Commands can also
 be pulled from a `github` repo or a `url` with checksum verification, and a
 shared team config can be overlaid with personal overrides — the
-[configuration reference](docs/configuration.md) has the full schema. For a
-config you can run as-is (it's the one behind the demo above), see
-[`docs/examples/demo.yaml`](docs/examples/demo.yaml); it needs Docker,
-`python3`, `curl`, and free ports `8080`/`9000`.
+[configuration reference](docs/configuration.md) has the full schema. This
+config is also the one behind the demo above; see
+[`docs/examples/demo.yaml`](docs/examples/demo.yaml) for the runnable version
+— it needs Docker running and a free port `5432`.
 
 ## How it works
 
