@@ -211,8 +211,10 @@ func (e *Engine) checkUnmanaged(c *command) bool {
 	c.unmanaged = true
 	e.mu.Unlock()
 
-	e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+	// Log before flipping the state to CmdHealthy: a waiter woken by the state
+	// change must already see the warning in the command log.
 	e.logCmdWarn(c, fmt.Sprintf("%s is already running and healthy — unmanaged by env-starter", c.cfg.Name))
+	e.setCmdState(c.cfg.Name, CmdHealthy, nil)
 	e.startUnmanagedMonitor(c)
 	return true
 }
