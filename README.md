@@ -1,6 +1,7 @@
 # env-starter
 
-**A keyboard-driven terminal launcher that starts your whole dev stack, in the right order, with one keystroke.**
+env-starter starts your local dev stack in the right order and tells you when
+it's actually ready.
 
 [![Release](https://img.shields.io/github/v/release/adericbourg/env-starter?sort=semver)](https://github.com/adericbourg/env-starter/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/adericbourg/env-starter/ci.yml?branch=main&label=CI)](https://github.com/adericbourg/env-starter/actions/workflows/ci.yml)
@@ -8,32 +9,25 @@
 
 ---
 
-## The problem
+Most local stacks come with a startup ritual: start the database, wait until it
+accepts connections, run the migrations, start the auth service, wait again,
+then start the app. A handful of terminal tabs, from memory, every morning.
 
-Getting a local dev environment running usually means a dozen terminal tabs and a
-memorized ritual: start the database, wait for it to accept connections, run the
-migrations, start the auth service, wait again, *then* start the frontend — and hope
-you didn't skip a step or start something too early. Do that daily, across several
-projects, and it's real friction before you've written a line of code.
-
-## The solution
-
-`env-starter` replaces the ritual with a declarative YAML file. Describe your
-commands once — what they are, what they depend on, and how to tell when they're
-ready — and start the whole stack with a single keystroke. `env-starter` starts
-each command only after its dependencies are *healthy*, so the ordering and the
-waiting are no longer your job.
+env-starter replaces the ritual with a YAML file. Describe each command once —
+what it runs, what it depends on, and how to tell when it's ready — then start
+the whole stack with one keystroke. Each command waits for its dependencies to
+be healthy, not for a hopeful `sleep`. The ordering and the waiting stop being
+your job.
 
 ## Demo
 
 ![env-starter starting a dependency-ordered environment](docs/images/demo.gif)
 
-The environment above declares two independent services — `docker-web` (an
-`nginx` container) and `local-web` (a local `python3` HTTP server) — started in
-parallel, plus a `greet` task that only runs once both are healthy. All from
-pressing `s` once.
+Two independent services (an `nginx` container and a local `python3` HTTP
+server) start in parallel; a `greet` task runs once both are healthy. One press
+of `s`.
 
-## Example
+## A minimal example
 
 ```yaml
 env-starter:
@@ -41,9 +35,7 @@ env-starter:
     - name: database
       type: service
       source:
-        github:
-          repo: acme/infra
-          subdir: scripts/database
+        local: ./scripts/database
       run: docker compose up
       teardown: docker compose down
       readiness:
@@ -53,49 +45,43 @@ env-starter:
     - name: migrate
       type: task
       source:
-        local: /home/user/scripts/migrate
+        local: ./scripts/migrate
       run: ./migrate.sh up
-      teardown: ./migrate.sh down
-
-    - name: auth-gateway
-      type: service
-      source:
-        url: https://releases.example.com/auth-gateway/bin
-      run: ./bin
-      readiness:
-        shell: "curl -sf localhost:8080/health"
 
   environments:
-    - name: my-app-environment
+    - name: my-app
       workflow:
         - command: database
         - command: migrate
           depends-on: [database]
-        - command: auth-gateway
-          depends-on: [database]
 ```
 
 ```sh
-env-starter run my-app-environment && echo "ready"
+env-starter run my-app && echo "ready"
 ```
 
-`source` accepts a `github` repo, a `url` (with an optional checksum), or a `local`
-path — see the [configuration reference](docs/configuration.md) for the full
-schema. For a version you can actually run yourself — one service in Docker, one
-without, no repos to clone — see
-[`docs/examples/demo.yaml`](docs/examples/demo.yaml) (it's what recorded the
-demo above). It needs a running Docker daemon, `python3`, `curl`, and free
-ports `8080`/`9000`.
+Here `migrate` runs only once Postgres accepts connections. Commands can also
+be pulled from a `github` repo or a `url` with checksum verification, and a
+shared team config can be overlaid with personal overrides — the
+[configuration reference](docs/configuration.md) has the full schema. For a
+config you can run as-is (it's the one behind the demo above), see
+[`docs/examples/demo.yaml`](docs/examples/demo.yaml); it needs Docker,
+`python3`, `curl`, and free ports `8080`/`9000`.
 
-## Features
+## How it works
 
-- **Dependency-aware startup** — commands start only after their declared dependencies pass a readiness probe.
-- **Two command types** — long-running **services** and run-to-completion **tasks**, each with an optional `teardown`.
-- **Pluggable readiness probes** — `tcp` (port accepts a connection) and `shell` (command exits 0).
-- **Multiple source types** — pull scripts or binaries from `github`, a `url` (with checksum verification), or a `local` path.
-- **Config overlays** — merge personal overrides on top of shared team config.
-- **Background daemon** — environments keep running after the TUI closes, and stay visible from any number of TUI or CLI instances.
-- **Per-command logs** — a live view in the TUI, plus a file tee for post-mortem inspection.
+A background daemon owns the environments and their processes; the TUI and the
+CLI are thin clients talking to it over a local unix socket. Close the TUI (or
+detach with `Ctrl+D`) and everything keeps running — reopen it from any
+terminal, or from several at once, and you see the same state. Commands come in
+two kinds: *services* stay up and are probed for readiness (`tcp` for a port
+accepting connections, `shell` for a command exiting 0), *tasks* run to
+completion; both can declare a `teardown`. Every command's output streams live
+in the TUI and is teed to a log file for post-mortem reading.
+
+Nothing runs behind your back: `env-starter allow` lists every command a config
+would execute, with a browsable link to its source, and asks for your approval
+before anything starts.
 
 ## Get started
 
@@ -106,7 +92,8 @@ env-starter allow   # review and approve your config's commands (first run only)
 env-starter
 ```
 
-See [Installation](docs/installation.md) for prebuilt binaries, `go install`, and building from source.
+Prebuilt binaries, `go install`, and building from source are covered in
+[Installation](docs/installation.md).
 
 ## Documentation
 
