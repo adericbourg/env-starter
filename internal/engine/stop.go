@@ -91,7 +91,23 @@ func (e *Engine) releaseCommand(envName, name string) {
 // any) runs after the task exits. For services, the teardown script (if any)
 // runs first so it can stop the underlying process gracefully (e.g.
 // `docker stop`), then the process is waited on and killed if still alive.
+//
+// A command still unmanaged at this point was never fetched, set up, or
+// launched by env-starter (see checkUnmanaged) — there is no runDir for a
+// teardown script to run in and no process of ours to kill, so it goes
+// straight to CmdStopped.
 func (e *Engine) stopCommand(c *command) {
+	e.mu.Lock()
+	unmanaged := c.unmanaged
+	e.mu.Unlock()
+	if unmanaged {
+		e.mu.Lock()
+		c.stopStartedAt = time.Time{}
+		e.mu.Unlock()
+		e.setCmdState(c.cfg.Name, CmdStopped, nil)
+		return
+	}
+
 	switch c.cfg.Type {
 	case "task":
 		e.runTeardown(c)

@@ -162,14 +162,13 @@ func (e *Engine) isHealthy(name string) bool {
 	return c.state == CmdHealthy || c.state == CmdDone
 }
 
-// startCommand fetches the source, launches the process and (for services)
-// waits for the readiness probe. It always closes c.startDone exactly once.
+// startCommand opens the command's log writer, then either adopts an
+// already-healthy external process (see checkUnmanaged) or performs a full
+// managed start via doStart. It always closes c.startDone exactly once.
 func (e *Engine) startCommand(c *command) {
 	defer close(c.startDone)
 
 	e.setCmdState(c.cfg.Name, CmdStarting, nil)
-
-	ctx := context.Background()
 
 	// Create the log writer before fetching the source so that git/gh output
 	// during clone or pull is captured into the command log instead of leaking
@@ -181,6 +180,107 @@ func (e *Engine) startCommand(c *command) {
 		file = nil
 	}
 	c.writer = logbuf.NewWriter(c.ring, file)
+
+	if e.checkUnmanaged(c) {
+		return
+	}
+
+	e.doStart(c)
+}
+
+// checkUnmanaged runs the command's readiness probe (if any) once, before
+// anything is spawned. If it already passes, an external process is already
+// satisfying it: adopt it as unmanaged (CmdHealthy, no process of our own)
+// instead of launching a duplicate, warn loudly, and start watching it so a
+// later failure triggers a real managed start (see takeOverUnmanaged).
+// Returns false — meaning the caller should proceed with a normal managed
+// start — when there is no probe configured or the probe does not pass yet.
+func (e *Engine) checkUnmanaged(c *command) bool {
+	p, timeout, _ := e.buildProbe(c.cfg.Readiness)
+	if p == nil {
+		return false
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := p.Check(ctx); err != nil {
+		return false
+	}
+
+	e.mu.Lock()
+	c.unmanaged = true
+	e.mu.Unlock()
+
+	e.setCmdState(c.cfg.Name, CmdHealthy, nil)
+	e.logCmdWarn(c, fmt.Sprintf("%s is already running and healthy — unmanaged by env-starter", c.cfg.Name))
+	e.startUnmanagedMonitor(c)
+	return true
+}
+
+// startUnmanagedMonitor lazily creates c.quit (exactly like startMonitor) so
+// the existing stop path cancels it for free, then watches the external
+// process's health in the background.
+func (e *Engine) startUnmanagedMonitor(c *command) {
+	e.mu.Lock()
+	if c.quit == nil {
+		c.quit = make(chan struct{})
+	}
+	e.mu.Unlock()
+	go e.superviseUnmanaged(c)
+}
+
+// superviseUnmanaged periodically re-checks the readiness probe of an
+// adopted-unmanaged command. It returns on user cancellation; on the first
+// failed probe it hands off to takeOverUnmanaged and returns.
+func (e *Engine) superviseUnmanaged(c *command) {
+	p, probeTimeout, probeInterval := e.buildProbe(c.cfg.Readiness)
+	if p == nil {
+		return
+	}
+
+	e.mu.Lock()
+	quit := c.quit
+	e.mu.Unlock()
+
+	ticker := time.NewTicker(probeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-quit:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+			err := p.Check(ctx)
+			cancel()
+			if err != nil {
+				e.takeOverUnmanaged(c, err)
+				return
+			}
+		}
+	}
+}
+
+// takeOverUnmanaged clears the unmanaged flag and performs a full managed
+// start (fetch source, run setup, launch process) now that the previously-
+// adopted external process is no longer healthy. It swaps in a fresh
+// c.startDone around the start, mirroring how relaunch does it for restarts.
+func (e *Engine) takeOverUnmanaged(c *command, causeErr error) {
+	e.mu.Lock()
+	c.unmanaged = false
+	c.startDone = make(chan struct{})
+	e.mu.Unlock()
+
+	e.logCmdWarn(c, fmt.Sprintf("unmanaged %s is no longer healthy (%v) — starting managed instance", c.cfg.Name, causeErr))
+	e.setCmdState(c.cfg.Name, CmdStarting, nil)
+	e.doStart(c)
+	close(c.startDone)
+}
+
+// doStart fetches the source, runs setup, launches the process and (for
+// services) waits for the readiness probe. Unlike startCommand it does not
+// manage c.startDone — callers (startCommand, takeOverUnmanaged) own that.
+func (e *Engine) doStart(c *command) {
+	ctx := context.Background()
 
 	runDir, err := e.fetchSource(ctx, c.cfg, c.writer)
 	if err != nil {
@@ -815,6 +915,15 @@ func appendSubdir(dir, subdir string) (string, error) {
 // Must be called while c.writer is still open.
 func (e *Engine) logCmdError(c *command, err error) {
 	_, _ = fmt.Fprintf(c.writer, "\nenv-starter: %v\n", err)
+}
+
+// logCmdWarn writes a red (ANSI SGR) human-readable warning line to the
+// command log (TUI panel + log file). Used for non-fatal but noteworthy
+// conditions, such as adopting or taking over an unmanaged command.
+// internal/termsafe preserves SGR sequences, so the color survives into both
+// the TUI's log pane and the headless CLI's tailed output.
+func (e *Engine) logCmdWarn(c *command, msg string) {
+	_, _ = fmt.Fprintf(c.writer, "\n\x1b[31menv-starter: %s\x1b[0m\n", msg)
 }
 
 func (e *Engine) logPath(cmdName string) string {

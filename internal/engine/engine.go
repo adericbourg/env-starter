@@ -148,6 +148,13 @@ type command struct {
 	state CmdState
 	err   error
 
+	// unmanaged is true while this command is healthy only because its
+	// readiness probe already passed before env-starter spawned anything —
+	// i.e. an external process is already satisfying it. No source was
+	// fetched, no setup ran, and c.cmd/c.runDir are unset. Cleared once the
+	// probe fails and env-starter takes over with a real managed start.
+	unmanaged bool
+
 	// holders is the set of environment names currently referencing this command.
 	// The command is torn down only when it becomes empty. Per-env tracking makes
 	// acquire/release idempotent, so a retry can skip healthy commands without
@@ -334,6 +341,19 @@ func (e *Engine) CmdRetries(command string) (attempts, max int) {
 		return c.retries, c.policy.maxRetries
 	}
 	return 0, 0
+}
+
+// IsUnmanaged reports whether command is currently healthy only because an
+// external process already satisfied its readiness probe before env-starter
+// spawned anything. False for a command that has never been started, that
+// env-starter actually launched itself, or that is unknown.
+func (e *Engine) IsUnmanaged(command string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if c, ok := e.commands[command]; ok {
+		return c.unmanaged
+	}
+	return false
 }
 
 // Logs returns a copy of the command's ring-buffer lines, or an empty slice if

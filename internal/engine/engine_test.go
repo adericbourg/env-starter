@@ -902,10 +902,7 @@ func TestSuperviseService_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t
 	dir := t.TempDir()
 	liveMarker := filepath.Join(dir, "live")
 	restartedMarker := filepath.Join(dir, "restarted") // created on second run
-
-	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
-		t.Fatalf("create live marker: %v", err)
-	}
+	startedMarker := filepath.Join(dir, "started")
 
 	cfg := &config.Config{
 		Commands: []config.Command{
@@ -913,8 +910,11 @@ func TestSuperviseService_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t
 				Name:   "svc",
 				Type:   "service",
 				Source: localSource(dir),
-				// Stay alive; the probe checks the marker, not the process health.
-				Run: fmt.Sprintf(`touch %q; sleep 30`, restartedMarker),
+				// Create the live marker on first launch only — so the command is
+				// not already "up" before env-starter spawns it, which would trigger
+				// unmanaged adoption instead of a normal managed start — then stay
+				// alive. The probe checks the marker, not the process health.
+				Run: fmt.Sprintf(`if [ ! -f %q ]; then touch %q; touch %q; fi; touch %q; sleep 30`, startedMarker, startedMarker, liveMarker, restartedMarker),
 				Readiness: &config.Readiness{
 					Shell: fmt.Sprintf("test -f %q", liveMarker),
 				},
@@ -1304,10 +1304,7 @@ func TestSuperviseTask_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *t
 	// the marker is recreated so the relaunched task passes the probe again.
 	dir := t.TempDir()
 	liveMarker := filepath.Join(dir, "live")
-
-	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
-		t.Fatalf("create live marker: %v", err)
-	}
+	startedMarker := filepath.Join(dir, "started")
 
 	cfg := &config.Config{
 		Commands: []config.Command{
@@ -1315,8 +1312,12 @@ func TestSuperviseTask_whenLivenessProbeFailsAfterHealthy_restartsToHealthy(t *t
 				Name:   "tunnel",
 				Type:   "task",
 				Source: localSource(dir),
-				// Exit 0 immediately; the probe checks an external marker file.
-				Run: "exit 0",
+				// Create the marker on the first run only — so the task is not
+				// already "up" before env-starter spawns it, which would trigger
+				// unmanaged adoption instead of a normal managed start — then exit
+				// 0. Later restarts skip recreating it, so it can still be removed
+				// externally to simulate a liveness failure.
+				Run: fmt.Sprintf(`if [ ! -f %q ]; then touch %q; touch %q; fi; exit 0`, startedMarker, startedMarker, liveMarker),
 				Readiness: &config.Readiness{
 					Shell: fmt.Sprintf("test -f %q", liveMarker),
 				},
@@ -1649,11 +1650,8 @@ func TestStartEnvironment_whenRetryDownSharedCommand_relaunchesForBothEnvs(t *te
 	// and recover both envs to running.
 	dir := t.TempDir()
 	liveMarker := filepath.Join(dir, "live")
+	startedMarker := filepath.Join(dir, "started")
 	probeTimeout := config.Duration{Duration: 100 * time.Millisecond}
-
-	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
-		t.Fatalf("create live marker: %v", err)
-	}
 
 	cfg := &config.Config{
 		Commands: []config.Command{
@@ -1661,7 +1659,10 @@ func TestStartEnvironment_whenRetryDownSharedCommand_relaunchesForBothEnvs(t *te
 				Name:   "shared",
 				Type:   "service",
 				Source: localSource(dir),
-				Run:    "sleep 30",
+				// Create the live marker on first launch only — so the command is
+				// not already "up" before env-starter spawns it, which would
+				// trigger unmanaged adoption instead of a normal managed start.
+				Run: fmt.Sprintf(`if [ ! -f %q ]; then touch %q; touch %q; fi; sleep 30`, startedMarker, startedMarker, liveMarker),
 				Readiness: &config.Readiness{
 					Shell:   fmt.Sprintf("test -f %q", liveMarker),
 					Timeout: &probeTimeout,
@@ -1768,10 +1769,7 @@ func TestSuperviseTask_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
 	// all retries and ending in CmdError.
 	dir := t.TempDir()
 	liveMarker := filepath.Join(dir, "live")
-
-	if err := os.WriteFile(liveMarker, []byte{}, 0o600); err != nil {
-		t.Fatalf("create live marker: %v", err)
-	}
+	startedMarker := filepath.Join(dir, "started")
 
 	max := 2
 	enabled := true
@@ -1784,7 +1782,11 @@ func TestSuperviseTask_whenMaxRetriesExceeded_marksCmdError(t *testing.T) {
 				Name:   "tunnel",
 				Type:   "task",
 				Source: localSource(dir),
-				Run:    "exit 0",
+				// Create the marker on first run only — so the task is not already
+				// "up" before env-starter spawns it, which would trigger unmanaged
+				// adoption instead of a normal managed start. Restarts must not
+				// recreate it, so every retry's probe keeps failing as intended.
+				Run: fmt.Sprintf(`if [ ! -f %q ]; then touch %q; touch %q; fi; exit 0`, startedMarker, startedMarker, liveMarker),
 				Readiness: &config.Readiness{
 					Shell:   fmt.Sprintf("test -f %q", liveMarker),
 					Timeout: &probeTimeout,
