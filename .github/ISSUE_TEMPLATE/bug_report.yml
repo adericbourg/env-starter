@@ -1,0 +1,81 @@
+name: Bug report
+description: Report something that isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug.
+
+        If your logs might contain secrets (tokens, passwords echoed by a
+        command), strip them before pasting — see
+        [Command log confidentiality](https://github.com/adericbourg/env-starter/blob/main/SECURITY.md#command-log-confidentiality).
+        Log files live under `os.UserCacheDir()/env-starter/`.
+
+  - type: input
+    id: version
+    attributes:
+      label: env-starter version
+      description: Output of `env-starter --version`
+      placeholder: v1.2.3
+    validations:
+      required: true
+
+  - type: input
+    id: os-arch
+    attributes:
+      label: OS / architecture
+      placeholder: macOS 15 / arm64
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: The `env-starter` config (or a minimal snippet) that reproduces the issue
+      render: yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: What did you run, and in what order?
+      placeholder: |
+        1. `env-starter run my-app`
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: Command output, daemon logs, or terminal output. Redact any secrets first.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
