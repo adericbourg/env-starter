@@ -238,6 +238,15 @@ type Engine struct {
 	commands map[string]*command
 	envState map[string]EnvState
 
+	// applyMu serialises applyReloadPlan executions against each other (not
+	// against the config swap in ApplyConfig, which always completes
+	// immediately). Two rapid reloads: both swaps happen right away, and the
+	// second plan queues behind the first — since every plan phase re-checks
+	// liveness at execution time, a plan computed against an intermediate
+	// config that a later reload has already superseded just degrades to a
+	// no-op rather than misbehaving.
+	applyMu sync.Mutex
+
 	// authGate serializes the launch-to-ready window of every command flagged
 	// InteractiveAuth, so their interactive browser SSO logins never overlap
 	// (most providers reject parallel login attempts). Commands without the
