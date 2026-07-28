@@ -479,6 +479,7 @@ func (e *Engine) startMonitor(c *command) {
 	if c.quit == nil {
 		c.quit = make(chan struct{})
 	}
+	c.monitorDone = make(chan struct{})
 	e.mu.Unlock()
 	if c.cfg.Type == "task" {
 		go e.superviseTask(c)
@@ -496,6 +497,11 @@ func (e *Engine) startMonitor(c *command) {
 // On process exit or liveness failure it attempts a restart (if enabled);
 // on cancellation it returns immediately, letting the stop path win.
 func (e *Engine) superviseService(c *command) {
+	e.mu.Lock()
+	done := c.monitorDone
+	e.mu.Unlock()
+	defer close(done)
+
 	for {
 		// Snapshot the current channels under the lock so we observe fresh
 		// channels if a previous restart cycle swapped them in.
@@ -556,6 +562,11 @@ func (e *Engine) superviseService(c *command) {
 // On liveness failure it attempts a restart (re-run the task, then re-probe);
 // on cancellation it returns immediately.
 func (e *Engine) superviseTask(c *command) {
+	e.mu.Lock()
+	done := c.monitorDone
+	e.mu.Unlock()
+	defer close(done)
+
 	for {
 		e.mu.Lock()
 		quit := c.quit
@@ -600,11 +611,17 @@ func (e *Engine) superviseTask(c *command) {
 func (e *Engine) runLiveness(c *command, stop <-chan struct{}) <-chan error {
 	out := make(chan error, 1) // buffered so the goroutine never leaks
 	p, probeTimeout, _ := e.buildProbe(c.cfg.Readiness)
-	if p == nil || c.policy.checkInterval <= 0 {
+	interval := c.policy.checkInterval
+	if p == nil || interval <= 0 {
 		return out // never fires
 	}
 	go func() {
-		ticker := time.NewTicker(c.policy.checkInterval)
+		// interval is captured here rather than read again inside the
+		// goroutine: c.policy can be mutated by restartCommandWithNewConfig
+		// once the monitor goroutine (the caller of runLiveness) has fully
+		// exited, and this ticker goroutine's lifetime is not otherwise
+		// bounded by that exit.
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

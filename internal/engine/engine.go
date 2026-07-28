@@ -187,6 +187,18 @@ type command struct {
 	runDir    string
 	startDone chan struct{} // closed once the command reaches a terminal-start state (healthy/done/error)
 
+	// monitorDone is closed by superviseService/superviseTask exactly once,
+	// right before that goroutine returns for good. startDone alone is not
+	// enough to know the monitor goroutine has stopped touching c.cfg/c.policy
+	// — it only tracks a single launch attempt, while the monitor goroutine
+	// can still be mid-loop (about to read c.cfg.Readiness/c.policy again in
+	// runLiveness) after quit is closed. A caller that is about to mutate a
+	// live command's cfg/policy (see restartCommandWithNewConfig) must wait on
+	// this after closing quit. Created fresh by startMonitor; nil until the
+	// command's first monitor is started, so callers must check for nil
+	// before receiving (a nil channel receive blocks forever).
+	monitorDone chan struct{}
+
 	// exited is closed exactly once by the reaper goroutine when the process
 	// has exited; exitErr then holds the process's exit error (nil on exit 0).
 	//
