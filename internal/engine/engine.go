@@ -206,6 +206,11 @@ type command struct {
 }
 
 // Engine supervises environments and their commands.
+//
+// cfg, cmdOf, envsOf, and envEnvOf are guarded by mu but are never mutated in
+// place: a config reload (see ApplyConfig) replaces each with a newly built
+// value under the lock, so a reader that copies a reference while holding mu
+// keeps a valid, immutable snapshot after releasing it.
 type Engine struct {
 	cfg *config.Config
 
@@ -229,9 +234,8 @@ type Engine struct {
 	// underneath it, so there is no lock-ordering deadlock.
 	authGate sync.Mutex
 
-	// envOrder / cmdOf preserve config order and map command names to configs.
-	envOrder []string
-	cmdOf    map[string]config.Command
+	// cmdOf maps command names to their config.
+	cmdOf map[string]config.Command
 
 	// envsOf maps a command name to the names of all environments whose workflow
 	// includes it. Used by the restart owner goroutine (which outlives
@@ -264,12 +268,10 @@ func New(cfg *config.Config) (*Engine, error) {
 		cmdOf[c.Name] = c
 	}
 
-	envOrder := make([]string, 0, len(cfg.Environments))
 	envState := make(map[string]EnvState, len(cfg.Environments))
 	envsOf := make(map[string][]string)
 	envEnvOf := make(map[string]map[string]string, len(cfg.Environments))
 	for _, env := range cfg.Environments {
-		envOrder = append(envOrder, env.Name)
 		envState[env.Name] = EnvStopped
 		envEnvOf[env.Name] = env.Env
 		for _, step := range env.Workflow {
@@ -292,7 +294,6 @@ func New(cfg *config.Config) (*Engine, error) {
 		ProbeInterval: defaultProbeTick,
 		commands:      make(map[string]*command),
 		envState:      envState,
-		envOrder:      envOrder,
 		cmdOf:         cmdOf,
 		envsOf:        envsOf,
 		envEnvOf:      envEnvOf,
@@ -303,6 +304,8 @@ func New(cfg *config.Config) (*Engine, error) {
 
 // Environments returns the environments in config order.
 func (e *Engine) Environments() []EnvInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	out := make([]EnvInfo, 0, len(e.cfg.Environments))
 	for _, env := range e.cfg.Environments {
 		out = append(out, EnvInfo{Name: env.Name, Description: env.Description, AutoStart: env.AutoStart})
@@ -313,6 +316,8 @@ func (e *Engine) Environments() []EnvInfo {
 // WorkflowCommands returns the command names in the given environment's
 // workflow order. Returns nil for an unknown environment.
 func (e *Engine) WorkflowCommands(env string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	for _, ev := range e.cfg.Environments {
 		if ev.Name == env {
 			out := make([]string, 0, len(ev.Workflow))
@@ -444,6 +449,8 @@ func (e *Engine) emit(ev Event) {
 }
 
 func (e *Engine) findEnv(name string) (config.Environment, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	for _, env := range e.cfg.Environments {
 		if env.Name == name {
 			return env, true

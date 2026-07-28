@@ -58,14 +58,13 @@ func (e *Engine) resolveEnvironmentEnv(envName string) []ResolvedEnvVar {
 }
 
 func (e *Engine) resolveCommandEnv(command string) []ResolvedEnvVar {
+	e.mu.Lock()
 	cmdCfg, ok := e.cmdOf[command]
+	c, exists := e.commands[command]
+	e.mu.Unlock()
 	if !ok {
 		return nil
 	}
-
-	e.mu.Lock()
-	c, exists := e.commands[command]
-	e.mu.Unlock()
 
 	var holderEnv map[string]string
 	if exists {

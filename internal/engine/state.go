@@ -41,7 +41,11 @@ func (e *Engine) setEnvState(name string, state EnvState) {
 // restart completes (success or give-up), since runEnvironment has already
 // returned and cannot be used.
 func (e *Engine) recomputeEnvsFor(cmdName string) {
-	for _, envName := range e.envsOf[cmdName] {
+	e.mu.Lock()
+	envNames := append([]string(nil), e.envsOf[cmdName]...)
+	e.mu.Unlock()
+
+	for _, envName := range envNames {
 		if !e.isEnvActive(envName) {
 			// Never started (or already stopped): a command it merely shares with
 			// another environment must not derive its state. Keep it stopped.

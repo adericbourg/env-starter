@@ -115,9 +115,8 @@ func (e *Engine) runEnvironment(envCfg config.Environment) {
 // command that envName already holds (e.g. on retry) is a no-op that simply
 // reports the current health. Returns true if the command is healthy/done.
 func (e *Engine) acquireAndStart(envName, name string) bool {
-	cmdCfg := e.cmdOf[name]
-
 	e.mu.Lock()
+	cmdCfg := e.cmdOf[name]
 	c, exists := e.commands[name]
 	// A previously stopped/errored command with no remaining holders is recreated
 	// fresh so a re-start gets a new process, channels and log ring.
@@ -985,15 +984,9 @@ func (e *Engine) effectiveEnv(c *command) map[string]string {
 // while still sharing this exact holder-union logic with the launch path.
 func (e *Engine) holderEnvUnion(c *command) map[string]string {
 	e.mu.Lock()
-	holders := make([]string, 0, len(c.holders))
-	for h := range c.holders {
-		holders = append(holders, h)
-	}
-	e.mu.Unlock()
-
+	defer e.mu.Unlock()
 	out := make(map[string]string)
-	for _, h := range holders {
-		// envEnvOf is read-only after New (like cmdOf/envsOf): safe without e.mu.
+	for h := range c.holders {
 		for k, v := range e.envEnvOf[h] {
 			out[k] = v
 		}
