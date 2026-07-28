@@ -23,6 +23,7 @@ type fakeController struct {
 	cmdState     map[string]engine.CmdState
 	cmdRetries   map[string][2]int // [attempts, max]
 	cmdUnmanaged map[string]bool
+	logPaths     map[string]string // override for LogPath; missing key falls back to the default
 	logs         map[string][]string
 	events       chan engine.Event
 	stopping     []engine.StoppingCommand
@@ -98,7 +99,12 @@ func (f *fakeController) IsUnmanaged(cmd string) bool { return f.cmdUnmanaged[cm
 
 func (f *fakeController) Logs(cmd string) []string { return f.logs[cmd] }
 
-func (f *fakeController) LogPath(cmd string) string { return "/tmp/logs/" + cmd + ".log" }
+func (f *fakeController) LogPath(cmd string) string {
+	if path, ok := f.logPaths[cmd]; ok {
+		return path
+	}
+	return "/tmp/logs/" + cmd + ".log"
+}
 
 func (f *fakeController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
 	if command != "" {
@@ -290,8 +296,9 @@ func TestUpdate_whenS_callsStartEnvironment(t *testing.T) {
 }
 
 func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
-	// Given
+	// Given a running environment selected.
 	ctrl := newFakeController()
+	ctrl.envState["alpha"] = engine.EnvRunning
 	m := seed(New(ctrl))
 
 	// When
@@ -300,6 +307,22 @@ func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
 	// Then
 	if len(ctrl.stoppedEnvs) != 1 || ctrl.stoppedEnvs[0] != "alpha" {
 		t.Errorf("expected StopEnvironment('alpha'), got %v", ctrl.stoppedEnvs)
+	}
+	_ = m
+}
+
+func TestUpdate_whenS_andEnvRunning_isNoOp(t *testing.T) {
+	// Given the selected environment is already running.
+	ctrl := newFakeController()
+	ctrl.envState["alpha"] = engine.EnvRunning
+	m := seed(New(ctrl))
+
+	// When
+	m = sendKey(m, "s")
+
+	// Then
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call, got %v", ctrl.startedEnvs)
 	}
 	_ = m
 }
@@ -368,6 +391,21 @@ func TestUpdate_whenX_withLogsFocused_isNoOp(t *testing.T) {
 	_ = m
 }
 
+func TestUpdate_whenX_andEnvStopped_isNoOp(t *testing.T) {
+	// Given the selected environment is already stopped (the default fixture state).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	m = sendKey(m, "x")
+
+	// Then
+	if len(ctrl.stoppedEnvs) != 0 {
+		t.Errorf("expected no StopEnvironment call, got %v", ctrl.stoppedEnvs)
+	}
+	_ = m
+}
+
 func TestUpdate_whenLowerR_withLogsFocused_refreshesLogView(t *testing.T) {
 	// Given a model with the logs pane focused and svc-a's logs already rendered.
 	ctrl := newFakeController()
@@ -416,8 +454,9 @@ func TestUpdate_whenLowerL_doesNotChangeFocus(t *testing.T) {
 }
 
 func TestUpdate_whenR_withCmdsFocused_callsRestartCommand(t *testing.T) {
-	// Given a model with the commands pane focused and the first command selected.
+	// Given a model with the commands pane focused and the first (running) command selected.
 	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdHealthy
 	m := seed(New(ctrl))
 	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a" (env "alpha")
 
@@ -450,6 +489,25 @@ func TestUpdate_whenR_andCmdStopped_isNoOp(t *testing.T) {
 	// Given a model with the commands pane focused and the selected command stopped.
 	ctrl := newFakeController()
 	ctrl.cmdState = map[string]engine.CmdState{"svc-a": engine.CmdStopped}
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a" (env "alpha")
+
+	// When
+	m = sendKey(m, "R")
+
+	// Then
+	if len(ctrl.restartedCmds) != 0 {
+		t.Errorf("expected no RestartCommand call, got %v", ctrl.restartedCmds)
+	}
+	if m.notice != "" {
+		t.Errorf("expected no notice, got %q", m.notice)
+	}
+}
+
+func TestUpdate_whenR_andCmdPending_isNoOp(t *testing.T) {
+	// Given a model with the commands pane focused and the selected command never started
+	// (CmdPending, the default fixture state).
+	ctrl := newFakeController()
 	m := seed(New(ctrl))
 	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a" (env "alpha")
 
@@ -1052,6 +1110,29 @@ func TestUpdate_whenCtrlLNotOnLogsPane_doesNothing(t *testing.T) {
 	// Then — opener must NOT have been called
 	if spy.calledWith != "" {
 		t.Errorf("expected opener not called, but got calledWith=%q", spy.calledWith)
+	}
+}
+
+func TestUpdate_whenCtrlLAndNoLogPath_doesNothing(t *testing.T) {
+	// Given — logs pane focused on svc-a, but its log path is unknown (e.g. daemon
+	// hasn't reported one yet).
+	ctrl := newFakeController()
+	ctrl.logPaths = map[string]string{"svc-a": ""}
+	spy := &openerSpy{}
+	m := seed(New(ctrl))
+	m.openFile = spy.open
+	m.focused = focusLogs
+
+	// When
+	updated, _ := m.Update(tea.KeyPressMsg{Code: 'l', Mod: tea.ModCtrl})
+	m = updated.(Model)
+
+	// Then — opener must NOT have been called, and no notice is set.
+	if spy.calledWith != "" {
+		t.Errorf("expected opener not called, but got calledWith=%q", spy.calledWith)
+	}
+	if m.notice != "" {
+		t.Errorf("expected no notice, got %q", m.notice)
 	}
 }
 

@@ -483,19 +483,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m = m.moveCursorDown()
 
 	case "s":
-		if m.focused == focusEnvs {
-			envs := m.ctrl.Environments()
-			if m.envCursor < len(envs) {
-				_ = m.ctrl.StartEnvironment(envs[m.envCursor].Name)
-			}
+		if m.canStartSelectedEnv() {
+			_ = m.ctrl.StartEnvironment(m.selectedEnvName())
 		}
 
 	case "x":
-		if m.focused == focusEnvs {
-			envs := m.ctrl.Environments()
-			if m.envCursor < len(envs) {
-				_ = m.ctrl.StopEnvironment(envs[m.envCursor].Name)
-			}
+		if m.canStopSelectedEnv() {
+			_ = m.ctrl.StopEnvironment(m.selectedEnvName())
 		}
 
 	case "r":
@@ -504,24 +498,22 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "R":
-		if m.focused == focusCmds {
-			if cmd := m.selectedCommand(); cmd != "" && m.ctrl.CmdState(cmd) != engine.CmdStopped {
-				_ = m.ctrl.RestartCommand(cmd)
-				m.notice = fmt.Sprintf("Restarting %s…", cmd)
-				return m, noticeResetCmd()
-			}
+		if m.canRestartSelectedCommand() {
+			cmd := m.selectedCommand()
+			_ = m.ctrl.RestartCommand(cmd)
+			m.notice = fmt.Sprintf("Restarting %s…", cmd)
+			return m, noticeResetCmd()
 		}
 
 	case "e":
+		if !m.canOpenEnvInspector() {
+			break
+		}
 		switch m.focused {
 		case focusEnvs:
-			if name := m.selectedEnvName(); name != "" {
-				return m.openEnvInspector("", name)
-			}
+			return m.openEnvInspector("", m.selectedEnvName())
 		case focusCmds, focusLogs:
-			if cmd := m.selectedCommand(); cmd != "" {
-				return m.openEnvInspector(cmd, "")
-			}
+			return m.openEnvInspector(m.selectedCommand(), "")
 		}
 
 	case "c":
@@ -746,13 +738,10 @@ func (m Model) handleEnvInspectorDetailKey(msg tea.KeyPressMsg) (tea.Model, tea.
 // command is selected. A transient notice is shown in the footer to confirm the
 // outcome.
 func (m Model) openSelectedLog() (tea.Model, tea.Cmd) {
-	if m.focused != focusLogs {
+	if !m.canOpenSelectedLog() {
 		return m, nil
 	}
 	cmd := m.selectedCommand()
-	if cmd == "" {
-		return m, nil
-	}
 	path := m.ctrl.LogPath(cmd)
 	if err := m.openFile(path); err != nil {
 		m.notice = fmt.Sprintf("could not open log: %s", err)
@@ -828,6 +817,88 @@ func (m Model) selectedCommand() string {
 		return ""
 	}
 	return cmds[m.cmdCursor]
+}
+
+// canStartSelectedEnv reports whether "s" would have an effect on the
+// currently selected environment.
+func (m Model) canStartSelectedEnv() bool {
+	if m.focused != focusEnvs {
+		return false
+	}
+	name := m.selectedEnvName()
+	if name == "" {
+		return false
+	}
+	switch m.ctrl.EnvState(name) {
+	case engine.EnvRunning, engine.EnvStarting:
+		return false
+	default:
+		return true
+	}
+}
+
+// canStopSelectedEnv reports whether "x" would have an effect on the
+// currently selected environment.
+func (m Model) canStopSelectedEnv() bool {
+	if m.focused != focusEnvs {
+		return false
+	}
+	name := m.selectedEnvName()
+	if name == "" {
+		return false
+	}
+	switch m.ctrl.EnvState(name) {
+	case engine.EnvStopped, engine.EnvStopping:
+		return false
+	default:
+		return true
+	}
+}
+
+// canRestartSelectedCommand reports whether "R" would have an effect on the
+// currently selected command. Mirrors Engine.RestartCommand's holder check:
+// CmdPending (never started) and CmdStopped (holders released) are the states
+// where the command has no holders and a restart is rejected.
+func (m Model) canRestartSelectedCommand() bool {
+	if m.focused != focusCmds {
+		return false
+	}
+	cmd := m.selectedCommand()
+	if cmd == "" {
+		return false
+	}
+	switch m.ctrl.CmdState(cmd) {
+	case engine.CmdPending, engine.CmdStopped:
+		return false
+	default:
+		return true
+	}
+}
+
+// canOpenSelectedLog reports whether "^L" would have an effect on the
+// currently selected command's log file.
+func (m Model) canOpenSelectedLog() bool {
+	if m.focused != focusLogs {
+		return false
+	}
+	cmd := m.selectedCommand()
+	if cmd == "" {
+		return false
+	}
+	return m.ctrl.LogPath(cmd) != ""
+}
+
+// canOpenEnvInspector reports whether "e" would have an effect given the
+// currently focused pane and selection.
+func (m Model) canOpenEnvInspector() bool {
+	switch m.focused {
+	case focusEnvs:
+		return m.selectedEnvName() != ""
+	case focusCmds, focusLogs:
+		return m.selectedCommand() != ""
+	default:
+		return false
+	}
 }
 
 // clampCursors ensures envCursor and cmdCursor remain within the bounds of the
