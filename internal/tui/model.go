@@ -505,7 +505,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case "R":
 		if m.focused == focusCmds {
-			if cmd := m.selectedCommand(); cmd != "" {
+			if cmd := m.selectedCommand(); cmd != "" && m.ctrl.CmdState(cmd) != engine.CmdStopped {
 				_ = m.ctrl.RestartCommand(cmd)
 				m.notice = fmt.Sprintf("Restarting %s…", cmd)
 				return m, noticeResetCmd()

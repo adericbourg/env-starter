@@ -446,6 +446,25 @@ func TestUpdate_whenR_withoutCmdsFocused_isNoOp(t *testing.T) {
 	_ = m
 }
 
+func TestUpdate_whenR_andCmdStopped_isNoOp(t *testing.T) {
+	// Given a model with the commands pane focused and the selected command stopped.
+	ctrl := newFakeController()
+	ctrl.cmdState = map[string]engine.CmdState{"svc-a": engine.CmdStopped}
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds; cmdCursor 0 -> "svc-a" (env "alpha")
+
+	// When
+	m = sendKey(m, "R")
+
+	// Then
+	if len(ctrl.restartedCmds) != 0 {
+		t.Errorf("expected no RestartCommand call, got %v", ctrl.restartedCmds)
+	}
+	if m.notice != "" {
+		t.Errorf("expected no notice, got %q", m.notice)
+	}
+}
+
 func TestUpdate_whenQ_doesNotQuit(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
