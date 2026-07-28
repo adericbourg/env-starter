@@ -151,7 +151,9 @@ spaces. This is enforced because the name is also used as the command's log file
 outside the logs directory.
 
 ```yaml
-name: database
+env-starter:
+  commands:
+    - name: database
 ```
 
 ### `type`
@@ -167,7 +169,10 @@ Controls the command's lifecycle:
 - **`task`** — runs to completion. A non-zero exit marks the command `error` and blocks its dependents. Stopped by running its `teardown` command (if declared). A task with no readiness probe is considered healthy (`done`) when it exits 0. A task with a readiness probe is considered healthy when its process exits 0 **and** the probe passes — useful for tasks that background a side effect (e.g. a tunnel) and return immediately.
 
 ```yaml
-type: service
+env-starter:
+  commands:
+    - name: database
+      type: service
 ```
 
 ### `setup`
@@ -182,10 +187,13 @@ An ordered list of prep commands to run **before** `run`. Each command is execut
 Use this to express multi-step startup sequences (e.g. installing dependencies before starting a server) while keeping `run` as the single long-lived monitored process:
 
 ```yaml
-setup:
-  - yarn install
-  - yarn build
-run: yarn start
+env-starter:
+  commands:
+    - name: app
+      setup:
+        - yarn install
+        - yarn build
+      run: yarn start
 ```
 
 All setup steps share the command's `env` and log stream. Setup steps run while the command is in the `starting` state, so dependents correctly wait for the full sequence (setup + run + readiness probe) to complete before starting.
@@ -200,7 +208,10 @@ All setup steps share the command's `env` and log stream. Setup steps run while 
 The shell command to execute. Runs inside the directory resolved from `source` (and `source.subdir` if set). Readiness probes and service health monitoring apply to this command.
 
 ```yaml
-run: docker compose up
+env-starter:
+  commands:
+    - name: database
+      run: docker compose up
 ```
 
 ### `teardown`
@@ -216,13 +227,19 @@ A shell command to run when the command is stopped. Runs in the same working dir
 - **Task**: runs after the task exits.
 
 ```yaml
-# gracefully stop a named Docker container before killing the foreground client
-teardown: docker stop mariadb-dev
+env-starter:
+  commands:
+    - name: database
+      # gracefully stop a named Docker container before killing the foreground client
+      teardown: docker stop mariadb-dev
 ```
 
 ```yaml
-# or run a cleanup script for a task
-teardown: ./migrate.sh down
+env-starter:
+  commands:
+    - name: migrate
+      # or run a cleanup script for a task
+      teardown: ./migrate.sh down
 ```
 
 ### `env`
@@ -235,9 +252,12 @@ teardown: ./migrate.sh down
 Extra environment variables injected into the process. Values must be strings.
 
 ```yaml
-env:
-  PGPORT: "5432"
-  LOG_LEVEL: debug
+env-starter:
+  commands:
+    - name: database
+      env:
+        PGPORT: "5432"
+        LOG_LEVEL: debug
 ```
 
 ### `interactive-auth`
@@ -268,7 +288,10 @@ Notes:
   `depends-on` between them in the workflow.
 
 ```yaml
-interactive-auth: true
+env-starter:
+  commands:
+    - name: teleport
+      interactive-auth: true
 ```
 
 ### `source`
@@ -317,12 +340,15 @@ Clone a GitHub repository, or refresh an existing clone to the top of its ref.
 Commands that share the same `repo` and `branch` reuse a single cached clone (safe for concurrent startup). Commands that share the same `repo` but use different values for `branch` each get their own separate clone. Access to each cached clone is serialized by a sibling `<clone-dir>.lock` file, so concurrent `env-starter` processes sharing the same cache never race on it.
 
 ```yaml
-source:
-  github:
-    repo: acme/infra
-    branch: main
-    method: ssh     # optional
-  subdir: scripts/database
+env-starter:
+  commands:
+    - name: database
+      source:
+        github:
+          repo: acme/infra
+          branch: main
+          method: ssh     # optional
+        subdir: scripts/database
 ```
 
 ### `source.url`
@@ -347,11 +373,14 @@ Note: `url` is a **scalar string** at the top level of the `source` mapping, not
 > at 2 GiB, and only follows `https` redirects.
 
 ```yaml
-source:
-  url: https://releases.example.com/auth-gateway/bin
-  checksum:
-    alg: sha256
-    value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+env-starter:
+  commands:
+    - name: auth-gateway
+      source:
+        url: https://releases.example.com/auth-gateway/bin
+        checksum:
+          alg: sha256
+          value: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 ```
 
 ### `source.local`
@@ -363,8 +392,11 @@ Use a directory already present on disk. The path is used as-is; no caching or r
 | `local` | string | yes | Absolute or relative filesystem path. |
 
 ```yaml
-source:
-  local: /home/user/scripts/migrate
+env-starter:
+  commands:
+    - name: migrate
+      source:
+        local: /home/user/scripts/migrate
 ```
 
 ### `source.subdir`
@@ -378,10 +410,13 @@ source:
 A path within the fetched/cloned/local source to use as the actual working directory for `run` and `teardown`.
 
 ```yaml
-source:
-  github:
-    repo: acme/infra
-  subdir: services/database
+env-starter:
+  commands:
+    - name: database
+      source:
+        github:
+          repo: acme/infra
+        subdir: services/database
 ```
 
 ---
@@ -421,8 +456,11 @@ Exactly one probe type must be set (`tcp` or `shell`). Specifying more than one 
 Polls the given TCP address. The command is considered healthy when a connection is accepted.
 
 ```yaml
-readiness:
-  tcp: "localhost:5432"
+env-starter:
+  commands:
+    - name: database
+      readiness:
+        tcp: "localhost:5432"
 ```
 
 ### `readiness.shell`
@@ -435,8 +473,11 @@ readiness:
 Runs the given shell command repeatedly. The command is considered healthy when this probe exits with code 0.
 
 ```yaml
-readiness:
-  shell: "pg_isready -h localhost -p 5432"
+env-starter:
+  commands:
+    - name: database
+      readiness:
+        shell: "pg_isready -h localhost -p 5432"
 ```
 
 ### `readiness.timeout`
@@ -450,9 +491,12 @@ readiness:
 Maximum time to wait for the readiness probe to succeed. If the probe does not pass within this window, the command is marked `timeout`.
 
 ```yaml
-readiness:
-  tcp: "localhost:5432"
-  timeout: 60s
+env-starter:
+  commands:
+    - name: database
+      readiness:
+        tcp: "localhost:5432"
+        timeout: 60s
 ```
 
 ### `readiness.interval`
@@ -466,9 +510,12 @@ readiness:
 How long to wait between probe attempts.
 
 ```yaml
-readiness:
-  tcp: "localhost:5432"
-  interval: 2s
+env-starter:
+  commands:
+    - name: database
+      readiness:
+        tcp: "localhost:5432"
+        interval: 2s
 ```
 
 ---
@@ -502,8 +549,11 @@ If the command has no `readiness` probe, only crash-based restart is active for 
 Set to `false` to disable auto-restart for a specific command while keeping the block for other settings.
 
 ```yaml
-restart:
-  enabled: false
+env-starter:
+  commands:
+    - name: database
+      restart:
+        enabled: false
 ```
 
 ### `restart.max-retries`
@@ -517,8 +567,11 @@ restart:
 Maximum number of restart attempts before the command is marked `error`. Negative values are rejected.
 
 ```yaml
-restart:
-  max-retries: 5
+env-starter:
+  commands:
+    - name: database
+      restart:
+        max-retries: 5
 ```
 
 ### `restart.backoff-base`
@@ -532,8 +585,11 @@ restart:
 The delay before the first retry. Each subsequent attempt doubles this value (exponential backoff). With the default of `1s` the delays are 1s, 2s, 4s.
 
 ```yaml
-restart:
-  backoff-base: 500ms
+env-starter:
+  commands:
+    - name: database
+      restart:
+        backoff-base: 500ms
 ```
 
 ### `restart.check-interval`
@@ -547,47 +603,52 @@ restart:
 How often the readiness probe is re-run after the command is healthy (liveness check). Set to `0` to disable liveness checking while still allowing crash-based restart. Has no effect if the command has no `readiness` probe.
 
 ```yaml
-restart:
-  check-interval: 30s
+env-starter:
+  commands:
+    - name: database
+      restart:
+        check-interval: 30s
 ```
 
 **Full example — service:**
 
 ```yaml
-commands:
-  - name: teleport
-    type: service
-    source:
-      local: /usr/local/bin
-    run: tsh proxy ssh ...
-    # tsh may open a browser for SSO login (on first run or when the session
-    # expires and restart re-runs it) — serialize it against other logins.
-    interactive-auth: true
-    readiness:
-      shell: tsh status
-    restart:
-      max-retries: 5
-      backoff-base: 2s
-      check-interval: 30s
+env-starter:
+  commands:
+    - name: teleport
+      type: service
+      source:
+        local: /usr/local/bin
+      run: tsh proxy ssh ...
+      # tsh may open a browser for SSO login (on first run or when the session
+      # expires and restart re-runs it) — serialize it against other logins.
+      interactive-auth: true
+      readiness:
+        shell: tsh status
+      restart:
+        max-retries: 5
+        backoff-base: 2s
+        check-interval: 30s
 ```
 
 **Full example — task (tunnel that backgrounds itself):**
 
 ```yaml
-commands:
-  - name: tunnel
-    type: task
-    source:
-      local: /usr/local/bin
-    # Opens a tunnel in the background and returns exit 0.
-    run: open-tunnel.sh
-    readiness:
-      tcp: "localhost:2222"
-      timeout: 30s
-    restart:
-      max-retries: 3
-      backoff-base: 2s
-      check-interval: 15s
+env-starter:
+  commands:
+    - name: tunnel
+      type: task
+      source:
+        local: /usr/local/bin
+      # Opens a tunnel in the background and returns exit 0.
+      run: open-tunnel.sh
+      readiness:
+        tcp: "localhost:2222"
+        timeout: 30s
+      restart:
+        max-retries: 3
+        backoff-base: 2s
+        check-interval: 15s
 ```
 
 ---
@@ -606,7 +667,9 @@ A list of named environments, each defining an ordered workflow of commands.
 Unique identifier for the environment, shown in the TUI.
 
 ```yaml
-name: connect-order
+env-starter:
+  environments:
+    - name: connect-order
 ```
 
 ### `description`
@@ -619,7 +682,10 @@ name: connect-order
 Human-readable description shown in the TUI.
 
 ```yaml
-description: Start the connect-order stack locally
+env-starter:
+  environments:
+    - name: connect-order
+      description: Start the connect-order stack locally
 ```
 
 ### `auto-start`
@@ -635,7 +701,10 @@ Set to `true` to start this environment automatically when the TUI launches. It 
 Auto-start only fires when the environment is currently `stopped`. If the TUI is reconnecting to a daemon that already has the environment running (or starting, degraded, etc.), auto-start is a no-op — it never restarts an already-running environment.
 
 ```yaml
-auto-start: true
+env-starter:
+  environments:
+    - name: connect-order
+      auto-start: true
 ```
 
 ### `env` (environment-level)
@@ -648,9 +717,12 @@ auto-start: true
 Extra environment variables applied to every command in this environment's `workflow`. Values must be strings.
 
 ```yaml
-env:
-  FOO_BAR_KEY: foo
-  SUPER_SECRET_KEY: aaa
+env-starter:
+  environments:
+    - name: connect-order
+      env:
+        FOO_BAR_KEY: foo
+        SUPER_SECRET_KEY: aaa
 ```
 
 **Precedence**: a command's own [`env`](#env) always overrides an environment's `env` for the same key.
@@ -681,6 +753,14 @@ Each step has the following fields:
 
 Must reference a command defined in the top-level `commands` list. An unrecognised name is a validation error.
 
+```yaml
+env-starter:
+  environments:
+    - name: connect-order
+      workflow:
+        - command: database
+```
+
 #### `workflow[].depends-on`
 
 | | |
@@ -695,14 +775,17 @@ Dependency cycles are detected and rejected at load time.
 Independent branches (steps with no shared dependencies) start in parallel.
 
 ```yaml
-workflow:
-  - command: database
-  - command: migrate
-    depends-on: [database]
-  - command: auth-gateway
-    depends-on: [database]
-  - command: app
-    depends-on: [migrate, auth-gateway]
+env-starter:
+  environments:
+    - name: connect-order
+      workflow:
+        - command: database
+        - command: migrate
+          depends-on: [database]
+        - command: auth-gateway
+          depends-on: [database]
+        - command: app
+          depends-on: [migrate, auth-gateway]
 ```
 
 ---
