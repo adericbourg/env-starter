@@ -256,6 +256,31 @@ type Engine struct {
 	events chan Event
 }
 
+// buildIndexes builds the lookup tables derived from cfg: cmdOf (command
+// name -> config), envsOf (command name -> names of environments whose
+// workflow includes it), and envEnvOf (environment name -> its configured
+// Env). Returns an error if any workflow step references an undefined
+// command.
+func buildIndexes(cfg *config.Config) (cmdOf map[string]config.Command, envsOf map[string][]string, envEnvOf map[string]map[string]string, err error) {
+	cmdOf = make(map[string]config.Command, len(cfg.Commands))
+	for _, c := range cfg.Commands {
+		cmdOf[c.Name] = c
+	}
+
+	envsOf = make(map[string][]string)
+	envEnvOf = make(map[string]map[string]string, len(cfg.Environments))
+	for _, env := range cfg.Environments {
+		envEnvOf[env.Name] = env.Env
+		for _, step := range env.Workflow {
+			if _, ok := cmdOf[step.Command]; !ok {
+				return nil, nil, nil, fmt.Errorf("engine: environment %q references unknown command %q", env.Name, step.Command)
+			}
+			envsOf[step.Command] = append(envsOf[step.Command], env.Name)
+		}
+	}
+	return cmdOf, envsOf, envEnvOf, nil
+}
+
 // New builds an Engine from cfg, validating that every environment workflow
 // references commands that resolve to defined commands.
 func New(cfg *config.Config) (*Engine, error) {
@@ -263,23 +288,14 @@ func New(cfg *config.Config) (*Engine, error) {
 		return nil, fmt.Errorf("engine: nil config")
 	}
 
-	cmdOf := make(map[string]config.Command, len(cfg.Commands))
-	for _, c := range cfg.Commands {
-		cmdOf[c.Name] = c
+	cmdOf, envsOf, envEnvOf, err := buildIndexes(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	envState := make(map[string]EnvState, len(cfg.Environments))
-	envsOf := make(map[string][]string)
-	envEnvOf := make(map[string]map[string]string, len(cfg.Environments))
 	for _, env := range cfg.Environments {
 		envState[env.Name] = EnvStopped
-		envEnvOf[env.Name] = env.Env
-		for _, step := range env.Workflow {
-			if _, ok := cmdOf[step.Command]; !ok {
-				return nil, fmt.Errorf("engine: environment %q references unknown command %q", env.Name, step.Command)
-			}
-			envsOf[step.Command] = append(envsOf[step.Command], env.Name)
-		}
 	}
 
 	cacheDir, err := source.CacheDir()
