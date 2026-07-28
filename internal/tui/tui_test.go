@@ -295,6 +295,52 @@ func TestUpdate_whenS_callsStartEnvironment(t *testing.T) {
 	_ = m
 }
 
+func TestAutoStartCmd_ofAutoStartAndStoppedEnv_startsEnvironment(t *testing.T) {
+	// Given an auto-start environment that is currently stopped.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{{Name: "alpha", AutoStart: true}}
+	ctrl.envState["alpha"] = engine.EnvStopped
+
+	// When
+	autoStartCmd(ctrl)()
+
+	// Then
+	if len(ctrl.startedEnvs) != 1 || ctrl.startedEnvs[0] != "alpha" {
+		t.Errorf("expected StartEnvironment('alpha'), got %v", ctrl.startedEnvs)
+	}
+}
+
+func TestAutoStartCmd_ofAutoStartAndRunningEnv_isNoOp(t *testing.T) {
+	// Given an auto-start environment that is already running, e.g. because the
+	// TUI is reconnecting to a daemon that kept it alive.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{{Name: "alpha", AutoStart: true}}
+	ctrl.envState["alpha"] = engine.EnvRunning
+
+	// When
+	autoStartCmd(ctrl)()
+
+	// Then
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call, got %v", ctrl.startedEnvs)
+	}
+}
+
+func TestAutoStartCmd_withoutAutoStart_isNoOp(t *testing.T) {
+	// Given a stopped environment without auto-start.
+	ctrl := newFakeController()
+	ctrl.envs = []engine.EnvInfo{{Name: "alpha"}}
+	ctrl.envState["alpha"] = engine.EnvStopped
+
+	// When
+	autoStartCmd(ctrl)()
+
+	// Then
+	if len(ctrl.startedEnvs) != 0 {
+		t.Errorf("expected no StartEnvironment call, got %v", ctrl.startedEnvs)
+	}
+}
+
 func TestUpdate_whenX_callsStopEnvironment(t *testing.T) {
 	// Given a running environment selected.
 	ctrl := newFakeController()

@@ -263,10 +263,25 @@ func New(ctrl Controller) Model {
 }
 
 // Init returns the initial commands: start listening for engine events, arm
-// the periodic refresh ticker, arm the config-file scanner, and arm the
-// spinner ticker.
+// the periodic refresh ticker, arm the config-file scanner, arm the spinner
+// ticker, and start any auto-start environments.
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(waitForEvent(m.ctrl), tickCmd(), configScanCmd(), spinnerTickCmd())
+	return tea.Batch(waitForEvent(m.ctrl), tickCmd(), configScanCmd(), spinnerTickCmd(), autoStartCmd(m.ctrl))
+}
+
+// autoStartCmd starts every configured environment with auto-start enabled
+// that isn't already running. Gating on EnvStopped is what makes this a no-op
+// when the TUI reconnects to a daemon that kept the environment alive across
+// TUI restarts, rather than restarting it.
+func autoStartCmd(ctrl Controller) tea.Cmd {
+	return func() tea.Msg {
+		for _, env := range ctrl.Environments() {
+			if env.AutoStart && ctrl.EnvState(env.Name) == engine.EnvStopped {
+				_ = ctrl.StartEnvironment(env.Name)
+			}
+		}
+		return nil
+	}
 }
 
 // waitForEvent returns a Cmd that blocks until the next engine event, then

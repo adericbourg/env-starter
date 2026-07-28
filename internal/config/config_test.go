@@ -127,6 +127,54 @@ func TestLoad_ofInteractiveAuthAbsent_defaultsFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_ofAutoStartTrue_parsesFlag(t *testing.T) {
+	// Given an environment with auto-start: true
+	dir := t.TempDir()
+	yaml := `
+env-starter:
+  commands:
+    - name: database
+      type: service
+      source:
+        local: /tmp/db
+      run: docker compose up
+  environments:
+    - name: dev
+      auto-start: true
+      workflow:
+        - command: database
+`
+	path := writeYAML(t, dir, "config.yaml", yaml)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !cfg.Environments[0].AutoStart {
+		t.Error("expected AutoStart to be true")
+	}
+}
+
+func TestLoad_ofAutoStartAbsent_defaultsFalse(t *testing.T) {
+	// Given an environment without auto-start
+	dir := t.TempDir()
+	path := writeYAML(t, dir, "config.yaml", minimalValidYAML)
+
+	// When
+	cfg, err := Load(path)
+
+	// Then
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if cfg.Environments[0].AutoStart {
+		t.Error("expected AutoStart to default to false")
+	}
+}
+
 func TestLoad_ofMissingFile_returnsError(t *testing.T) {
 	// Given
 	path := "/nonexistent/path/config.yaml"
@@ -1336,6 +1384,50 @@ func TestMerge_environmentsMergedByName(t *testing.T) {
 	}
 	if result.Environments[2].Name != "staging" {
 		t.Errorf("expected third env to be staging, got %q", result.Environments[2].Name)
+	}
+}
+
+func TestMerge_autoStart_overlayCanEnable(t *testing.T) {
+	// Given a base environment with auto-start unset and an overlay enabling it
+	base := &Config{
+		Environments: []Environment{
+			{Name: "dev", Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Environments: []Environment{
+			{Name: "dev", AutoStart: true},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if !result.Environments[0].AutoStart {
+		t.Error("expected overlay to enable AutoStart")
+	}
+}
+
+func TestMerge_autoStart_overlayCannotDisable(t *testing.T) {
+	// Given a base environment with auto-start enabled and an overlay that omits it
+	base := &Config{
+		Environments: []Environment{
+			{Name: "dev", AutoStart: true, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Environments: []Environment{
+			{Name: "dev", Description: "overlay dev"},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if !result.Environments[0].AutoStart {
+		t.Error("expected base's AutoStart to be preserved when overlay omits it")
 	}
 }
 

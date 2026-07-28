@@ -522,6 +522,31 @@ func TestStartEnvironment_whenUnknownEnv_returnsError(t *testing.T) {
 	}
 }
 
+func TestEnvironments_surfacesAutoStartFromConfig(t *testing.T) {
+	// Given a config with one auto-start environment and one that isn't.
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{Name: "x", Type: "task", Source: config.Source{Local: t.TempDir()}, Run: "exit 0"},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", AutoStart: true, Workflow: []config.WorkflowStep{{Command: "x"}}},
+			{Name: "prod", Workflow: []config.WorkflowStep{{Command: "x"}}},
+		},
+	}
+	e := newTestEngine(t, cfg)
+
+	// When listing environments.
+	envs := e.Environments()
+
+	// Then AutoStart reflects each environment's config.
+	if !envs[0].AutoStart {
+		t.Errorf("expected dev.AutoStart to be true")
+	}
+	if envs[1].AutoStart {
+		t.Errorf("expected prod.AutoStart to be false")
+	}
+}
+
 func TestNew_whenEnvReferencesUnknownCommand_returnsError(t *testing.T) {
 	// Given a config whose workflow references a non-existent command.
 	cfg := &config.Config{

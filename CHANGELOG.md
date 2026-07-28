@@ -6,6 +6,13 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Environments can set `auto-start: true` to start automatically when the
+  TUI launches. It applies only to the TUI (not `env-starter run`), and only
+  when the environment isn't already running — reconnecting to a daemon that
+  kept it alive across TUI restarts is a no-op. See
+  `docs/configuration.md` (`environments[].auto-start`).
+
 ### Changed
 - The TUI footer's shortcut hints (`s`, `x`, `R`, `Ctrl+L`) now dim when the
   shortcut would have no effect on the current selection, instead of looking

@@ -52,6 +52,7 @@ const (
 type EnvInfo struct {
 	Name        string
 	Description string
+	AutoStart   bool
 }
 
 // Event is emitted on every state change. Command events carry Command and
@@ -304,7 +305,7 @@ func New(cfg *config.Config) (*Engine, error) {
 func (e *Engine) Environments() []EnvInfo {
 	out := make([]EnvInfo, 0, len(e.cfg.Environments))
 	for _, env := range e.cfg.Environments {
-		out = append(out, EnvInfo{Name: env.Name, Description: env.Description})
+		out = append(out, EnvInfo{Name: env.Name, Description: env.Description, AutoStart: env.AutoStart})
 	}
 	return out
 }

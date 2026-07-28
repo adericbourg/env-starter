@@ -158,6 +158,10 @@ type Environment struct {
 	// shared command.
 	Env      map[string]string `yaml:"env,omitempty"`
 	Workflow []WorkflowStep    `yaml:"workflow"`
+	// AutoStart starts this environment automatically when the TUI launches,
+	// provided it isn't already running (e.g. reconnecting to a daemon that
+	// kept it alive across TUI restarts). It has no effect on `env-starter run`.
+	AutoStart bool `yaml:"auto-start,omitempty"`
 }
 
 // Config is the root configuration object.

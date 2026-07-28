@@ -622,6 +622,22 @@ Human-readable description shown in the TUI.
 description: Start the connect-order stack locally
 ```
 
+### `auto-start`
+
+| | |
+|---|---|
+| Type | bool |
+| Required | no |
+| Default | `false` |
+
+Set to `true` to start this environment automatically when the TUI launches. It only applies to the TUI (`env-starter` with no subcommand): it has no effect on `env-starter run <env>`, which always starts the given environment explicitly.
+
+Auto-start only fires when the environment is currently `stopped`. If the TUI is reconnecting to a daemon that already has the environment running (or starting, degraded, etc.), auto-start is a no-op — it never restarts an already-running environment.
+
+```yaml
+auto-start: true
+```
+
 ### `env` (environment-level)
 
 | | |

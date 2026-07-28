@@ -135,6 +135,9 @@ func mergeEnvironmentFields(base, overlay Environment) Environment {
 	if overlay.Workflow != nil {
 		merged.Workflow = overlay.Workflow
 	}
+	if overlay.AutoStart {
+		merged.AutoStart = true
+	}
 	return merged
 }
 
