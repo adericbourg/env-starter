@@ -69,3 +69,31 @@ func TestVerifyBlobSignature_withWrongKey_returnsError(t *testing.T) {
 		t.Error("expected verification to fail with a mismatched key, got nil")
 	}
 }
+
+func TestExtractBundleSignature_withValidBundle_returnsSignature(t *testing.T) {
+	// Given a Sigstore bundle wrapping a known base64 signature.
+	bundle := []byte(`{"messageSignature":{"signature":"deadbeef=="}}`)
+
+	// When
+	sig, err := extractBundleSignature(bundle)
+
+	// Then
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(sig) != "deadbeef==" {
+		t.Errorf("signature = %q, want %q", sig, "deadbeef==")
+	}
+}
+
+func TestExtractBundleSignature_ofInvalidJSON_returnsError(t *testing.T) {
+	if _, err := extractBundleSignature([]byte("not json")); err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestExtractBundleSignature_whenSignatureMissing_returnsError(t *testing.T) {
+	if _, err := extractBundleSignature([]byte(`{"messageSignature":{}}`)); err == nil {
+		t.Error("expected error when messageSignature.signature is missing, got nil")
+	}
+}

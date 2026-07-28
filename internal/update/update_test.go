@@ -321,7 +321,7 @@ func TestApply_happyPath_replacesBinary(t *testing.T) {
 	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
 	pub, sig := signBlob(t, checksums)
 
-	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, bundleFromSignature(sig))
 
 	// Redirect the binary replacement to a temp file.
 	targetFile, err := os.CreateTemp(t.TempDir(), "env-starter-test-*")
@@ -358,7 +358,7 @@ func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
 	checksums := []byte(fmt.Sprintf("%s  %s\n", wrongDigest, archiveName))
 	pub, sig := signBlob(t, checksums)
 
-	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, bundleFromSignature(sig))
 	c := &Client{webBaseURL: srv.URL, verifyKeyPEM: pub}
 
 	// When
@@ -368,6 +368,13 @@ func TestApply_withChecksumMismatch_returnsError(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for checksum mismatch")
 	}
+}
+
+// bundleFromSignature wraps a raw base64 signature (as produced by signBlob)
+// in the minimal Sigstore bundle JSON shape that cosign v3's
+// `sign-blob --bundle` writes, matching what verifyChecksums now expects.
+func bundleFromSignature(sigB64 []byte) []byte {
+	return []byte(fmt.Sprintf(`{"messageSignature":{"signature":%q}}`, sigB64))
 }
 
 // serveRelease starts a test server exposing checksums.txt (+ optional .sig)
@@ -409,7 +416,7 @@ func TestApply_withValidSignature_replacesBinary(t *testing.T) {
 	checksums := []byte(fmt.Sprintf("%s  %s\n", hex.EncodeToString(digest[:]), archiveName))
 	pub, sig := signBlob(t, checksums)
 
-	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, sig)
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, bundleFromSignature(sig))
 
 	targetFile, err := os.CreateTemp(t.TempDir(), "env-starter-test-*")
 	if err != nil {
@@ -441,7 +448,7 @@ func TestApply_withInvalidSignature_returnsError(t *testing.T) {
 	pub, _ := signBlob(t, checksums)
 	_, wrongSig := signBlob(t, []byte("a different message"))
 
-	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, wrongSig)
+	srv := serveRelease(t, tag, archiveName, archiveBytes, checksums, bundleFromSignature(wrongSig))
 	c := &Client{webBaseURL: srv.URL, verifyKeyPEM: pub}
 
 	// When

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -52,4 +53,27 @@ func verifyBlobSignature(pubKeyPEM string, blob, sigB64 []byte) error {
 		return errors.New("update: checksums signature verification failed")
 	}
 	return nil
+}
+
+// sigstoreBundle is the minimal slice of the Sigstore bundle schema
+// (github.com/sigstore/protobuf-specs, bundle.proto) needed to recover a
+// key-based messageSignature, as written by `cosign sign-blob --bundle`
+// (cosign v3+, replacing the old --output-signature raw signature file).
+type sigstoreBundle struct {
+	MessageSignature struct {
+		Signature string `json:"signature"`
+	} `json:"messageSignature"`
+}
+
+// extractBundleSignature pulls the base64 ECDSA signature out of a cosign v3
+// Sigstore bundle, for use with verifyBlobSignature.
+func extractBundleSignature(bundleJSON []byte) ([]byte, error) {
+	var bundle sigstoreBundle
+	if err := json.Unmarshal(bundleJSON, &bundle); err != nil {
+		return nil, fmt.Errorf("update: parsing sigstore bundle: %w", err)
+	}
+	if bundle.MessageSignature.Signature == "" {
+		return nil, errors.New("update: sigstore bundle missing messageSignature.signature")
+	}
+	return []byte(bundle.MessageSignature.Signature), nil
 }

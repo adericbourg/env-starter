@@ -245,10 +245,10 @@ func (c *Client) Apply(ctx context.Context, rel Release) error {
 	return nil
 }
 
-// verifyChecksums authenticates checksumsContent against its detached cosign
-// signature (checksums.txt.sig in the same release). An embedded public key
-// is required: a missing key, a missing signature, or an invalid signature
-// are all hard failures (fail closed).
+// verifyChecksums authenticates checksumsContent against its cosign Sigstore
+// bundle (checksums.txt.sig in the same release). An embedded public key is
+// required: a missing key, a missing signature, or an invalid signature are
+// all hard failures (fail closed).
 func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL string, checksumsContent []byte) error {
 	pubKey := c.effectiveVerifyKey()
 	if pubKey == "" {
@@ -264,7 +264,11 @@ func (c *Client) verifyChecksums(ctx context.Context, tmpDir, checksumsURL strin
 	if err != nil {
 		return fmt.Errorf("reading checksums signature: %w", err)
 	}
-	if err := verifyBlobSignature(pubKey, checksumsContent, sig); err != nil {
+	sigB64, err := extractBundleSignature(sig)
+	if err != nil {
+		return err
+	}
+	if err := verifyBlobSignature(pubKey, checksumsContent, sigB64); err != nil {
 		return fmt.Errorf("authenticating release: %w", err)
 	}
 	return nil
