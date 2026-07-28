@@ -82,7 +82,7 @@ signs:
     args:
       - sign-blob
       - "--key=env://COSIGN_PRIVATE_KEY"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
       - "--yes"
 

@@ -35,14 +35,15 @@ below before cutting a release:
    an error).
 
 4. **Cut a release** via the Release workflow. GoReleaser will publish
-   `checksums.txt` alongside `checksums.txt.sig`.
+   `checksums.txt` alongside `checksums.txt.sig`, a Sigstore bundle (JSON)
+   produced by `cosign sign-blob --bundle`.
 
 ## Verifying a release manually
 
 ```sh
 cosign verify-blob \
   --key cosign.pub \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.sig \
   checksums.txt
 ```
 
