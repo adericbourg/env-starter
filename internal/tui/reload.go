@@ -13,14 +13,18 @@ import (
 
 // reloadController wraps a live *engine.Engine behind the Controller interface
 // and adds hot-reload support: it periodically checks the watched config files
-// for changes and can swap in a fresh engine on demand.
+// for changes and can apply a fresh config to the engine on demand.
 //
-// All Controller delegation methods are guarded by a RWMutex so the engine
-// pointer can be swapped safely while Bubble Tea's render goroutine reads
-// through it.
+// eng is immutable after construction — Reload calls eng.ApplyConfig, which
+// mutates the engine in place (see internal/engine/applyconfig.go) rather
+// than swapping in a new one, so delegation methods need no locking of their
+// own; the engine's own mutex already makes it safe for concurrent use. mu
+// guards only the small reload-bookkeeping fields below.
 type reloadController struct {
-	mu  sync.RWMutex
 	eng *engine.Engine
+
+	mu sync.Mutex
+
 	cfg *config.Config
 
 	// load re-runs the full config resolution (base + optional overlay merge)
@@ -46,10 +50,6 @@ type reloadController struct {
 	// and preserved across scans while the file remains unmodified (so callers
 	// see the error without re-reading the file on every tick).
 	parseErr error
-
-	// onSwap is called after a successful engine swap in Reload. It is used by
-	// the daemon event hub to re-subscribe to the new engine's Events() channel.
-	onSwap func()
 }
 
 // NewReloadController returns a Controller that wraps eng and supports
@@ -145,10 +145,14 @@ func (c *reloadController) ConfigChanged() (bool, error) {
 	return true, nil
 }
 
-// Reload tears down the running engine, re-loads config from disk, and builds
-// a fresh engine. It returns an error without touching the running engine when
-// loading or constructing the new engine fails, so the user is never left with
-// nothing running due to a transient parse error.
+// Reload re-loads config from disk and applies it to the running engine via
+// ApplyConfig, which reconciles running state selectively (see
+// internal/engine/applyconfig.go) instead of tearing everything down. It
+// returns an error without touching the running engine when loading or
+// validating the new config fails, so the user is never left with nothing
+// running due to a transient parse error. ApplyConfig itself returns quickly;
+// any restarts it schedules run asynchronously and report progress through
+// Events(), same as StartEnvironment.
 func (c *reloadController) Reload(ctx context.Context) error {
 	fresh, err := c.load()
 	if err != nil {
@@ -160,133 +164,84 @@ func (c *reloadController) Reload(ctx context.Context) error {
 		c.mu.Unlock()
 		return err
 	}
-	newEng, err := engine.New(fresh)
-	if err != nil {
+
+	if err := c.eng.ApplyConfig(fresh); err != nil {
 		return err
 	}
 
 	c.mu.Lock()
-	old := c.eng   // capture old engine
-	c.eng = newEng // swap in new engine first so clients use it immediately
 	c.cfg = fresh
 	c.dirty = false
 	// Reset the baseline to the just-loaded file so a subsequent scan does not
 	// immediately re-trigger.
 	c.lastMod, c.lastSize, _ = statNewest(c.watchPaths)
-	snap := c.onSwap // capture onSwap while holding lock
 	c.mu.Unlock()
-
-	old.Shutdown(ctx) // shutdown old engine AFTER swap (clients now use new engine)
-
-	if snap != nil {
-		snap() // notify hub to re-subscribe to new engine
-	}
 
 	return nil
 }
 
-// SetOnSwap sets a callback that will be invoked after a successful engine
-// swap in Reload. This is used by the daemon event hub to re-subscribe to the
-// new engine's Events() channel.
-func (c *reloadController) SetOnSwap(fn func()) {
-	c.mu.Lock()
-	c.onSwap = fn
-	c.mu.Unlock()
-}
-
 // ── Controller delegation ─────────────────────────────────────────────────────
-// Every method reads through the live engine under RLock so they remain safe
-// across an engine swap in Reload.
+// eng is immutable after construction, so these delegate directly with no
+// locking of their own — the engine is already safe for concurrent use.
 
 func (c *reloadController) Environments() []engine.EnvInfo {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.Environments()
 }
 
 func (c *reloadController) WorkflowCommands(env string) []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.WorkflowCommands(env)
 }
 
 func (c *reloadController) EnvState(env string) engine.EnvState {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.EnvState(env)
 }
 
 func (c *reloadController) CmdState(cmd string) engine.CmdState {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.CmdState(cmd)
 }
 
 func (c *reloadController) CmdRetries(cmd string) (int, int) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.CmdRetries(cmd)
 }
 
 func (c *reloadController) IsUnmanaged(cmd string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.IsUnmanaged(cmd)
 }
 
 func (c *reloadController) Logs(cmd string) []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.Logs(cmd)
 }
 
 func (c *reloadController) LogPath(cmd string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.LogPath(cmd)
 }
 
 func (c *reloadController) ResolveEnv(envName, command string) []engine.ResolvedEnvVar {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.ResolveEnv(envName, command)
 }
 
 func (c *reloadController) StartEnvironment(env string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.StartEnvironment(env)
 }
 
 func (c *reloadController) StopEnvironment(env string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.StopEnvironment(env)
 }
 
 func (c *reloadController) RestartCommand(command string) error {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.RestartCommand(command)
 }
 
 func (c *reloadController) Events() <-chan engine.Event {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.Events()
 }
 
 func (c *reloadController) StoppingCommands() []engine.StoppingCommand {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
 	return c.eng.StoppingCommands()
 }
 
 func (c *reloadController) Shutdown(ctx context.Context) {
-	c.mu.RLock()
-	e := c.eng
-	c.mu.RUnlock()
-	e.Shutdown(ctx)
+	c.eng.Shutdown(ctx)
 }
 
 // Detach is a no-op for reloadController: it owns the engine directly and has

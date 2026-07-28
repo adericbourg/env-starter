@@ -31,14 +31,6 @@ const (
 	eventHubBuffer = 256
 )
 
-// SwappableController extends tui.Controller with the ability to register a
-// callback that fires after an engine hot-reload swap. The daemon uses this to
-// re-subscribe the event hub to the new engine's Events() channel.
-type SwappableController interface {
-	tui.Controller
-	SetOnSwap(fn func())
-}
-
 // hubOpKind is the discriminant for hubCmd.
 type hubOpKind int
 
@@ -55,7 +47,7 @@ type hubCmd struct {
 
 // server holds the daemon's runtime state.
 type server struct {
-	ctrl       SwappableController
+	ctrl       tui.Controller
 	socketPath string
 
 	// hub channels
@@ -74,10 +66,7 @@ type server struct {
 // Shutdown is triggered by:
 //   - A shutdown RPC from any connected client.
 //   - SIGINT or SIGTERM from the OS.
-//
-// The ctrl argument must implement SwappableController so the event hub can
-// re-subscribe after a hot-reload.
-func Serve(ctx context.Context, socketPath string, ctrl SwappableController) error {
+func Serve(ctx context.Context, socketPath string, ctrl tui.Controller) error {
 	s := &server{
 		ctrl:       ctrl,
 		socketPath: socketPath,
@@ -111,8 +100,6 @@ func Serve(ctx context.Context, socketPath string, ctrl SwappableController) err
 	}
 
 	// Start the event hub goroutine. It fans out engine events to subscribers.
-	// The hub also registers the onSwap callback with ctrl so it can re-subscribe
-	// to the new engine's Events() channel after a hot-reload.
 	go s.runHub(ctx, ln, ctrl.Events())
 
 	// Handle OS signals for graceful shutdown.
@@ -154,31 +141,8 @@ func Serve(ctx context.Context, socketPath string, ctrl SwappableController) err
 // out WireEvent values to all registered subscribers. Sends to full subscriber
 // buffers are dropped (non-blocking). Hub registration/deregistration is handled
 // via the hubCmds channel to avoid mutex contention.
-//
-// The hub accepts a resubscribe signal via the resubCh (a nil-send convention on
-// hubCmds is not used; instead the server's onSwap calls resubscribe explicitly).
 func (s *server) runHub(ctx context.Context, ln net.Listener, events <-chan engine.Event) {
 	subscribers := make(map[chan<- WireEvent]struct{})
-
-	// resubCh receives a fresh events channel when the engine is hot-reloaded.
-	// Concurrent calls to this onSwap closure cannot occur: reloadController.Reload
-	// holds c.mu.Lock() for the entire swap operation before invoking onSwap, so
-	// only one onSwap call can be in flight at a time.
-	resubCh := make(chan (<-chan engine.Event), 1)
-	s.ctrl.SetOnSwap(func() {
-		newEvents := s.ctrl.Events()
-		select {
-		case resubCh <- newEvents:
-		default:
-			// A previous resubscribe has not been consumed yet; overwrite it.
-			// Drain and resend.
-			select {
-			case <-resubCh:
-			default:
-			}
-			resubCh <- newEvents
-		}
-	})
 
 	for {
 		select {
@@ -187,9 +151,6 @@ func (s *server) runHub(ctx context.Context, ln net.Listener, events <-chan engi
 
 		case <-s.done:
 			return
-
-		case newEvents := <-resubCh:
-			events = newEvents
 
 		case cmd := <-s.hubCmds:
 			switch cmd.op {

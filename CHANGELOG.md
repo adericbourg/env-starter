@@ -17,6 +17,10 @@ Releases follow [Semantic Versioning](https://semver.org/).
 - The TUI footer's shortcut hints (`s`, `x`, `R`, `Ctrl+L`) now dim when the
   shortcut would have no effect on the current selection, instead of looking
   identical to a shortcut that would actually act.
+- Config reload (`c`) is now selective instead of stopping everything: only
+  environments/commands that were removed or actually changed are stopped or
+  restarted, and a running command untouched by the change keeps running
+  across the reload. See `docs/configuration.md` (Hot-reload behavior).
 
 ## [1.6.3] — 2026-07-28
 

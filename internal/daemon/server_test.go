@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/tui"
 )
 
 // ── Mock controller ───────────────────────────────────────────────────────────
 
-// mockController is a minimal tui.Controller + SwappableController for tests.
+// mockController is a minimal tui.Controller for tests.
 type mockController struct {
 	mu sync.Mutex
 
@@ -46,8 +47,6 @@ type mockController struct {
 	// by Events(). Keeping both lets tests inject events via sendEvent.
 	eventsWrite chan engine.Event
 	eventsCh    <-chan engine.Event
-
-	onSwap func()
 
 	shutdownCalled bool
 	// shutdownFunc, if set, is called instead of the default Shutdown stub.
@@ -175,12 +174,6 @@ func (m *mockController) Reload(_ context.Context) error {
 
 func (m *mockController) Detach() {}
 
-func (m *mockController) SetOnSwap(fn func()) {
-	m.mu.Lock()
-	m.onSwap = fn
-	m.mu.Unlock()
-}
-
 // sendEvent injects an event into the mock's event channel.
 func (m *mockController) sendEvent(ev engine.Event) {
 	m.eventsWrite <- ev
@@ -190,7 +183,7 @@ func (m *mockController) sendEvent(ev engine.Event) {
 
 // startTestServer starts a Serve goroutine using a temp unix socket.
 // It returns the socket path and a cancel function to stop the server.
-func startTestServer(t *testing.T, ctrl SwappableController) (socketPath string, cancel context.CancelFunc) {
+func startTestServer(t *testing.T, ctrl tui.Controller) (socketPath string, cancel context.CancelFunc) {
 	t.Helper()
 	dir := socketTempDir(t)
 	socketPath = filepath.Join(dir, "daemon.sock")
@@ -664,6 +657,54 @@ func TestServe_subscribe_receivesEvents(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("did not receive event within timeout")
+	}
+}
+
+// ── Reload RPC test ───────────────────────────────────────────────────────────
+
+func TestServer_whenReloaded_subscribersKeepReceivingEvents(t *testing.T) {
+	// Given a subscribed client. The hub no longer resubscribes to a new
+	// engine on reload (ApplyConfig mutates the engine in place, so Events()
+	// keeps returning the same channel) — this guards that removing the old
+	// resubscribe machinery didn't break event delivery across a reload.
+	ctrl := newMockController()
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	_, subScanner, subEnc := dialDaemon(t, socketPath)
+	if err := subEnc.Encode(Request{Method: MethodSubscribe}); err != nil {
+		t.Fatalf("encode subscribe: %v", err)
+	}
+	if !subScanner.Scan() {
+		t.Fatalf("scan snapshot: %v", subScanner.Err())
+	}
+
+	evCh := make(chan WireEvent, 1)
+	go func() {
+		if subScanner.Scan() {
+			var ev WireEvent
+			if err := json.Unmarshal(subScanner.Bytes(), &ev); err == nil {
+				evCh <- ev
+			}
+		}
+	}()
+
+	// When a reload RPC is issued on a separate connection
+	_, rpcScanner, rpcEnc := dialDaemon(t, socketPath)
+	resp := rpc(t, rpcEnc, rpcScanner, Request{Method: MethodReload})
+	if resp.Error != "" {
+		t.Fatalf("reload RPC: %v", resp.Error)
+	}
+
+	// Then the existing subscriber still receives subsequent events
+	ctrl.sendEvent(engine.Event{Kind: "command", Command: "api", CmdState: engine.CmdHealthy})
+	select {
+	case ev := <-evCh:
+		if ev.Command != "api" {
+			t.Errorf("Command: want %q, got %q", "api", ev.Command)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber stopped receiving events after reload")
 	}
 }
 

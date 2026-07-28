@@ -1,7 +1,7 @@
 // Package daemon — client-side controller over a Unix socket connection to the
-// daemon. ClientController implements tui.Controller (and SwappableController)
-// by maintaining a local mirror seeded from the subscribe snapshot and kept
-// up-to-date by the event-stream goroutine.
+// daemon. ClientController implements tui.Controller by maintaining a local
+// mirror seeded from the subscribe snapshot and kept up-to-date by the
+// event-stream goroutine.
 package daemon
 
 import (
@@ -23,8 +23,8 @@ const (
 	clientEventBuffer = 256
 )
 
-// ClientController implements tui.Controller and SwappableController over a
-// pair of Unix socket connections to the daemon.
+// ClientController implements tui.Controller over a pair of Unix socket
+// connections to the daemon.
 //
 // It maintains a local mirror of all engine state so that hot-path TUI reads
 // (Environments, EnvState, CmdState, …) never incur a round-trip.
@@ -401,10 +401,6 @@ func (c *ClientController) Detach() {
 	_ = c.rpcConn.Close()
 	_ = c.streamConn.Close()
 }
-
-// SetOnSwap is a no-op on ClientController. Hot-reload is server-side only;
-// the client learns of reloads via the event stream.
-func (c *ClientController) SetOnSwap(_ func()) {}
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 

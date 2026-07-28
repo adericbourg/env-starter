@@ -222,7 +222,7 @@ func TestConfigChanged_whenSemanticChange_trueAndNilError(t *testing.T) {
 
 // ── Reload tests ──────────────────────────────────────────────────────────────
 
-func TestReload_success_swapsEngineAndClearsDirty(t *testing.T) {
+func TestReload_success_appliesConfigAndClearsDirty(t *testing.T) {
 	// Given
 	cfg := minimalConfig("alpha")
 	fresh := minimalConfig("beta")
@@ -245,11 +245,49 @@ func TestReload_success_swapsEngineAndClearsDirty(t *testing.T) {
 	}
 	envs := ctrl.Environments()
 	if len(envs) == 0 || envs[0].Name != "env-beta" {
-		t.Errorf("expected new engine to expose 'env-beta', got %v", envs)
+		t.Errorf("expected engine to expose 'env-beta', got %v", envs)
 	}
 }
 
-func TestReload_whenLoadFails_keepsOldEngineAndSetsParseErr(t *testing.T) {
+func TestReload_success_appliesConfigWithoutStoppingRunningCommands(t *testing.T) {
+	// Given a running environment
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	cfg := &config.Config{
+		Commands: []config.Command{{Name: "svc", Type: "service", Source: config.Source{Local: dir},
+			Run: fmt.Sprintf("touch %q; sleep 30", ready), Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)}}},
+		Environments: []config.Environment{{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}}},
+	}
+	path := writeTempConfig(t, "# placeholder")
+	eng := newTestEngine(t, cfg)
+	defer eng.Shutdown(context.Background())
+	ctrl := NewReloadController(eng, cfg, []string{path}, func() (*config.Config, error) {
+		return cfg, nil
+	})
+
+	if err := ctrl.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && ctrl.CmdState("svc") != engine.CmdHealthy {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ctrl.CmdState("svc") != engine.CmdHealthy {
+		t.Fatalf("svc did not become healthy")
+	}
+
+	// When a cosmetic-only reload is applied (load returns the identical config)
+	if err := ctrl.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Then the command is left running, untouched
+	if ctrl.CmdState("svc") != engine.CmdHealthy {
+		t.Errorf("expected svc to remain healthy across reload, got %v", ctrl.CmdState("svc"))
+	}
+}
+
+func TestReload_whenLoadFails_keepsRunningConfigAndSetsParseErr(t *testing.T) {
 	// Given
 	cfg := minimalConfig("alpha")
 	path := writeTempConfig(t, "# placeholder")
@@ -262,7 +300,7 @@ func TestReload_whenLoadFails_keepsOldEngineAndSetsParseErr(t *testing.T) {
 	// When
 	err := ctrl.Reload(context.Background())
 
-	// Then — error returned; old engine still active; dirty cleared; parseErr set
+	// Then — error returned; running config unaffected; dirty cleared; parseErr set
 	// (the on-disk file is invalid, so reload is now blocked until it's fixed).
 	if err == nil {
 		t.Fatal("expected Reload to return an error when load fails")
@@ -275,12 +313,93 @@ func TestReload_whenLoadFails_keepsOldEngineAndSetsParseErr(t *testing.T) {
 	}
 	envs := ctrl.Environments()
 	if len(envs) == 0 || envs[0].Name != "env-alpha" {
-		t.Errorf("expected old engine to still expose 'env-alpha', got %v", envs)
+		t.Errorf("expected engine to still expose 'env-alpha', got %v", envs)
 	}
 }
 
-func TestReload_eventsReturnsNewChannel(t *testing.T) {
-	// Given
+func TestReload_whenApplyConfigFails_leavesDirtySetAndKeepsOldConfig(t *testing.T) {
+	// Given a config that will fail ApplyConfig's validation (a workflow
+	// referencing an undefined command)
+	cfg := minimalConfig("alpha")
+	invalid := &config.Config{
+		Environments: []config.Environment{{Name: "env-ghost", Workflow: []config.WorkflowStep{{Command: "ghost"}}}},
+	}
+	path := writeTempConfig(t, "# placeholder")
+	eng := newTestEngine(t, cfg)
+	ctrl := NewReloadController(eng, cfg, []string{path}, func() (*config.Config, error) {
+		return invalid, nil
+	})
+	ctrl.dirty = true
+
+	// When
+	err := ctrl.Reload(context.Background())
+
+	// Then — error returned; dirty is left untouched (still true, so the
+	// banner keeps prompting); the running config is unaffected.
+	if err == nil {
+		t.Fatal("expected Reload to return an error when ApplyConfig fails")
+	}
+	if !ctrl.dirty {
+		t.Error("expected dirty to remain true after an ApplyConfig failure")
+	}
+	envs := ctrl.Environments()
+	if len(envs) == 0 || envs[0].Name != "env-alpha" {
+		t.Errorf("expected engine to still expose 'env-alpha', got %v", envs)
+	}
+}
+
+func TestReload_success_clearsDirtyWhileRestartsAreStillRunning(t *testing.T) {
+	// Given a running command whose restart (triggered by the reload) takes
+	// noticeably longer than Reload itself should take to return
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	cfg := &config.Config{
+		Commands: []config.Command{{Name: "svc", Type: "service", Source: config.Source{Local: dir},
+			Run: fmt.Sprintf("touch %q; sleep 30", ready), Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)}}},
+		Environments: []config.Environment{{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}}},
+	}
+	path := writeTempConfig(t, "# placeholder")
+	eng := newTestEngine(t, cfg)
+	defer eng.Shutdown(context.Background())
+
+	newReady := filepath.Join(dir, "ready-new")
+	fresh := &config.Config{
+		Commands: []config.Command{{Name: "svc", Type: "service", Source: config.Source{Local: dir},
+			Run: fmt.Sprintf("sleep 1; touch %q; sleep 30", newReady), Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", newReady)}}},
+		Environments: cfg.Environments,
+	}
+	ctrl := NewReloadController(eng, cfg, []string{path}, func() (*config.Config, error) {
+		return fresh, nil
+	})
+
+	if err := ctrl.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && ctrl.CmdState("svc") != engine.CmdHealthy {
+		time.Sleep(10 * time.Millisecond)
+	}
+	ctrl.dirty = true
+
+	// When
+	start := time.Now()
+	if err := ctrl.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Then dirty is already cleared, well before the ~1s restart completes
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("expected Reload to return promptly, took %s", elapsed)
+	}
+	if ctrl.dirty {
+		t.Error("expected dirty to be cleared immediately, not after restarts settle")
+	}
+}
+
+func TestReload_eventsReturnsTheSameChannel(t *testing.T) {
+	// Given — eng is mutated in place by ApplyConfig, not swapped, so
+	// Events() must keep returning the same channel across a reload.
 	cfg := minimalConfig("alpha")
 	fresh := minimalConfig("beta")
 	path := writeTempConfig(t, "# placeholder")
@@ -296,9 +415,9 @@ func TestReload_eventsReturnsNewChannel(t *testing.T) {
 	}
 	newCh := ctrl.Events()
 
-	// Then — the channel identity must differ (new engine, new channel).
-	if oldCh == newCh {
-		t.Error("expected Events() to return a different channel after Reload")
+	// Then — same channel identity: subscribers never need to resubscribe.
+	if oldCh != newCh {
+		t.Error("expected Events() to return the same channel after Reload")
 	}
 }
 

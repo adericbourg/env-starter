@@ -2082,7 +2082,10 @@ func TestUpdate_whenReloadDoneMsg_success_clearsDirtyAndParseErr(t *testing.T) {
 	updated, cmd := m.Update(reloadDoneMsg{err: nil})
 	m = updated.(Model)
 
-	// Then — dirty, reload error, and parse error all cleared; event listener re-armed.
+	// Then — dirty, reload error, and parse error all cleared. The Cmd
+	// returned is noticeResetCmd, not a re-armed waitForEvent: the engine is
+	// mutated in place (see ApplyConfig), never swapped, so the waitForEvent
+	// loop armed at startup is already reading the right channel.
 	if m.configDirty {
 		t.Error("expected configDirty to be cleared after successful reload")
 	}
@@ -2093,7 +2096,10 @@ func TestUpdate_whenReloadDoneMsg_success_clearsDirtyAndParseErr(t *testing.T) {
 		t.Errorf("expected configParseErr to be cleared, got %q", m.configParseErr)
 	}
 	if cmd == nil {
-		t.Error("expected a non-nil cmd (re-arm waitForEvent) after successful reload")
+		t.Error("expected a non-nil cmd (noticeResetCmd) after successful reload")
+	}
+	if m.notice == "" {
+		t.Error("expected a notice describing the applied reload")
 	}
 }
 

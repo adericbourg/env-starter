@@ -58,6 +58,26 @@ reviewed and re-approved.
 See [SECURITY.md](../SECURITY.md#config-trust-approval-on-first-use) for the
 full trust model.
 
+### Hot-reload behavior
+
+Pressing `c` in the TUI (see [usage](usage.md)) applies an approved,
+changed config to the running daemon without stopping everything: only what
+actually changed restarts.
+
+- **Removed** environments and commands are stopped and forgotten.
+- **A command whose own definition changed** restarts — for every environment
+  currently holding it — followed by any command that depends on it, in
+  dependency order.
+- **An environment whose `workflow` changed** (a step added or removed, or a
+  `depends-on` changed) restarts as a whole. A command it shares with another,
+  unaffected environment is not torn down, only re-applied.
+- **An environment whose `env` changed, with its `workflow` unchanged**, does
+  not restart as a whole: only the commands whose actual merged environment
+  changed are restarted.
+- **A cosmetic-only change** (`description`, `auto-start`) restarts nothing.
+- A stopped environment or command is unaffected either way — the new
+  definition simply takes effect the next time it starts.
+
 ### Secrets and overrides
 
 Never commit or share secrets (API keys, passwords, tokens) in the base

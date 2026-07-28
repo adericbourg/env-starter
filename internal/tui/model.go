@@ -331,8 +331,10 @@ func configScanCmd() tea.Cmd {
 	})
 }
 
-// reloadCmd runs the full config reload (Shutdown → re-load → engine.New →
-// swap) in the background and delivers the outcome as a reloadDoneMsg.
+// reloadCmd re-loads the config and applies it to the running engine (which
+// reconciles running state selectively rather than restarting everything —
+// see internal/engine/applyconfig.go) in the background, delivering the
+// outcome as a reloadDoneMsg.
 func reloadCmd(ctrl Controller) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
@@ -408,8 +410,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.configApproved = true
 		m = m.clampCursors()
 		m = m.refreshLogView()
-		// Re-arm event listening against the new engine's channel.
-		return m, waitForEvent(m.ctrl)
+		// The engine is mutated in place (see ApplyConfig), never swapped, so
+		// the waitForEvent loop armed at startup is still reading the same
+		// channel — re-arming it here would add a second concurrent reader.
+		m.notice = "Configuration applied — restarting affected services…"
+		return m, noticeResetCmd()
 
 	case shutdownDoneMsg:
 		return m, tea.Quit
