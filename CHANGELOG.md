@@ -6,6 +6,18 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.6.3] — 2026-07-28
+
+### Fixed
+- Release signing and self-update verification broke after a Renovate
+  bump to cosign v3, which replaced the raw detached `checksums.txt.sig`
+  with a Sigstore bundle (JSON). `.goreleaser.yaml` now signs with
+  `cosign sign-blob --bundle`, and the self-updater's `verifyChecksums`
+  unwraps `messageSignature.signature` from the bundle before running the
+  existing ECDSA check.
+
+## [1.6.2] — 2026-07-28
+
 ### Added
 - The TUI footer now shows the running build's version (e.g. `v1.2.3`) at
   the bottom right, alongside the shortcut hints.
@@ -316,7 +328,9 @@ Initial release.
 - `github`, `url`, and `local` source types.
 - Config overlay merge support.
 
-[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.6.1...HEAD
+[Unreleased]: https://github.com/adericbourg/env-starter/compare/v1.6.3...HEAD
+[1.6.3]: https://github.com/adericbourg/env-starter/compare/v1.6.2...v1.6.3
+[1.6.2]: https://github.com/adericbourg/env-starter/compare/v1.6.1...v1.6.2
 [1.6.1]: https://github.com/adericbourg/env-starter/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/adericbourg/env-starter/compare/v1.5.2...v1.6.0
 [1.5.2]: https://github.com/adericbourg/env-starter/compare/v1.5.1...v1.5.2
