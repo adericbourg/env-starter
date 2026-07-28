@@ -28,6 +28,9 @@ Releases follow [Semantic Versioning](https://semver.org/).
   refreshed its local mirror from state events, which carry no topology
   information. The client now re-fetches a snapshot after a successful
   reload.
+- The TUI's selected environment/command could jump to a different one after
+  a reload added or removed an entry above it in the list, since the cursor
+  only tracked a numeric index. It now re-anchors the selection by name.
 
 ## [1.6.3] — 2026-07-28
 

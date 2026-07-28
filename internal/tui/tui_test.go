@@ -2146,6 +2146,103 @@ func TestClampCursors_whenCursorsOutOfRange_clampsToLast(t *testing.T) {
 	}
 }
 
+func TestReanchorSelection_whenSelectedEnvironmentSurvives_keepsIt(t *testing.T) {
+	// Given "alpha" selected at index 0
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.envCursor = 0
+	if m.selectedEnvName() != "alpha" {
+		t.Fatalf("test setup: expected alpha selected, got %q", m.selectedEnvName())
+	}
+	m.reloadAnchorEnv = "alpha"
+
+	// When the environment list changes such that "alpha" moves to index 1
+	ctrl.envs = []engine.EnvInfo{{Name: "zzz"}, {Name: "alpha"}}
+
+	// Then reanchorSelection follows "alpha" to its new index, not the old one
+	m = m.reanchorSelection()
+	if m.envCursor != 1 {
+		t.Errorf("expected envCursor=1 (alpha's new index), got %d", m.envCursor)
+	}
+	if m.selectedEnvName() != "alpha" {
+		t.Errorf("expected alpha to remain selected, got %q", m.selectedEnvName())
+	}
+	if m.reloadAnchorEnv != "" {
+		t.Error("expected the anchor to be cleared after use")
+	}
+}
+
+func TestReanchorSelection_whenSelectedEnvironmentRemoved_clampsToBounds(t *testing.T) {
+	// Given "beta" selected at index 1
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.envCursor = 1
+	if m.selectedEnvName() != "beta" {
+		t.Fatalf("test setup: expected beta selected, got %q", m.selectedEnvName())
+	}
+	m.reloadAnchorEnv = "beta"
+
+	// When "beta" is removed by the reload
+	ctrl.envs = []engine.EnvInfo{{Name: "alpha"}}
+
+	// Then reanchorSelection can't find it (leaves envCursor untouched)...
+	m = m.reanchorSelection()
+	// ...and clampCursors — the fallback — brings it back into bounds
+	m = m.clampCursors()
+	if m.envCursor != 0 {
+		t.Errorf("expected envCursor clamped to 0, got %d", m.envCursor)
+	}
+}
+
+func TestReanchorSelection_whenSelectedCommandSurvives_keepsIt(t *testing.T) {
+	// Given env "alpha" with commands [svc-a, svc-b], "svc-b" selected at index 1
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.envCursor = 0
+	m.cmdCursor = 1
+	if m.selectedCommand() != "svc-b" {
+		t.Fatalf("test setup: expected svc-b selected, got %q", m.selectedCommand())
+	}
+	m.reloadAnchorEnv = "alpha"
+	m.reloadAnchorCmd = "svc-b"
+
+	// When alpha's workflow changes such that "svc-b" moves to index 0
+	ctrl.commands["alpha"] = []string{"svc-b", "svc-new"}
+
+	// Then reanchorSelection follows "svc-b" to its new index
+	m = m.reanchorSelection()
+	if m.cmdCursor != 0 {
+		t.Errorf("expected cmdCursor=0 (svc-b's new index), got %d", m.cmdCursor)
+	}
+	if m.selectedCommand() != "svc-b" {
+		t.Errorf("expected svc-b to remain selected, got %q", m.selectedCommand())
+	}
+}
+
+func TestReanchorSelection_whenSelectedCommandRemovedFromWorkflow_clampsToBounds(t *testing.T) {
+	// Given env "alpha" with commands [svc-a, svc-b], "svc-b" selected at index 1
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m.envCursor = 0
+	m.cmdCursor = 1
+	if m.selectedCommand() != "svc-b" {
+		t.Fatalf("test setup: expected svc-b selected, got %q", m.selectedCommand())
+	}
+	m.reloadAnchorEnv = "alpha"
+	m.reloadAnchorCmd = "svc-b"
+
+	// When "svc-b" is removed from alpha's workflow
+	ctrl.commands["alpha"] = []string{"svc-a"}
+
+	// Then reanchorSelection can't find it (leaves cmdCursor untouched)...
+	m = m.reanchorSelection()
+	// ...and clampCursors — the fallback — brings it back into bounds
+	m = m.clampCursors()
+	if m.cmdCursor != 0 {
+		t.Errorf("expected cmdCursor clamped to 0, got %d", m.cmdCursor)
+	}
+}
+
 func TestModel_ctrlD_setsDetachingAndQuits(t *testing.T) {
 	// Given
 	ctrl := newFakeController()

@@ -118,6 +118,15 @@ type Model struct {
 	cmdCursor int
 	focused   focus
 
+	// reloadAnchorEnv/reloadAnchorCmd capture the selected environment/command
+	// by name when a reload is triggered (see the "c" key handler). Reload runs
+	// in the background, so by the time reloadDoneMsg arrives the environment/
+	// command lists may already have changed; capturing by name at key-press
+	// time lets reanchorSelection re-find the same selection afterward instead
+	// of leaving the cursor pointing at whatever now occupies that index.
+	reloadAnchorEnv string
+	reloadAnchorCmd string
+
 	// terminal dimensions
 	width  int
 	height int
@@ -408,6 +417,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reloadErr = ""
 		m.configParseErr = ""
 		m.configApproved = true
+		m = m.reanchorSelection()
 		m = m.clampCursors()
 		m = m.refreshLogView()
 		// The engine is mutated in place (see ApplyConfig), never swapped, so
@@ -541,6 +551,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// "c" is inert when no valid change is pending (or file is unparseable).
 			break
 		}
+		// Capture the selection by name now: Reload runs in the background, and
+		// by the time reloadDoneMsg arrives the environment/command lists may
+		// already differ (see reanchorSelection).
+		m.reloadAnchorEnv = m.selectedEnvName()
+		m.reloadAnchorCmd = m.selectedCommand()
 		m.notice = "Reloading config…"
 		return m, reloadCmd(m.ctrl)
 	}
@@ -921,9 +936,41 @@ func (m Model) canOpenEnvInspector() bool {
 	}
 }
 
+// reanchorSelection re-finds reloadAnchorEnv/reloadAnchorCmd (captured by name
+// when "c" was pressed, before the reload's environment/command lists could
+// have changed) by name in the current lists, moving envCursor/cmdCursor to
+// match. If an anchor is no longer present (its environment or command was
+// removed by the reload), the corresponding cursor is left untouched for
+// clampCursors to bring back into bounds as a fallback. Always clears both
+// anchors: they are single-use, valid only for the reload that captured them.
+func (m Model) reanchorSelection() Model {
+	anchorEnv, anchorCmd := m.reloadAnchorEnv, m.reloadAnchorCmd
+	m.reloadAnchorEnv, m.reloadAnchorCmd = "", ""
+
+	if anchorEnv != "" {
+		for i, env := range m.ctrl.Environments() {
+			if env.Name == anchorEnv {
+				m.envCursor = i
+				break
+			}
+		}
+	}
+	if anchorCmd != "" {
+		for i, cmd := range m.selectedEnvCommands() {
+			if cmd == anchorCmd {
+				m.cmdCursor = i
+				break
+			}
+		}
+	}
+	return m
+}
+
 // clampCursors ensures envCursor and cmdCursor remain within the bounds of the
-// current environment and command lists. This is called after a reload, where
-// the new config may have fewer entries than the old one.
+// current environment and command lists. It is the fallback for when
+// reanchorSelection's target environment/command no longer exists (e.g. it
+// was removed by the reload) — the cursor is brought back into range rather
+// than left pointing past the end of a shorter list.
 func (m Model) clampCursors() Model {
 	envs := m.ctrl.Environments()
 	if m.envCursor >= len(envs) {
