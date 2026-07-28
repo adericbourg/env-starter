@@ -565,3 +565,194 @@ func TestWaitForCmdSettled_whenNoTransientObserved_trustsMirrorAfterGrace(t *tes
 		t.Error("want healthy=true after grace window elapses, got false")
 	}
 }
+
+// ── Reload mirror-refresh tests ───────────────────────────────────────────────
+//
+// A reload can add or remove environments/commands, which no state event
+// carries, so ClientController.Reload re-fetches a snapshot and re-seeds the
+// mirror on success. These use the real daemon server (startTestServer,
+// mockController — from server_test.go) so the snapshot actually reflects the
+// mock's state at the time of the follow-up RPC, not a canned response.
+
+func TestClientReload_whenEnvironmentAdded_appearsInEnvironments(t *testing.T) {
+	// Given a connected client
+	ctrl := newMockController()
+	ctrl.envs = []engine.EnvInfo{{Name: "dev"}}
+	ctrl.workflowCmds["dev"] = []string{"api"}
+	ctrl.envStates["dev"] = engine.EnvRunning
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	cc, err := Connect(socketPath)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cc.Detach()
+
+	// When a reload adds a new environment
+	ctrl.mu.Lock()
+	ctrl.envs = append(ctrl.envs, engine.EnvInfo{Name: "staging"})
+	ctrl.workflowCmds["staging"] = []string{"worker"}
+	ctrl.envStates["staging"] = engine.EnvStopped
+	ctrl.mu.Unlock()
+
+	if err := cc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Then the new environment appears in the mirror
+	found := false
+	for _, env := range cc.Environments() {
+		if env.Name == "staging" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'staging' to appear after reload, got %v", cc.Environments())
+	}
+}
+
+func TestClientReload_whenEnvironmentRemoved_disappearsFromEnvironments(t *testing.T) {
+	// Given a connected client with two environments
+	ctrl := newMockController()
+	ctrl.envs = []engine.EnvInfo{{Name: "dev"}, {Name: "staging"}}
+	ctrl.workflowCmds["dev"] = []string{"api"}
+	ctrl.workflowCmds["staging"] = []string{"worker"}
+	ctrl.envStates["dev"] = engine.EnvRunning
+	ctrl.envStates["staging"] = engine.EnvStopped
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	cc, err := Connect(socketPath)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cc.Detach()
+
+	// When a reload removes "staging"
+	ctrl.mu.Lock()
+	ctrl.envs = []engine.EnvInfo{{Name: "dev"}}
+	delete(ctrl.workflowCmds, "staging")
+	delete(ctrl.envStates, "staging")
+	ctrl.mu.Unlock()
+
+	if err := cc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Then "staging" no longer appears
+	for _, env := range cc.Environments() {
+		if env.Name == "staging" {
+			t.Fatalf("expected 'staging' to be gone after reload, got %v", cc.Environments())
+		}
+	}
+}
+
+func TestClientReload_whenWorkflowChanged_workflowCommandsReflectIt(t *testing.T) {
+	// Given a connected client
+	ctrl := newMockController()
+	ctrl.envs = []engine.EnvInfo{{Name: "dev"}}
+	ctrl.workflowCmds["dev"] = []string{"api"}
+	ctrl.envStates["dev"] = engine.EnvRunning
+	socketPath, cancel := startTestServer(t, ctrl)
+	defer cancel()
+
+	cc, err := Connect(socketPath)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cc.Detach()
+	if got := cc.WorkflowCommands("dev"); len(got) != 1 || got[0] != "api" {
+		t.Fatalf("expected initial workflow [api], got %v", got)
+	}
+
+	// When a reload adds a step to "dev"'s workflow
+	ctrl.mu.Lock()
+	ctrl.workflowCmds["dev"] = []string{"api", "worker"}
+	ctrl.mu.Unlock()
+
+	if err := cc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Then WorkflowCommands reflects the new step
+	got := cc.WorkflowCommands("dev")
+	if len(got) != 2 || got[0] != "api" || got[1] != "worker" {
+		t.Errorf("expected workflow [api worker], got %v", got)
+	}
+}
+
+// startFakeServerSequencedRPC behaves like startFakeServer but responds to
+// each RPC request in turn with the corresponding entry in rpcResponses
+// (an empty, error-free Response once the list is exhausted).
+func startFakeServerSequencedRPC(t *testing.T, snap Snapshot, rpcResponses []Response) string {
+	t.Helper()
+	dir := socketTempDir(t)
+	socketPath := dir + "/fake.sock"
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("fake server listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+
+	go func() {
+		rpcConn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func() {
+			defer rpcConn.Close()
+			scan := bufio.NewScanner(rpcConn)
+			enc := json.NewEncoder(rpcConn)
+			for i := 0; scan.Scan(); i++ {
+				resp := Response{}
+				if i < len(rpcResponses) {
+					resp = rpcResponses[i]
+				}
+				_ = enc.Encode(resp)
+			}
+		}()
+
+		streamConn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go serveStream(t, streamConn, snap, nil)
+	}()
+
+	return socketPath
+}
+
+func TestClientReload_whenSnapshotRPCFails_keepsThePreviousMirror(t *testing.T) {
+	// Given a client seeded with an initial snapshot, and a fake server that
+	// succeeds the reload RPC but errors on the follow-up snapshot RPC
+	snap := Snapshot{
+		EnvStates:    map[string]engine.EnvState{"dev": engine.EnvRunning},
+		CmdStates:    map[string]engine.CmdState{},
+		CmdRetries:   map[string][2]int{},
+		Environments: []engine.EnvInfo{{Name: "dev"}},
+		WorkflowCmds: map[string][]string{"dev": {"api"}},
+		LogPaths:     map[string]string{},
+	}
+	socketPath := startFakeServerSequencedRPC(t, snap, []Response{
+		{},                              // MethodReload succeeds
+		{Error: "snapshot unavailable"}, // MethodSnapshot fails
+	})
+	cc, err := Connect(socketPath)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer cc.Detach()
+
+	// When
+	if err := cc.Reload(context.Background()); err != nil {
+		t.Fatalf("expected Reload to still succeed despite the snapshot refresh failing, got: %v", err)
+	}
+
+	// Then the previous mirror is left untouched
+	envs := cc.Environments()
+	if len(envs) != 1 || envs[0].Name != "dev" {
+		t.Errorf("expected mirror to still show 'dev', got %v", envs)
+	}
+}

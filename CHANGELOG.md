@@ -22,6 +22,13 @@ Releases follow [Semantic Versioning](https://semver.org/).
   restarted, and a running command untouched by the change keeps running
   across the reload. See `docs/configuration.md` (Hot-reload behavior).
 
+### Fixed
+- A daemon-attached TUI's environment/workflow list stopped updating after a
+  reload added or removed an environment or command — the client only
+  refreshed its local mirror from state events, which carry no topology
+  information. The client now re-fetches a snapshot after a successful
+  reload.
+
 ## [1.6.3] — 2026-07-28
 
 ### Fixed

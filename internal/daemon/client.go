@@ -109,42 +109,54 @@ func Connect(socketPath string) (*ClientController, error) {
 	rpcScan := bufio.NewScanner(rpcConn)
 	rpcScan.Buffer(make([]byte, 1<<20), 1<<20) // 1 MiB; prevents truncation of large log responses
 	c := &ClientController{
-		rpcConn:      rpcConn,
-		streamConn:   streamConn,
-		rpcEnc:       json.NewEncoder(rpcConn),
-		rpcScan:      rpcScan,
-		envStates:    snap.EnvStates,
-		cmdStates:    snap.CmdStates,
-		cmdRetries:   snap.CmdRetries,
-		cmdUnmanaged: snap.CmdUnmanaged,
-		environments: snap.Environments,
-		workflowCmds: snap.WorkflowCmds,
-		logPaths:     snap.LogPaths,
-		events:       make(chan engine.Event, clientEventBuffer),
+		rpcConn:    rpcConn,
+		streamConn: streamConn,
+		rpcEnc:     json.NewEncoder(rpcConn),
+		rpcScan:    rpcScan,
+		events:     make(chan engine.Event, clientEventBuffer),
 	}
-	if c.envStates == nil {
-		c.envStates = make(map[string]engine.EnvState)
-	}
-	if c.cmdStates == nil {
-		c.cmdStates = make(map[string]engine.CmdState)
-	}
-	if c.cmdRetries == nil {
-		c.cmdRetries = make(map[string][2]int)
-	}
-	if c.cmdUnmanaged == nil {
-		c.cmdUnmanaged = make(map[string]bool)
-	}
-	if c.workflowCmds == nil {
-		c.workflowCmds = make(map[string][]string)
-	}
-	if c.logPaths == nil {
-		c.logPaths = make(map[string]string)
-	}
+	c.seedMirror(snap)
 
 	// 6. Start the event-stream goroutine.
 	go c.runEventStream(streamScan)
 
 	return c, nil
+}
+
+// seedMirror replaces the local mirror with snap, filling any nil map with an
+// empty one so mirror reads never see a nil map. Used both to seed a freshly
+// connected client and to refresh the mirror's topology after Reload, since
+// state events carry no information about environments/commands having been
+// added or removed.
+func (c *ClientController) seedMirror(snap Snapshot) {
+	if snap.EnvStates == nil {
+		snap.EnvStates = make(map[string]engine.EnvState)
+	}
+	if snap.CmdStates == nil {
+		snap.CmdStates = make(map[string]engine.CmdState)
+	}
+	if snap.CmdRetries == nil {
+		snap.CmdRetries = make(map[string][2]int)
+	}
+	if snap.CmdUnmanaged == nil {
+		snap.CmdUnmanaged = make(map[string]bool)
+	}
+	if snap.WorkflowCmds == nil {
+		snap.WorkflowCmds = make(map[string][]string)
+	}
+	if snap.LogPaths == nil {
+		snap.LogPaths = make(map[string]string)
+	}
+
+	c.mirrorMu.Lock()
+	c.envStates = snap.EnvStates
+	c.cmdStates = snap.CmdStates
+	c.cmdRetries = snap.CmdRetries
+	c.cmdUnmanaged = snap.CmdUnmanaged
+	c.environments = snap.Environments
+	c.workflowCmds = snap.WorkflowCmds
+	c.logPaths = snap.LogPaths
+	c.mirrorMu.Unlock()
 }
 
 // runEventStream reads WireEvent lines continuously from the event-stream
@@ -354,6 +366,13 @@ func (c *ClientController) ConfigChanged() (bool, error) {
 
 // Reload sends a reload RPC and returns any error.
 // Note: ctx is accepted for interface compliance but cancellation is not propagated to the blocking RPC call.
+//
+// A reload can add or remove environments/commands, which no state event
+// carries, so the mirror's topology (environments/workflows) would otherwise
+// go stale. On success, Reload also re-fetches a snapshot and re-seeds the
+// mirror from it. That refresh is best-effort: if it fails, Reload still
+// returns nil (the reload itself succeeded) and the previous mirror is left
+// in place rather than blanked out.
 func (c *ClientController) Reload(ctx context.Context) error {
 	resp, err := c.rpc(Request{Method: MethodReload})
 	if err != nil {
@@ -362,6 +381,17 @@ func (c *ClientController) Reload(ctx context.Context) error {
 	if resp.Error != "" {
 		return errors.New(resp.Error)
 	}
+
+	snapResp, err := c.rpc(Request{Method: MethodSnapshot})
+	if err != nil || snapResp.Error != "" {
+		return nil
+	}
+	var snap Snapshot
+	if err := json.Unmarshal(snapResp.Result, &snap); err != nil {
+		return nil
+	}
+	c.seedMirror(snap)
+
 	return nil
 }
 
