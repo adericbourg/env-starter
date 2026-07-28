@@ -83,6 +83,7 @@ env-starter run connect-order && echo "ready"
 | `R` (Shift+R) | Restart the selected command (Commands pane only) |
 | `r` | Refresh logs (Logs pane only) |
 | `e` | Open the env inspector for the selected environment or command (Environments/Commands/Logs panes) — see below |
+| `c` | Reload the configuration from disk. Only active while the amber banner reports a pending, parseable, approved change. |
 | `Ctrl+L` | Open the selected command's log file in the default application (Logs pane only) |
 | `Ctrl+C` | First press shows confirmation; a second `Ctrl+C` within 3 seconds performs a graceful shutdown — stops all environments **and shuts down the daemon** |
 | `Ctrl+D` | Detach — exits the TUI immediately while leaving all environments running in the daemon. The daemon keeps running; run `env-starter` again to reconnect, or `env-starter shutdown` to stop everything. |
