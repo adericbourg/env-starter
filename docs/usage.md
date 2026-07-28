@@ -87,6 +87,12 @@ env-starter run connect-order && echo "ready"
 | `Ctrl+C` | First press shows confirmation; a second `Ctrl+C` within 3 seconds performs a graceful shutdown — stops all environments **and shuts down the daemon** |
 | `Ctrl+D` | Detach — exits the TUI immediately while leaving all environments running in the daemon. The daemon keeps running; run `env-starter` again to reconnect, or `env-starter shutdown` to stop everything. |
 
+In the footer's shortcut bar, `s`, `x`, `R`, and `Ctrl+L` are dimmed whenever
+they would have no effect on the current selection — for example, `s` dims
+once the selected environment is already running, and `R` dims for a command
+that was never started or has been stopped. Pressing a dimmed shortcut does
+nothing.
+
 ### Env inspector
 
 Press `e` from the Environments, Commands, or Logs pane to open a read-only

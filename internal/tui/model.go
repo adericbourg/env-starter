@@ -1114,6 +1114,17 @@ var (
 	footerStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
 
+	// shortcutStyle renders a legend entry whose shortcut can act on the current
+	// selection.
+	shortcutStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("250"))
+
+	// shortcutDisabledStyle renders a legend entry whose shortcut would be a
+	// no-op given the current selection — dimmer than shortcutStyle so it reads
+	// as unavailable rather than broken.
+	shortcutDisabledStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("240"))
+
 	// quitConfirmStyle renders the "Press Ctrl+C again to quit" hint in amber so
 	// it stands out clearly from the normal shortcut bar.
 	quitConfirmStyle = lipgloss.NewStyle().
@@ -1327,7 +1338,10 @@ func (m Model) renderFooter() string {
 	if m.notice != "" {
 		return footerStyle.Render(m.notice)
 	}
-	return footerStyle.Render(m.footerLine())
+	// Not wrapped in footerStyle: shortcutsLegend already styles each entry
+	// individually, and re-wrapping the already-styled string would nest ANSI
+	// sequences instead of coloring it uniformly.
+	return m.footerLine()
 }
 
 // footerLine returns the shortcuts legend, right-padded with the build
@@ -1337,7 +1351,7 @@ func (m Model) footerLine() string {
 	if m.version == "" {
 		return legend
 	}
-	versionLabel := "v" + m.version
+	versionLabel := footerStyle.Render("v" + m.version)
 	pad := m.width - lipgloss.Width(legend) - lipgloss.Width(versionLabel)
 	if pad < 1 {
 		return legend
@@ -1345,22 +1359,55 @@ func (m Model) footerLine() string {
 	return legend + strings.Repeat(" ", pad) + versionLabel
 }
 
-// shortcutsLegend builds the footer's shortcut hints for the currently
+// shortcut is one entry in the footer's shortcut legend.
+type shortcut struct {
+	label     string // e.g. "R restart"
+	available bool   // whether the key would currently have an effect
+}
+
+// shortcutEntries builds the footer's shortcut hints for the currently
 // focused pane — shortcuts whose behavior is scoped to one pane are only
-// shown while that pane is focused.
-func (m Model) shortcutsLegend() string {
-	parts := []string{"↑/↓ move", "tab/←/→ focus"}
+// listed while that pane is focused. Each entry also carries whether it would
+// currently be a no-op, so shortcutsLegend can dim it accordingly.
+func (m Model) shortcutEntries() []shortcut {
+	entries := []shortcut{
+		{label: "↑/↓ move", available: true},
+		{label: "tab/←/→ focus", available: true},
+	}
 	if m.focused == focusEnvs {
-		parts = append(parts, "s start", "x stop")
+		entries = append(entries,
+			shortcut{label: "s start", available: m.canStartSelectedEnv()},
+			shortcut{label: "x stop", available: m.canStopSelectedEnv()},
+		)
 	}
 	if m.focused == focusCmds {
-		parts = append(parts, "R restart")
+		entries = append(entries, shortcut{label: "R restart", available: m.canRestartSelectedCommand()})
 	}
 	if m.focused == focusLogs {
-		parts = append(parts, "r refresh logs", "^L open")
+		entries = append(entries,
+			shortcut{label: "r refresh logs", available: true},
+			shortcut{label: "^L open", available: m.canOpenSelectedLog()},
+		)
 	}
-	parts = append(parts, "e env inspector")
-	parts = append(parts, "^D detach", "^C shutdown")
+	entries = append(entries, shortcut{label: "e env inspector", available: m.canOpenEnvInspector()})
+	entries = append(entries,
+		shortcut{label: "^D detach", available: true},
+		shortcut{label: "^C shutdown", available: true},
+	)
+	return entries
+}
+
+// shortcutsLegend renders shortcutEntries, styling each entry by availability.
+func (m Model) shortcutsLegend() string {
+	entries := m.shortcutEntries()
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		style := shortcutStyle
+		if !e.available {
+			style = shortcutDisabledStyle
+		}
+		parts[i] = style.Render(e.label)
+	}
 	return strings.Join(parts, "  ")
 }
 

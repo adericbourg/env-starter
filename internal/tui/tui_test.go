@@ -1231,6 +1231,100 @@ func TestRenderFooter_envsFocused_showsStartStop(t *testing.T) {
 	}
 }
 
+// shortcutAvailability looks up a shortcutEntries() entry by its exact label.
+func shortcutAvailability(t *testing.T, entries []shortcut, label string) bool {
+	t.Helper()
+	for _, e := range entries {
+		if e.label == label {
+			return e.available
+		}
+	}
+	t.Fatalf("no shortcut entry with label %q, got %+v", label, entries)
+	return false
+}
+
+func TestShortcutEntries_whenEnvRunning_marksStartUnavailable(t *testing.T) {
+	// Given the selected environment is already running.
+	ctrl := newFakeController()
+	ctrl.envState["alpha"] = engine.EnvRunning
+	m := seed(New(ctrl))
+
+	// When
+	entries := m.shortcutEntries()
+
+	// Then
+	if shortcutAvailability(t, entries, "s start") {
+		t.Error("expected 's start' to be unavailable for a running env")
+	}
+	if !shortcutAvailability(t, entries, "x stop") {
+		t.Error("expected 'x stop' to be available for a running env")
+	}
+}
+
+func TestShortcutEntries_whenEnvStopped_marksStopUnavailable(t *testing.T) {
+	// Given the selected environment is stopped (the default fixture state).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+
+	// When
+	entries := m.shortcutEntries()
+
+	// Then
+	if !shortcutAvailability(t, entries, "s start") {
+		t.Error("expected 's start' to be available for a stopped env")
+	}
+	if shortcutAvailability(t, entries, "x stop") {
+		t.Error("expected 'x stop' to be unavailable for a stopped env")
+	}
+}
+
+func TestShortcutEntries_whenCmdPending_marksRestartUnavailable(t *testing.T) {
+	// Given the selected command was never started (the default fixture state).
+	ctrl := newFakeController()
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	entries := m.shortcutEntries()
+
+	// Then
+	if shortcutAvailability(t, entries, "R restart") {
+		t.Error("expected 'R restart' to be unavailable for a pending command")
+	}
+}
+
+func TestShortcutEntries_whenCmdHealthy_marksRestartAvailable(t *testing.T) {
+	// Given the selected command is running.
+	ctrl := newFakeController()
+	ctrl.cmdState["svc-a"] = engine.CmdHealthy
+	m := seed(New(ctrl))
+	m = sendSpecialKey(m, tea.KeyTab) // focus cmds
+
+	// When
+	entries := m.shortcutEntries()
+
+	// Then
+	if !shortcutAvailability(t, entries, "R restart") {
+		t.Error("expected 'R restart' to be available for a healthy command")
+	}
+}
+
+func TestShortcutEntries_whenNoLogPath_marksOpenLogUnavailable(t *testing.T) {
+	// Given the selected command's log path is unknown.
+	ctrl := newFakeController()
+	ctrl.logPaths = map[string]string{"svc-a": ""}
+	m := seed(New(ctrl))
+	m.focused = focusLogs
+
+	// When
+	entries := m.shortcutEntries()
+
+	// Then
+	if shortcutAvailability(t, entries, "^L open") {
+		t.Error("expected '^L open' to be unavailable with no log path")
+	}
+}
+
 func TestRenderFooter_cmdsFocused_hidesStartStop(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
@@ -1714,6 +1808,35 @@ func TestRenderFooter_whenVersionSet_showsVersionAtRight(t *testing.T) {
 	}
 }
 
+func TestRenderFooter_whenShortcutUnavailable_rendersItDimmed(t *testing.T) {
+	// Given two models that differ only in whether "s start" can act on the
+	// selected env.
+	stopped := newFakeController()
+	m1 := seed(New(stopped)) // "alpha" is stopped by default: s is available
+
+	running := newFakeController()
+	running.envState["alpha"] = engine.EnvRunning
+	m2 := seed(New(running)) // s is unavailable
+
+	// When — render without stripping ANSI, since the styling itself is what's
+	// under test.
+	footer1 := m1.renderFooter()
+	footer2 := m2.renderFooter()
+
+	// Then — the same label is styled differently depending on availability.
+	rendered1 := shortcutStyle.Render("s start")
+	rendered2 := shortcutDisabledStyle.Render("s start")
+	if !strings.Contains(footer1, rendered1) {
+		t.Errorf("expected available 's start' to render as %q, got footer %q", rendered1, footer1)
+	}
+	if !strings.Contains(footer2, rendered2) {
+		t.Errorf("expected unavailable 's start' to render as %q, got footer %q", rendered2, footer2)
+	}
+	if strings.Contains(footer2, rendered1) {
+		t.Errorf("expected unavailable 's start' not to use the available style, got footer %q", footer2)
+	}
+}
+
 func TestRenderFooter_whenVersionEmpty_omitsVersion(t *testing.T) {
 	// Given
 	ctrl := newFakeController()
@@ -1723,8 +1846,8 @@ func TestRenderFooter_whenVersionEmpty_omitsVersion(t *testing.T) {
 	footer := ansi.Strip(m.renderFooter())
 
 	// Then — no version set means the footer is exactly the shortcuts legend.
-	if footer != m.shortcutsLegend() {
-		t.Errorf("expected footer to be unchanged when no version is set, got %q", footer)
+	if want := ansi.Strip(m.shortcutsLegend()); footer != want {
+		t.Errorf("expected footer to be unchanged when no version is set, got %q, want %q", footer, want)
 	}
 }
 
@@ -1740,8 +1863,8 @@ func TestRenderFooter_whenNarrowWidth_omitsVersionRatherThanOverflow(t *testing.
 	footer := ansi.Strip(m.renderFooter())
 
 	// Then — falls back to the plain legend instead of overflowing the width.
-	if footer != m.shortcutsLegend() {
-		t.Errorf("expected version to be omitted when it doesn't fit, got %q", footer)
+	if want := ansi.Strip(m.shortcutsLegend()); footer != want {
+		t.Errorf("expected version to be omitted when it doesn't fit, got %q, want %q", footer, want)
 	}
 }
 

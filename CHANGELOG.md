@@ -6,6 +6,11 @@ Releases follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- The TUI footer's shortcut hints (`s`, `x`, `R`, `Ctrl+L`) now dim when the
+  shortcut would have no effect on the current selection, instead of looking
+  identical to a shortcut that would actually act.
+
 ## [1.6.3] — 2026-07-28
 
 ### Fixed
