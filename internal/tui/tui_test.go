@@ -2699,6 +2699,72 @@ func TestUpdate_envInspectorList_originFacetKeysFilterAndAreTracked(t *testing.T
 	}
 }
 
+func TestUpdate_envInspectorList_leftRightArrowsCycleOriginFacet(t *testing.T) {
+	// Given vars from all three sources, with the table focused (the default).
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {
+			{Key: "HOME", Winning: engine.EnvLayer{Source: engine.EnvSourceOS}},
+			{Key: "APP_ENV", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "APP_CMD", Winning: engine.EnvLayer{Source: engine.EnvSourceCommand}},
+		},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When right is pressed from the default "All" filter.
+	m = sendSpecialKey(m, tea.KeyRight)
+
+	// Then it moves to the next facet ("OS/user").
+	if got := m.envInspector.originFilter; got != envOriginFilter(engine.EnvSourceOS) {
+		t.Fatalf("expected origin filter %q after one right, got %q", engine.EnvSourceOS, got)
+	}
+
+	// When right is pressed three more times (to "environment", "command",
+	// then wrapping back to "All").
+	m = sendSpecialKey(m, tea.KeyRight)
+	m = sendSpecialKey(m, tea.KeyRight)
+	m = sendSpecialKey(m, tea.KeyRight)
+
+	// Then it has wrapped back to "All".
+	if got := m.envInspector.originFilter; got != envOriginFilterAll {
+		t.Errorf("expected origin filter to wrap to %q, got %q", envOriginFilterAll, got)
+	}
+
+	// When left is pressed from "All".
+	m = sendSpecialKey(m, tea.KeyLeft)
+
+	// Then it wraps backward to the last facet ("command").
+	if got := m.envInspector.originFilter; got != envOriginFilter(engine.EnvSourceCommand) {
+		t.Errorf("expected origin filter to wrap to %q, got %q", engine.EnvSourceCommand, got)
+	}
+}
+
+func TestUpdate_envInspectorList_leftRightInSearchFieldMovesCursorNotFilter(t *testing.T) {
+	// Given an open inspector with the search field focused (reached via "up"
+	// from the first table row) and some typed text.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "FOO_BAR_KEY", Winning: engine.EnvLayer{Value: "bar", Source: engine.EnvSourceCommand}}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendKey(m, "up") // move focus from the table to the search field
+	m = typeText(m, "fo")
+
+	// When left/right are pressed while the search field has focus.
+	m = sendSpecialKey(m, tea.KeyLeft)
+	m = sendSpecialKey(m, tea.KeyRight)
+
+	// Then the origin filter is unchanged and the typed text is intact.
+	if got := m.envInspector.originFilter; got != envOriginFilterAll {
+		t.Errorf("expected origin filter to remain %q, got %q", envOriginFilterAll, got)
+	}
+	if got := m.envInspector.search.Value(); got != "fo" {
+		t.Errorf("expected search field to still contain %q, got %q", "fo", got)
+	}
+}
+
 func TestUpdate_envInspectorList_enterOpensDetailScreen(t *testing.T) {
 	// Given an open inspector on its list screen.
 	ctrl := newFakeController()

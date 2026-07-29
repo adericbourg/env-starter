@@ -121,6 +121,10 @@ narrow the table by source:
 | `F7` | environment |
 | `F8` | command |
 
+`←`/`→` also cycle through the facets in order, wrapping at either end —
+except while the search field has focus, where they move the text cursor
+instead.
+
 **Details screen.** Press `Enter` on a table row to open its details:
 the value, its origin, and any lower-priority value it overrides. Values are
 **masked by default** — press `Space` to reveal the value and every value it

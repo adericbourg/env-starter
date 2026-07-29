@@ -661,7 +661,9 @@ func (m Model) openEnvInspector(command, envName string) (tea.Model, tea.Cmd) {
 
 // handleEnvInspectorKey handles all key input while the env inspector overlay
 // is open. F5–F8 change the origin filter regardless of screen or focus;
-// everything else is dispatched to the current screen's handler.
+// Left/Right do the same except while the search field has focus, where they
+// must keep moving the text cursor instead. Everything else is dispatched to
+// the current screen's handler.
 func (m Model) handleEnvInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "f5":
@@ -672,6 +674,10 @@ func (m Model) handleEnvInspectorKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.setEnvInspectorOriginFilter(envOriginFilter(engine.EnvSourceEnvironment))
 	case "f8":
 		return m.setEnvInspectorOriginFilter(envOriginFilter(engine.EnvSourceCommand))
+	case "left", "right":
+		if m.envInspector.focus != envInspectorFocusSearch {
+			return m.cycleEnvInspectorOriginFilter(msg.String() == "right")
+		}
 	}
 
 	if m.envInspector.screen == envInspectorScreenDetail {
@@ -689,6 +695,26 @@ func (m Model) setEnvInspectorOriginFilter(f envOriginFilter) (tea.Model, tea.Cm
 	insp.scroll = 0
 	m.envInspector = &insp
 	return m, nil
+}
+
+// cycleEnvInspectorOriginFilter moves the origin filter to the next
+// (forward) or previous facet in envOriginFacets, wrapping around at either
+// end.
+func (m Model) cycleEnvInspectorOriginFilter(forward bool) (tea.Model, tea.Cmd) {
+	idx := 0
+	for i, f := range envOriginFacets {
+		if f.filter == m.envInspector.originFilter {
+			idx = i
+			break
+		}
+	}
+	n := len(envOriginFacets)
+	if forward {
+		idx = (idx + 1) % n
+	} else {
+		idx = (idx - 1 + n) % n
+	}
+	return m.setEnvInspectorOriginFilter(envOriginFacets[idx].filter)
 }
 
 // handleEnvInspectorListKey handles key input on the table/search list
@@ -1731,7 +1757,7 @@ func (m Model) renderEnvInspectorList() string {
 		}
 	}
 
-	rows = append(rows, "", footerStyle.Render("↑/↓ move   enter details   F5-F8 filter origin   esc close"))
+	rows = append(rows, "", footerStyle.Render("↑/↓ move   enter details   F5-F8/←/→ filter origin   esc close"))
 
 	content := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, content)
