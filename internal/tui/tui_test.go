@@ -2665,6 +2665,57 @@ func TestUpdate_envInspectorList_searchFocused_lettersQAndEDoNotClose(t *testing
 	}
 }
 
+func TestUpdate_envInspectorList_tableFocused_typingLetterFocusesSearchAndFillsIt(t *testing.T) {
+	// Given the table is focused (the default state right after opening).
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {
+			{Key: "FOO_BAR", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+			{Key: "OTHER", Winning: engine.EnvLayer{Source: engine.EnvSourceEnvironment}},
+		},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	if m.envInspector.focus != envInspectorFocusTable {
+		t.Fatal("expected the table to have focus by default")
+	}
+
+	// When typing a letter, then a digit, then an underscore.
+	m = typeText(m, "f1_")
+
+	// Then: focus jumped to search and every character landed there.
+	if m.envInspector.focus != envInspectorFocusSearch {
+		t.Fatal("expected typing to move focus to the search field")
+	}
+	if got, want := m.envInspector.search.Value(), "f1_"; got != want {
+		t.Errorf("expected search value %q, got %q", want, got)
+	}
+}
+
+func TestUpdate_envInspectorList_tableFocused_typingQOrEFocusesSearchInsteadOfClosing(t *testing.T) {
+	// Given the table is focused.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{"env:alpha": {{Key: "QUEUE"}}}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+
+	// When typing "q" then "e" — keys that close the overlay elsewhere in the
+	// app — while the table has focus.
+	m = typeText(m, "qe")
+
+	// Then: type-to-search wins. The overlay stays open, focus moved to
+	// search, and both letters were typed into it.
+	if m.envInspector == nil {
+		t.Fatal("expected the inspector to remain open")
+	}
+	if m.envInspector.focus != envInspectorFocusSearch {
+		t.Fatal("expected focus to move to the search field")
+	}
+	if got, want := m.envInspector.search.Value(), "qe"; got != want {
+		t.Errorf("expected search value %q, got %q", want, got)
+	}
+}
+
 func TestUpdate_envInspectorList_originFacetKeysFilterAndAreTracked(t *testing.T) {
 	// Given vars from all three sources.
 	ctrl := newFakeController()

@@ -718,9 +718,9 @@ func (m Model) cycleEnvInspectorOriginFilter(forward bool) (tea.Model, tea.Cmd) 
 }
 
 // handleEnvInspectorListKey handles key input on the table/search list
-// screen. Esc always closes the overlay; q/e only close it while the table
-// (not the search field) has focus, so those letters remain typeable in a
-// search query.
+// screen. Esc always closes the overlay. While the table has focus, typing
+// any letter, digit, or underscore (including q/e) jumps focus to the search
+// field and types it there, so a search can be started from anywhere.
 func (m Model) handleEnvInspectorListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		m.envInspector = nil
@@ -751,9 +751,6 @@ func (m Model) handleEnvInspectorListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 	}
 
 	switch msg.String() {
-	case "q", "e":
-		m.envInspector = nil
-		return m, nil
 	case "up":
 		if insp.cursor == 0 {
 			insp.focus = envInspectorFocusSearch
@@ -771,10 +768,36 @@ func (m Model) handleEnvInspectorListKey(msg tea.KeyPressMsg) (tea.Model, tea.Cm
 			insp.detail = v
 			insp.revealed = false
 		}
+	default:
+		if isEnvInspectorSearchTriggerKey(msg) {
+			insp.focus = envInspectorFocusSearch
+			insp.search.Focus()
+			var cmd tea.Cmd
+			insp.search, cmd = insp.search.Update(msg)
+			insp.cursor = 0
+			m.clampEnvInspectorList(&insp)
+			m.envInspector = &insp
+			return m, cmd
+		}
 	}
 	m.clampEnvInspectorList(&insp)
 	m.envInspector = &insp
 	return m, nil
+}
+
+// isEnvInspectorSearchTriggerKey reports whether msg represents a single
+// printable character that should jump focus to the search field: a-z, A-Z,
+// 0-9, or underscore.
+func isEnvInspectorSearchTriggerKey(msg tea.KeyPressMsg) bool {
+	text := msg.Key().Text
+	if len(text) != 1 {
+		return false
+	}
+	c := text[0]
+	return c == '_' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
 }
 
 // handleEnvInspectorDetailKey handles key input on the details screen: space
