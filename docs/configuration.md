@@ -306,6 +306,10 @@ Notes:
 - Non-overlap is guaranteed, but the **order** between independent
   `interactive-auth` commands is not. If you need a specific order, add a
   `depends-on` between them in the workflow.
+- An overlay can explicitly set `interactive-auth: false` to turn off a
+  `interactive-auth: true` set by the base config — omitting the field
+  entirely, rather than setting it to `false`, is what inherits the base's
+  value.
 
 ```yaml
 env-starter:
@@ -719,6 +723,8 @@ env-starter:
 Set to `true` to start this environment automatically when the TUI launches. It only applies to the TUI (`env-starter` with no subcommand): it has no effect on `env-starter run <env>`, which always starts the given environment explicitly.
 
 Auto-start only fires when the environment is currently `stopped`. If the TUI is reconnecting to a daemon that already has the environment running (or starting, degraded, etc.), auto-start is a no-op — it never restarts an already-running environment.
+
+An overlay can explicitly set `auto-start: false` to turn off an `auto-start: true` set by the base config — omitting the field entirely, rather than setting it to `false`, is what inherits the base's value.
 
 ```yaml
 env-starter:

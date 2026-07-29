@@ -529,7 +529,7 @@ func TestEnvironments_surfacesAutoStartFromConfig(t *testing.T) {
 			{Name: "x", Type: "task", Source: config.Source{Local: t.TempDir()}, Run: "exit 0"},
 		},
 		Environments: []config.Environment{
-			{Name: "dev", AutoStart: true, Workflow: []config.WorkflowStep{{Command: "x"}}},
+			{Name: "dev", AutoStart: boolPtr(true), Workflow: []config.WorkflowStep{{Command: "x"}}},
 			{Name: "prod", Workflow: []config.WorkflowStep{{Command: "x"}}},
 		},
 	}

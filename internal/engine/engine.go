@@ -345,7 +345,7 @@ func (e *Engine) Environments() []EnvInfo {
 	defer e.mu.Unlock()
 	out := make([]EnvInfo, 0, len(e.cfg.Environments))
 	for _, env := range e.cfg.Environments {
-		out = append(out, EnvInfo{Name: env.Name, Description: env.Description, AutoStart: env.AutoStart})
+		out = append(out, EnvInfo{Name: env.Name, Description: env.Description, AutoStart: env.AutoStart != nil && *env.AutoStart})
 	}
 	return out
 }

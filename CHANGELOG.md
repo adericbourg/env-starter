@@ -23,6 +23,11 @@ Releases follow [Semantic Versioning](https://semver.org/).
   across the reload. See `docs/configuration.md` (Hot-reload behavior).
 
 ### Fixed
+- An overlay could not disable `auto-start` or `interactive-auth` when the
+  base config set them to `true` — an overlay explicitly setting either to
+  `false` was indistinguishable from omitting the field, so the base's
+  `true` always won. Both fields now inherit from the base only when the
+  overlay omits them.
 - A daemon-attached TUI's environment/workflow list stopped updating after a
   reload added or removed an environment or command — the client only
   refreshed its local mirror from state events, which carry no topology

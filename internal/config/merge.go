@@ -82,8 +82,8 @@ func mergeCommandFields(base, overlay Command) Command {
 	if overlay.Restart != nil {
 		merged.Restart = overlay.Restart
 	}
-	if overlay.InteractiveAuth {
-		merged.InteractiveAuth = true
+	if overlay.InteractiveAuth != nil {
+		merged.InteractiveAuth = overlay.InteractiveAuth
 	}
 	return merged
 }
@@ -135,8 +135,8 @@ func mergeEnvironmentFields(base, overlay Environment) Environment {
 	if overlay.Workflow != nil {
 		merged.Workflow = overlay.Workflow
 	}
-	if overlay.AutoStart {
-		merged.AutoStart = true
+	if overlay.AutoStart != nil {
+		merged.AutoStart = overlay.AutoStart
 	}
 	return merged
 }

@@ -105,7 +105,7 @@ env-starter:
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !cfg.Commands[0].InteractiveAuth {
+	if cfg.Commands[0].InteractiveAuth == nil || !*cfg.Commands[0].InteractiveAuth {
 		t.Error("expected InteractiveAuth to be true")
 	}
 }
@@ -122,8 +122,8 @@ func TestLoad_ofInteractiveAuthAbsent_defaultsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if cfg.Commands[0].InteractiveAuth {
-		t.Error("expected InteractiveAuth to default to false")
+	if cfg.Commands[0].InteractiveAuth != nil {
+		t.Error("expected InteractiveAuth to be unset")
 	}
 }
 
@@ -153,7 +153,7 @@ env-starter:
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if !cfg.Environments[0].AutoStart {
+	if cfg.Environments[0].AutoStart == nil || !*cfg.Environments[0].AutoStart {
 		t.Error("expected AutoStart to be true")
 	}
 }
@@ -170,8 +170,8 @@ func TestLoad_ofAutoStartAbsent_defaultsFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if cfg.Environments[0].AutoStart {
-		t.Error("expected AutoStart to default to false")
+	if cfg.Environments[0].AutoStart != nil {
+		t.Error("expected AutoStart to be unset")
 	}
 }
 
@@ -1389,6 +1389,7 @@ func TestMerge_environmentsMergedByName(t *testing.T) {
 
 func TestMerge_autoStart_overlayCanEnable(t *testing.T) {
 	// Given a base environment with auto-start unset and an overlay enabling it
+	enabled := true
 	base := &Config{
 		Environments: []Environment{
 			{Name: "dev", Workflow: []WorkflowStep{{Command: "db"}}},
@@ -1396,7 +1397,7 @@ func TestMerge_autoStart_overlayCanEnable(t *testing.T) {
 	}
 	overlay := &Config{
 		Environments: []Environment{
-			{Name: "dev", AutoStart: true},
+			{Name: "dev", AutoStart: &enabled},
 		},
 	}
 
@@ -1404,16 +1405,41 @@ func TestMerge_autoStart_overlayCanEnable(t *testing.T) {
 	result := Merge(base, overlay)
 
 	// Then
-	if !result.Environments[0].AutoStart {
+	if result.Environments[0].AutoStart == nil || !*result.Environments[0].AutoStart {
 		t.Error("expected overlay to enable AutoStart")
 	}
 }
 
-func TestMerge_autoStart_overlayCannotDisable(t *testing.T) {
-	// Given a base environment with auto-start enabled and an overlay that omits it
+func TestMerge_autoStart_overlayCanDisable(t *testing.T) {
+	// Given a base environment with auto-start enabled and an overlay explicitly disabling it
+	enabled := true
+	disabled := false
 	base := &Config{
 		Environments: []Environment{
-			{Name: "dev", AutoStart: true, Workflow: []WorkflowStep{{Command: "db"}}},
+			{Name: "dev", AutoStart: &enabled, Workflow: []WorkflowStep{{Command: "db"}}},
+		},
+	}
+	overlay := &Config{
+		Environments: []Environment{
+			{Name: "dev", AutoStart: &disabled},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if result.Environments[0].AutoStart == nil || *result.Environments[0].AutoStart {
+		t.Error("expected overlay to disable AutoStart")
+	}
+}
+
+func TestMerge_autoStart_overlayOmit_inheritsBase(t *testing.T) {
+	// Given a base environment with auto-start enabled and an overlay that omits it
+	enabled := true
+	base := &Config{
+		Environments: []Environment{
+			{Name: "dev", AutoStart: &enabled, Workflow: []WorkflowStep{{Command: "db"}}},
 		},
 	}
 	overlay := &Config{
@@ -1426,8 +1452,78 @@ func TestMerge_autoStart_overlayCannotDisable(t *testing.T) {
 	result := Merge(base, overlay)
 
 	// Then
-	if !result.Environments[0].AutoStart {
+	if result.Environments[0].AutoStart == nil || !*result.Environments[0].AutoStart {
 		t.Error("expected base's AutoStart to be preserved when overlay omits it")
+	}
+}
+
+func TestMerge_interactiveAuth_overlayCanEnable(t *testing.T) {
+	// Given a base command with interactive-auth unset and an overlay enabling it
+	enabled := true
+	base := &Config{
+		Commands: []Command{
+			{Name: "login", Type: "task", Run: "tsh login", Source: Source{Local: "/tmp/login"}},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "login", InteractiveAuth: &enabled},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if result.Commands[0].InteractiveAuth == nil || !*result.Commands[0].InteractiveAuth {
+		t.Error("expected overlay to enable InteractiveAuth")
+	}
+}
+
+func TestMerge_interactiveAuth_overlayCanDisable(t *testing.T) {
+	// Given a base command with interactive-auth enabled and an overlay explicitly disabling it
+	enabled := true
+	disabled := false
+	base := &Config{
+		Commands: []Command{
+			{Name: "login", Type: "task", Run: "tsh login", Source: Source{Local: "/tmp/login"}, InteractiveAuth: &enabled},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "login", InteractiveAuth: &disabled},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if result.Commands[0].InteractiveAuth == nil || *result.Commands[0].InteractiveAuth {
+		t.Error("expected overlay to disable InteractiveAuth")
+	}
+}
+
+func TestMerge_interactiveAuth_overlayOmit_inheritsBase(t *testing.T) {
+	// Given a base command with interactive-auth enabled and an overlay that omits it
+	enabled := true
+	base := &Config{
+		Commands: []Command{
+			{Name: "login", Type: "task", Run: "tsh login", Source: Source{Local: "/tmp/login"}, InteractiveAuth: &enabled},
+		},
+	}
+	overlay := &Config{
+		Commands: []Command{
+			{Name: "login", Env: map[string]string{"FOO": "bar"}},
+		},
+	}
+
+	// When
+	result := Merge(base, overlay)
+
+	// Then
+	if result.Commands[0].InteractiveAuth == nil || !*result.Commands[0].InteractiveAuth {
+		t.Error("expected base's InteractiveAuth to be preserved when overlay omits it")
 	}
 }
 

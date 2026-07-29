@@ -114,7 +114,7 @@ func indexEnvironments(cfg *config.Config) map[string]config.Environment {
 // change: simpler and safe, even though it is semantically a no-op.
 func environmentDiff(old, new config.Environment) envChangeKind {
 	var kinds envChangeKind
-	if old.Description != new.Description || old.AutoStart != new.AutoStart {
+	if old.Description != new.Description || !boolPtrEqual(old.AutoStart, new.AutoStart) {
 		kinds |= envChangedCosmetic
 	}
 	if !maps.Equal(old.Env, new.Env) {
@@ -124,6 +124,16 @@ func environmentDiff(old, new config.Environment) envChangeKind {
 		kinds |= envChangedWorkflow
 	}
 	return kinds
+}
+
+// boolPtrEqual compares two optional bools by value rather than pointer
+// identity, since Load produces a fresh *bool on every parse even when the
+// underlying YAML is unchanged.
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 func workflowEqual(a, b []config.WorkflowStep) bool {

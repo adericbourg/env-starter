@@ -307,7 +307,7 @@ func (e *Engine) doStart(c *command) {
 	// Serialize interactive browser logins: hold the gate from just before
 	// launch until this command settles (handleTask/handleService return),
 	// so no other interactive-auth command's browser login can overlap.
-	if c.cfg.InteractiveAuth {
+	if c.cfg.InteractiveAuth != nil && *c.cfg.InteractiveAuth {
 		e.authGate.Lock()
 		defer e.authGate.Unlock()
 	}
@@ -712,7 +712,7 @@ func (e *Engine) relaunch(c *command) bool {
 	// Serialize interactive browser logins on restart too: hold the gate from
 	// here until this function returns (after the relaunched process settles),
 	// so a re-login can't overlap another interactive-auth command's login.
-	if c.cfg.InteractiveAuth {
+	if c.cfg.InteractiveAuth != nil && *c.cfg.InteractiveAuth {
 		e.authGate.Lock()
 		defer e.authGate.Unlock()
 	}

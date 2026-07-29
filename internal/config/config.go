@@ -136,7 +136,9 @@ type Command struct {
 	// browser-based login (e.g. Teleport/tsh, JumpCloud, Okta, Google SSO). Most
 	// SSO providers reject parallel login attempts, so the engine serializes the
 	// launch of every command with this flag set: only one runs at a time.
-	InteractiveAuth bool `yaml:"interactive-auth,omitempty"`
+	// Nil means unset (inherit from base on overlay merge); a non-nil pointer is
+	// an explicit true/false, so an overlay can also explicitly disable it.
+	InteractiveAuth *bool `yaml:"interactive-auth,omitempty"`
 }
 
 // WorkflowStep is a reference to a command within an environment workflow.
@@ -161,7 +163,9 @@ type Environment struct {
 	// AutoStart starts this environment automatically when the TUI launches,
 	// provided it isn't already running (e.g. reconnecting to a daemon that
 	// kept it alive across TUI restarts). It has no effect on `env-starter run`.
-	AutoStart bool `yaml:"auto-start,omitempty"`
+	// Nil means unset (inherit from base on overlay merge); a non-nil pointer is
+	// an explicit true/false, so an overlay can also explicitly disable it.
+	AutoStart *bool `yaml:"auto-start,omitempty"`
 }
 
 // Config is the root configuration object.

@@ -95,8 +95,8 @@ func TestDiffConfig_ofEnvironmentDescriptionOnly_marksCosmeticOnly(t *testing.T)
 
 func TestDiffConfig_ofEnvironmentAutoStartOnly_marksCosmeticOnly(t *testing.T) {
 	// Given an environment whose AutoStart differs, nothing else
-	old := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: false, Workflow: []config.WorkflowStep{{Command: "db"}}}}}
-	new := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: true, Workflow: []config.WorkflowStep{{Command: "db"}}}}}
+	old := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: boolPtr(false), Workflow: []config.WorkflowStep{{Command: "db"}}}}}
+	new := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: boolPtr(true), Workflow: []config.WorkflowStep{{Command: "db"}}}}}
 
 	// When diffing them
 	diff := diffConfig(old, new)
@@ -108,6 +108,21 @@ func TestDiffConfig_ofEnvironmentAutoStartOnly_marksCosmeticOnly(t *testing.T) {
 	}
 	if change.kinds != envChangedCosmetic {
 		t.Fatalf("expected only envChangedCosmetic, got %v", change.kinds)
+	}
+}
+
+func TestDiffConfig_ofEnvironmentAutoStartSameValueDifferentPointer_reportsNoChange(t *testing.T) {
+	// Given two configs with equal (but distinct-pointer) AutoStart values —
+	// the shape produced by two separate Load calls on unchanged YAML
+	old := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: boolPtr(true), Workflow: []config.WorkflowStep{{Command: "db"}}}}}
+	new := &config.Config{Environments: []config.Environment{{Name: "env", AutoStart: boolPtr(true), Workflow: []config.WorkflowStep{{Command: "db"}}}}}
+
+	// When diffing them
+	diff := diffConfig(old, new)
+
+	// Then no change is reported, since pointer identity must not matter
+	if _, ok := diff.changedEnvs["env"]; ok {
+		t.Fatalf("expected no change for equal AutoStart values behind distinct pointers")
 	}
 }
 

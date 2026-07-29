@@ -27,8 +27,8 @@ func TestStartEnvironment_whenInteractiveAuthCommands_neverOverlap(t *testing.T)
 
 	cfg := &config.Config{
 		Commands: []config.Command{
-			{Name: "login-a", Type: "task", Source: localSource(dir), Run: authRun, InteractiveAuth: true},
-			{Name: "login-b", Type: "task", Source: localSource(dir), Run: authRun, InteractiveAuth: true},
+			{Name: "login-a", Type: "task", Source: localSource(dir), Run: authRun, InteractiveAuth: boolPtr(true)},
+			{Name: "login-b", Type: "task", Source: localSource(dir), Run: authRun, InteractiveAuth: boolPtr(true)},
 		},
 		Environments: []config.Environment{
 			{
@@ -64,7 +64,7 @@ func TestStartEnvironment_whenInteractiveAuthCommand_doesNotBlockOtherCommands(t
 
 	cfg := &config.Config{
 		Commands: []config.Command{
-			{Name: "login", Type: "task", Source: localSource(dir), Run: "sleep 2; exit 0", InteractiveAuth: true},
+			{Name: "login", Type: "task", Source: localSource(dir), Run: "sleep 2; exit 0", InteractiveAuth: boolPtr(true)},
 			{Name: "other", Type: "task", Source: localSource(dir), Run: "exit 0"},
 		},
 		Environments: []config.Environment{
