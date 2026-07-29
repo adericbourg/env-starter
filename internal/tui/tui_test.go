@@ -2868,6 +2868,40 @@ func valueLineIndent(t *testing.T, view string) int {
 	return -1
 }
 
+func TestRenderEnvInspectorDetail_revealDoesNotShiftShortcutBarVertically(t *testing.T) {
+	// Given a details screen open in masked state.
+	ctrl := newFakeController()
+	ctrl.resolvedEnv = map[string][]engine.ResolvedEnvVar{
+		"env:alpha": {{Key: "FOO", Winning: engine.EnvLayer{Value: "top-secret-value", Source: engine.EnvSourceOS}}},
+	}
+	m := seed(New(ctrl))
+	m = sendKey(m, "e")
+	m = sendSpecialKey(m, tea.KeyEnter)
+	maskedLine := shortcutBarLine(t, ansi.Strip(m.render()))
+
+	// When revealed.
+	m = sendSpecialKey(m, tea.KeySpace)
+	revealedLine := shortcutBarLine(t, ansi.Strip(m.render()))
+
+	// Then: the shortcut bar's vertical position is unchanged — revealing
+	// the value must not shift it up or down.
+	if maskedLine != revealedLine {
+		t.Errorf("shortcut bar shifted vertically: masked line %d, revealed line %d", maskedLine, revealedLine)
+	}
+}
+
+// shortcutBarLine returns the line index of the "space reveal" shortcut bar
+// in a stripped (ANSI-free) view.
+func shortcutBarLine(t *testing.T, view string) int {
+	for i, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "space reveal") {
+			return i
+		}
+	}
+	t.Fatal("expected a line containing \"space reveal\"")
+	return -1
+}
+
 func TestUpdate_envInspectorDetail_escReturnsToListPreservingFilters(t *testing.T) {
 	// Given the details screen open with a search query and origin filter set.
 	ctrl := newFakeController()

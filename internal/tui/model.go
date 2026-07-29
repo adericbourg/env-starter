@@ -1796,6 +1796,8 @@ func (m Model) renderEnvInspectorDetail() string {
 	rows = append(rows, "")
 	if insp.revealed {
 		rows = append(rows, quitConfirmStyle.Render("⚠ value shown — visible to anyone viewing/recording your screen"))
+	} else {
+		rows = append(rows, "")
 	}
 	rows = append(rows, footerStyle.Render("space reveal   esc back"))
 
