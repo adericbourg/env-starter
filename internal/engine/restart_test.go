@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,6 +172,58 @@ func TestRestartCommand_preservesHolders(t *testing.T) {
 	}
 	waitForEnv(t, e, "a", EnvRunning, 2*time.Second)
 	waitForEnv(t, e, "b", EnvRunning, 2*time.Second)
+}
+
+func TestRestartCommand_whenRacingAutomaticRestart_doesNotPanic(t *testing.T) {
+	// Given a service that crashes in a fast loop, so its automatic
+	// crash-restart cycle (superviseService -> attemptRestart -> relaunch)
+	// keeps swapping and closing c.startDone in the background.
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "ready")
+	enabled := true
+	maxRetries := 100000
+	backoff := config.Duration{Duration: time.Millisecond}
+	cfg := &config.Config{
+		Commands: []config.Command{
+			{
+				Name:      "svc",
+				Type:      "service",
+				Source:    localSource(dir),
+				Run:       fmt.Sprintf("touch %q; sleep 0.1; exit 1", ready),
+				Readiness: &config.Readiness{Shell: fmt.Sprintf("test -f %q", ready)},
+				Restart:   &config.Restart{Enabled: &enabled, MaxRetries: &maxRetries, BackoffBase: &backoff},
+			},
+		},
+		Environments: []config.Environment{
+			{Name: "dev", Workflow: []config.WorkflowStep{{Command: "svc"}}},
+		},
+	}
+	e := newTestEngine(t, cfg)
+	defer e.Shutdown(context.Background())
+
+	if err := e.StartEnvironment("dev"); err != nil {
+		t.Fatalf("StartEnvironment: %v", err)
+	}
+	waitForCmd(t, e, "svc", CmdHealthy, 5*time.Second)
+
+	// When manual restarts race the automatic crash-restart cycle for the
+	// same command, from a few goroutines, briefly.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for time.Now().Before(deadline) {
+				_ = e.RestartCommand("svc")
+				time.Sleep(time.Millisecond)
+			}
+		}()
+	}
+
+	// Then no goroutine panics on a double-close of c.startDone (the
+	// panicking goroutine would otherwise crash the whole test binary).
+	wg.Wait()
 }
 
 func TestRestartCommand_ofUnknownCommand_returnsError(t *testing.T) {

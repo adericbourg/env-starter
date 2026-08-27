@@ -451,6 +451,11 @@ func (e *Engine) restartCommandWithNewConfig(c *command, newCfg config.Command) 
 	e.setCmdState(newCfg.Name, CmdRestarting, nil)
 	e.teardownForRestart(c) // reads c.cfg.Teardown — must run before the swap below.
 
+	// Serialize against relaunch/takeOverUnmanaged's own startDone swap-and-close
+	// cycle for this command (see command.restartMu).
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+
 	// Swap in the new definition and a fresh start barrier. Everything from
 	// here on (fetchSource, setup, launch, readiness) reads the new cfg.
 	e.mu.Lock()

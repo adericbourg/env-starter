@@ -167,7 +167,15 @@ func (e *Engine) isHealthy(name string) bool {
 // startCommand opens the command's log writer, then either adopts an
 // already-healthy external process (see checkUnmanaged) or performs a full
 // managed start via doStart. It always closes c.startDone exactly once.
+//
+// Holds c.restartMu for its duration: a RestartCommand can race in the
+// window between acquireAndStart adding this env as a holder and the first
+// startCommand actually settling, so this must serialize against
+// relaunch/takeOverUnmanaged/restartCommandWithNewConfig too, not just
+// against itself.
 func (e *Engine) startCommand(c *command) {
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 	defer close(c.startDone)
 
 	e.setCmdState(c.cfg.Name, CmdStarting, nil)
@@ -269,6 +277,9 @@ func (e *Engine) superviseUnmanaged(c *command) {
 // adopted external process is no longer healthy. It swaps in a fresh
 // c.startDone around the start, mirroring how relaunch does it for restarts.
 func (e *Engine) takeOverUnmanaged(c *command, causeErr error) {
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+
 	e.mu.Lock()
 	c.unmanaged = false
 	c.startDone = make(chan struct{})
@@ -646,6 +657,9 @@ func (e *Engine) runLiveness(c *command, stop <-chan struct{}) <-chan error {
 // relaunch succeeds (monitoring resumes), false if retries are exhausted or
 // the cycle is cancelled by a user stop.
 func (e *Engine) attemptRestart(c *command, causeErr error) bool {
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+
 	for {
 		e.mu.Lock()
 		retries := c.retries
@@ -708,6 +722,11 @@ func (e *Engine) teardownForRestart(c *command) {
 // waits for its readiness probe. It swaps in a fresh c.startDone so any
 // concurrent releaseCommand or Shutdown waiter blocks correctly.
 // Returns true if the relaunched process becomes healthy.
+//
+// Callers must hold c.restartMu for the duration of the call (see
+// command.restartMu) — relaunch does not acquire it itself, since some
+// callers (attemptRestart) need the lock to also cover the teardown and
+// backoff that surround the relaunch call within one restart episode.
 func (e *Engine) relaunch(c *command) bool {
 	// Serialize interactive browser logins on restart too: hold the gate from
 	// here until this function returns (after the relaunched process settles),

@@ -187,6 +187,19 @@ type command struct {
 	runDir    string
 	startDone chan struct{} // closed once the command reaches a terminal-start state (healthy/done/error)
 
+	// restartMu serializes every start/restart episode for this command — the
+	// span from swapping in a fresh c.startDone through launching the process
+	// and closing it — so at most one is ever in flight at a time. Held by
+	// startCommand, attemptRestart, restartInPlace, restartCommandInPlace,
+	// restartCommandWithNewConfig and takeOverUnmanaged (relaunch itself does
+	// not acquire it: some of those callers need it to also cover work that
+	// surrounds their relaunch call). Without it, two concurrent episodes
+	// (e.g. the automatic crash-restart loop racing a manual or
+	// env-change-triggered restart) can interleave their c.startDone/c.cmd/
+	// c.exited swaps — at best a stale read, at worst one closing a channel
+	// the other already closed: panic: close of closed channel.
+	restartMu sync.Mutex
+
 	// monitorDone is closed by superviseService/superviseTask exactly once,
 	// right before that goroutine returns for good. startDone alone is not
 	// enough to know the monitor goroutine has stopped touching c.cfg/c.policy

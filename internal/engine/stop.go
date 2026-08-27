@@ -260,6 +260,9 @@ func (e *Engine) resetForRetry(envCfg config.Environment) {
 // and re-establishes monitoring. Runs synchronously so startDone is closed
 // before the subsequent acquireAndStart in runEnvironment observes the command.
 func (e *Engine) restartInPlace(c *command) {
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
+
 	e.mu.Lock()
 	c.retries = 0
 	e.mu.Unlock()
@@ -302,15 +305,31 @@ func (e *Engine) RestartCommand(name string) error {
 func (e *Engine) restartCommandInPlace(c *command) {
 	// Cancel the current owner goroutine and wait for any in-flight launch to
 	// settle, mirroring the barrier releaseCommand/Shutdown use to avoid racing
-	// a launch already in progress.
+	// a launch already in progress. Also wait for the monitor goroutine itself
+	// to have returned (mirrors restartCommandWithNewConfig): startDone alone
+	// only tracks a single launch attempt, not the supervise loop that reads
+	// c.quit again on every iteration — without this wait, that still-running
+	// old goroutine and the startMonitor call below can end up with two
+	// supervisor goroutines racing each other for the same command.
 	e.mu.Lock()
 	c.userStopped = true
 	if c.quit != nil {
 		c.quitOnce.Do(func() { close(c.quit) })
 	}
 	startDone := c.startDone
+	monitorDone := c.monitorDone
 	e.mu.Unlock()
 	<-startDone
+	if monitorDone != nil {
+		<-monitorDone
+	}
+
+	// Serialize against relaunch/takeOverUnmanaged/restartCommandWithNewConfig's
+	// own startDone swap-and-close cycle for this command (see command.restartMu):
+	// the startDone wait above can unblock before the previous cycle's owner has
+	// actually finished its post-relaunch bookkeeping, so this still waits its turn.
+	c.restartMu.Lock()
+	defer c.restartMu.Unlock()
 
 	// Reset cancellation and retry state for a fresh supervise cycle. Safe
 	// because every quitOnce.Do and this reset happen under e.mu, and the
