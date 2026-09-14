@@ -47,17 +47,16 @@ homebrew_casks:
     license: GPL-3.0
     binaries:
       - env-starter
-    # Helps `brew audit` pass when the download domain differs from the homepage.
-    url:
-      verified: github.com/adericbourg/env-starter/
-    # The binary is unsigned/un-notarized: strip the quarantine bit on install
-    # so macOS Gatekeeper does not block it.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/env-starter"]
-          end
+    # ponytail: custom_block workaround until goreleaser v2.19 ships native
+    # hooks.post.install_steps (goreleaser/goreleaser#6870) — switch then.
+    # The release binary is unsigned/un-notarized: strip the quarantine bit on
+    # install so macOS Gatekeeper does not block it.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/env-starter"]
+        end
+      end
 
 checksum:
   name_template: checksums.txt
