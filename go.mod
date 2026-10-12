@@ -9,8 +9,8 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/minio/selfupdate v0.6.0
-	golang.org/x/mod v0.41.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/mod v0.42.0
+	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
