@@ -17,7 +17,7 @@ jobs:
     # so the push step would fail. Fork PRs are covered by the contributor's
     # local pre-commit hook and the gofmt -l check in ci.yml.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
