@@ -44,9 +44,9 @@ var subcommands = []NameDesc{
 var cmdFlags = map[string][]string{
 	"":           {"--version", "--config", "--config-overlay"},
 	"run":        {"--timeout", "--config", "--config-overlay"},
-	"list":       {"--config", "--config-overlay"},
+	"list":       {"--config", "--config-overlay", "--json"},
 	"stop":       {},
-	"ps":         {},
+	"ps":         {"--json"},
 	"command":    {},
 	"allow":      {"--config", "--config-overlay", "--yes", "--print", "--full"},
 	"shutdown":   {},

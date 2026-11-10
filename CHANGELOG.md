@@ -7,6 +7,8 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `--json` flag on `list`, `ps`, and `command list` for machine-readable
+  output (scripts, AI agents). See `docs/usage.md`.
 - `env-starter allow` shows a unified diff of each config file changed since
   its last approval instead of the full command listing; `--full` (or
   answering `f` at the prompt) brings the listing back. See

@@ -134,6 +134,16 @@ func TestComplete_ofRunWithDashDash_returnsRunFlags(t *testing.T) {
 	containsAll(t, result.Candidates, "--timeout", "--config", "--config-overlay")
 }
 
+func TestComplete_ofPsAndListWithDashDash_includeJSONFlag(t *testing.T) {
+	// Given / When
+	psResult := completion.Complete([]string{"ps", "--"}, testEnvs)
+	listResult := completion.Complete([]string{"list", "--"}, testEnvs)
+
+	// Then
+	containsAll(t, psResult.Candidates, "--json")
+	containsAll(t, listResult.Candidates, "--json")
+}
+
 func TestComplete_ofConfigFlagFollowedByEmptyArg_returnsFileDirective(t *testing.T) {
 	// Given / When — `--config` as the previous word triggers file completion.
 	result := completion.Complete([]string{"--config", ""}, nil)

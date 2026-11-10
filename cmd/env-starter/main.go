@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"embed"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -42,6 +43,67 @@ var completionFS embed.FS
 type logSource interface {
 	WorkflowCommands(env string) []string
 	Logs(command string) []string
+}
+
+// stateSource is the subset of daemon.ClientController used by ps and
+// command list. Defined here so the gathering logic can be tested with a stub.
+type stateSource interface {
+	Environments() []engine.EnvInfo
+	EnvState(env string) engine.EnvState
+	WorkflowCommands(env string) []string
+	CmdState(command string) engine.CmdState
+}
+
+// cmdStatus and envStatus are the --json output shapes of ps and command list.
+type cmdStatus struct {
+	Name  string          `json:"name"`
+	State engine.CmdState `json:"state"`
+}
+
+type envStatus struct {
+	Name     string          `json:"name"`
+	State    engine.EnvState `json:"state"`
+	Commands []cmdStatus     `json:"commands"`
+}
+
+// activeEnvironments returns every non-stopped environment with the state of
+// each of its workflow commands.
+// Slices are never nil so that --json prints [] rather than null.
+func activeEnvironments(src stateSource) []envStatus {
+	envs := []envStatus{}
+	for _, env := range src.Environments() {
+		state := src.EnvState(env.Name)
+		if state == engine.EnvStopped {
+			continue
+		}
+		cmds := []cmdStatus{}
+		for _, cmd := range src.WorkflowCommands(env.Name) {
+			cmds = append(cmds, cmdStatus{Name: cmd, State: src.CmdState(cmd)})
+		}
+		envs = append(envs, envStatus{Name: env.Name, State: state, Commands: cmds})
+	}
+	return envs
+}
+
+// activeCommands returns every command referenced by a non-stopped
+// environment, deduplicated (a command can be shared by several environments).
+func activeCommands(src stateSource) []cmdStatus {
+	seen := make(map[string]bool)
+	cmds := []cmdStatus{}
+	for _, env := range activeEnvironments(src) {
+		for _, cmd := range env.Commands {
+			if !seen[cmd.Name] {
+				seen[cmd.Name] = true
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+	return cmds
+}
+
+// writeJSON writes v as one line of JSON.
+func writeJSON(w io.Writer, v any) {
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // cmdColorCodes is the cycling ANSI color palette used to distinguish command
@@ -292,7 +354,7 @@ func main() {
 			runAllow(os.Args[2:])
 			return
 		case "ps":
-			runPs()
+			runPs(os.Args[2:])
 			return
 		case "command":
 			runCommand(os.Args[2:])
@@ -601,12 +663,26 @@ func runList(args []string) {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	configFile := fs.String("config", "", "use FILE as the configuration")
 	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
+	asJSON := fs.Bool("json", false, "print as JSON")
 	_ = fs.Parse(args)
 
 	cfg, _, _, err := resolveConfig(*configFile, *configOverlay)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+
+	if *asJSON {
+		type envEntry struct {
+			Name        string `json:"name"`
+			Description string `json:"description"`
+		}
+		entries := []envEntry{}
+		for _, env := range cfg.Environments {
+			entries = append(entries, envEntry{Name: env.Name, Description: env.Description})
+		}
+		writeJSON(os.Stdout, entries)
+		return
 	}
 
 	// Determine the column width for alignment.
@@ -873,7 +949,46 @@ func indentContinuation(s string) string {
 
 // runPs implements the "env-starter ps" subcommand. It dials an existing daemon
 // and prints the non-stopped environments with their state and command states.
-func runPs() {
+func runPs(args []string) {
+	fs := flag.NewFlagSet("ps", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print as JSON")
+	_ = fs.Parse(args)
+
+	client := dialExistingDaemon()
+	if client == nil {
+		if *asJSON {
+			writeJSON(os.Stdout, []envStatus{})
+			return
+		}
+		fmt.Println("No daemon running.")
+		return
+	}
+
+	envs := activeEnvironments(client)
+	if *asJSON {
+		writeJSON(os.Stdout, envs)
+		return
+	}
+	for _, env := range envs {
+		cmdParts := make([]string, 0, len(env.Commands))
+		for _, cmd := range env.Commands {
+			cmdParts = append(cmdParts, fmt.Sprintf("%s:%s", cmd.Name, cmd.State))
+		}
+		if len(cmdParts) > 0 {
+			fmt.Printf("%-20s %-10s (%s)\n", env.Name, string(env.State), strings.Join(cmdParts, "  "))
+		} else {
+			fmt.Printf("%-20s %s\n", env.Name, string(env.State))
+		}
+	}
+
+	if len(envs) == 0 {
+		fmt.Println("No environments running.")
+	}
+}
+
+// dialExistingDaemon connects to a running daemon without spawning one. It
+// returns nil when no daemon is running and exits on any other error.
+func dialExistingDaemon() *daemon.ClientController {
 	socketPath, err := daemon.SocketPath()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -885,34 +1000,7 @@ func runPs() {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	if client == nil {
-		fmt.Println("No daemon running.")
-		return
-	}
-
-	envs := client.Environments()
-	printed := 0
-	for _, env := range envs {
-		state := client.EnvState(env.Name)
-		if state == engine.EnvStopped {
-			continue
-		}
-		cmds := client.WorkflowCommands(env.Name)
-		cmdParts := make([]string, 0, len(cmds))
-		for _, cmd := range cmds {
-			cmdParts = append(cmdParts, fmt.Sprintf("%s:%s", cmd, client.CmdState(cmd)))
-		}
-		if len(cmdParts) > 0 {
-			fmt.Printf("%-20s %-10s (%s)\n", env.Name, string(state), strings.Join(cmdParts, "  "))
-		} else {
-			fmt.Printf("%-20s %s\n", env.Name, string(state))
-		}
-		printed++
-	}
-
-	if printed == 0 {
-		fmt.Println("No environments running.")
-	}
+	return client
 }
 
 // runCommand implements the "env-starter command <verb>" subcommand group,
@@ -924,7 +1012,7 @@ func runCommand(args []string) {
 	}
 	switch args[0] {
 	case "list":
-		runCommandList()
+		runCommandList(args[1:])
 	case "restart":
 		runCommandRestart(args[1:])
 	default:
@@ -938,50 +1026,39 @@ func runCommand(args []string) {
 // daemon and prints every command referenced by a non-stopped environment,
 // deduplicated (a command can be shared by several environments), with its
 // current state.
-func runCommandList() {
-	socketPath, err := daemon.SocketPath()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+func runCommandList(args []string) {
+	fs := flag.NewFlagSet("command list", flag.ExitOnError)
+	asJSON := fs.Bool("json", false, "print as JSON")
+	_ = fs.Parse(args)
 
-	client, err := daemon.DialOnly(socketPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	client := dialExistingDaemon()
 	if client == nil {
+		if *asJSON {
+			writeJSON(os.Stdout, []cmdStatus{})
+			return
+		}
 		fmt.Println("No daemon running.")
 		return
 	}
 
-	seen := make(map[string]bool)
-	var names []string
-	for _, env := range client.Environments() {
-		if client.EnvState(env.Name) == engine.EnvStopped {
-			continue
-		}
-		for _, cmd := range client.WorkflowCommands(env.Name) {
-			if !seen[cmd] {
-				seen[cmd] = true
-				names = append(names, cmd)
-			}
-		}
+	cmds := activeCommands(client)
+	if *asJSON {
+		writeJSON(os.Stdout, cmds)
+		return
 	}
-
-	if len(names) == 0 {
+	if len(cmds) == 0 {
 		fmt.Println("No commands running.")
 		return
 	}
 
 	maxLen := 0
-	for _, name := range names {
-		if len(name) > maxLen {
-			maxLen = len(name)
+	for _, cmd := range cmds {
+		if len(cmd.Name) > maxLen {
+			maxLen = len(cmd.Name)
 		}
 	}
-	for _, name := range names {
-		fmt.Printf("%-*s  %s\n", maxLen, name, string(client.CmdState(name)))
+	for _, cmd := range cmds {
+		fmt.Printf("%-*s  %s\n", maxLen, cmd.Name, string(cmd.State))
 	}
 }
 
@@ -1103,6 +1180,9 @@ run flags:
 
 command restart flags:
   --timeout DURATION    Maximum time to wait for the command to become healthy (default: %[1]s)
+
+list, ps, command list flags:
+  --json                 Print as JSON
 
 allow flags:
   --yes                  Approve without prompting

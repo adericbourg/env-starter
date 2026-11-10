@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/adericbourg/env-starter/internal/config"
+	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/linkscan"
 	"github.com/adericbourg/env-starter/internal/source"
 	"github.com/adericbourg/env-starter/internal/trust"
@@ -893,5 +894,103 @@ func TestDoAllow_print_showsSourcePerCommand(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("expected preview to contain %q, got:\n%s", want, got)
 		}
+	}
+}
+
+// ── ps / command list ────────────────────────────────────────────────────────
+
+// stubStateSource implements stateSource for tests.
+type stubStateSource struct {
+	envs      []engine.EnvInfo
+	envStates map[string]engine.EnvState
+	workflows map[string][]string
+	cmdStates map[string]engine.CmdState
+}
+
+func (s *stubStateSource) Environments() []engine.EnvInfo       { return s.envs }
+func (s *stubStateSource) EnvState(env string) engine.EnvState  { return s.envStates[env] }
+func (s *stubStateSource) WorkflowCommands(env string) []string { return s.workflows[env] }
+func (s *stubStateSource) CmdState(cmd string) engine.CmdState  { return s.cmdStates[cmd] }
+
+// twoRunningEnvsSharingACommand has "api" and "web" running and sharing "db",
+// and "batch" stopped.
+func twoRunningEnvsSharingACommand() *stubStateSource {
+	return &stubStateSource{
+		envs: []engine.EnvInfo{{Name: "api"}, {Name: "batch"}, {Name: "web"}},
+		envStates: map[string]engine.EnvState{
+			"api": engine.EnvRunning, "batch": engine.EnvStopped, "web": engine.EnvStarting,
+		},
+		workflows: map[string][]string{
+			"api": {"db", "server"}, "batch": {"job"}, "web": {"db", "front"},
+		},
+		cmdStates: map[string]engine.CmdState{
+			"db": engine.CmdHealthy, "server": engine.CmdHealthy, "front": engine.CmdStarting,
+		},
+	}
+}
+
+func TestActiveEnvironments_skipsStoppedEnvsAndListsCommandStates(t *testing.T) {
+	// Given
+	src := twoRunningEnvsSharingACommand()
+
+	// When
+	got := activeEnvironments(src)
+
+	// Then
+	want := []envStatus{
+		{Name: "api", State: engine.EnvRunning, Commands: []cmdStatus{
+			{Name: "db", State: engine.CmdHealthy}, {Name: "server", State: engine.CmdHealthy},
+		}},
+		{Name: "web", State: engine.EnvStarting, Commands: []cmdStatus{
+			{Name: "db", State: engine.CmdHealthy}, {Name: "front", State: engine.CmdStarting},
+		}},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("activeEnvironments:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestActiveCommands_deduplicatesSharedCommandsInWorkflowOrder(t *testing.T) {
+	// Given
+	src := twoRunningEnvsSharingACommand()
+
+	// When
+	got := activeCommands(src)
+
+	// Then
+	want := []cmdStatus{
+		{Name: "db", State: engine.CmdHealthy},
+		{Name: "server", State: engine.CmdHealthy},
+		{Name: "front", State: engine.CmdStarting},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("activeCommands:\n got %v\nwant %v", got, want)
+	}
+}
+
+func TestWriteJSON_ofEmptySlice_writesEmptyArrayNotNull(t *testing.T) {
+	// Given
+	var out bytes.Buffer
+
+	// When: nil slice, as returned when nothing is running
+	writeJSON(&out, activeCommands(&stubStateSource{}))
+
+	// Then
+	if got := strings.TrimSpace(out.String()); got != "[]" {
+		t.Errorf("writeJSON: got %q, want %q", got, "[]")
+	}
+}
+
+func TestWriteJSON_ofEnvStatus_usesLowercaseKeys(t *testing.T) {
+	// Given
+	var out bytes.Buffer
+
+	// When
+	writeJSON(&out, activeEnvironments(twoRunningEnvsSharingACommand())[:1])
+
+	// Then
+	want := `[{"name":"api","state":"running","commands":[{"name":"db","state":"healthy"},{"name":"server","state":"healthy"}]}]`
+	if got := strings.TrimSpace(out.String()); got != want {
+		t.Errorf("writeJSON:\n got %s\nwant %s", got, want)
 	}
 }

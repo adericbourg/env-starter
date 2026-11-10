@@ -58,9 +58,9 @@ The TUI launches with the list of environments on the left. Select one and press
 | `env-starter` | Open the TUI to manage environments (default) |
 | `env-starter run <env>` | Start an environment and wait for it to be ready (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) |
 | `env-starter stop <env>` | Stop a running environment |
-| `env-starter list` | List all configured environments (reads local config, no daemon needed) |
-| `env-starter ps` | Show currently running environments and their command states |
-| `env-starter command list` | Show started commands and their state (needs a running daemon) |
+| `env-starter list` | List all configured environments (reads local config, no daemon needed); `--json` prints `[{"name","description"}]` |
+| `env-starter ps` | Show currently running environments and their command states; `--json` prints `[{"name","state","commands":[{"name","state"}]}]` (`[]` when no daemon runs) |
+| `env-starter command list` | Show started commands and their state (needs a running daemon); `--json` prints `[{"name","state"}]` (`[]` when no daemon runs) |
 | `env-starter command restart <name>` | Restart a single command in place, waiting until it is healthy (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) — needs a running daemon |
 | `env-starter allow` | Review a config's `run`/`setup`/`teardown`/`readiness.shell` commands — along with each command's `source` as a browsable URL/path — and approve it; when a file changed since its last approval, only the diff is shown; `--print` previews without approving, `--yes` approves without prompting, `--full` lists every command even when a diff is available |
 | `env-starter shutdown` | Stop all environments and shut down the daemon |
