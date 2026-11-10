@@ -905,7 +905,10 @@ type stubStateSource struct {
 	envStates map[string]engine.EnvState
 	workflows map[string][]string
 	cmdStates map[string]engine.CmdState
+	logs      map[string][]string
 }
+
+func (s *stubStateSource) Logs(cmd string) []string { return s.logs[cmd] }
 
 func (s *stubStateSource) Environments() []engine.EnvInfo       { return s.envs }
 func (s *stubStateSource) EnvState(env string) engine.EnvState  { return s.envStates[env] }
@@ -992,5 +995,41 @@ func TestWriteJSON_ofEnvStatus_usesLowercaseKeys(t *testing.T) {
 	want := `[{"name":"api","state":"running","commands":[{"name":"db","state":"healthy"},{"name":"server","state":"healthy"}]}]`
 	if got := strings.TrimSpace(out.String()); got != want {
 		t.Errorf("writeJSON:\n got %s\nwant %s", got, want)
+	}
+}
+
+// ── logs ─────────────────────────────────────────────────────────────────────
+
+func TestCommandLogs_returnsLastNLinesOfAKnownCommand(t *testing.T) {
+	// Given: "job" belongs to a stopped environment — its logs are still readable.
+	src := twoRunningEnvsSharingACommand()
+	src.logs = map[string][]string{"job": {"l1", "l2", "l3"}}
+
+	// When
+	tail, tailErr := commandLogs(src, "job", 2)
+	all, allErr := commandLogs(src, "job", 10)
+
+	// Then
+	if tailErr != nil || allErr != nil {
+		t.Fatalf("commandLogs: unexpected errors %v, %v", tailErr, allErr)
+	}
+	if fmt.Sprint(tail) != "[l2 l3]" {
+		t.Errorf("commandLogs(tail=2) = %v, want [l2 l3]", tail)
+	}
+	if fmt.Sprint(all) != "[l1 l2 l3]" {
+		t.Errorf("commandLogs(tail=10) = %v, want [l1 l2 l3]", all)
+	}
+}
+
+func TestCommandLogs_ofUnknownCommand_returnsError(t *testing.T) {
+	// Given
+	src := twoRunningEnvsSharingACommand()
+
+	// When
+	_, err := commandLogs(src, "nope", 10)
+
+	// Then
+	if err == nil {
+		t.Error("commandLogs: expected an error for an unknown command")
 	}
 }

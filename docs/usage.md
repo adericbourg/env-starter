@@ -62,6 +62,7 @@ The TUI launches with the list of environments on the left. Select one and press
 | `env-starter ps` | Show currently running environments and their command states; `--json` prints `[{"name","state","commands":[{"name","state"}]}]` (`[]` when no daemon runs) |
 | `env-starter command list` | Show started commands and their state (needs a running daemon); `--json` prints `[{"name","state"}]` (`[]` when no daemon runs) |
 | `env-starter command restart <name>` | Restart a single command in place, waiting until it is healthy (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) — needs a running daemon |
+| `env-starter logs [--tail N] <command>` | Print the last `N` lines (default 200) of a command's in-memory log buffer — needs a running daemon; unknown command exits 2. Flags go before the command name. |
 | `env-starter allow` | Review a config's `run`/`setup`/`teardown`/`readiness.shell` commands — along with each command's `source` as a browsable URL/path — and approve it; when a file changed since its last approval, only the diff is shown; `--print` previews without approving, `--yes` approves without prompting, `--full` lists every command even when a diff is available |
 | `env-starter shutdown` | Stop all environments and shut down the daemon |
 | `env-starter update` | Update env-starter to the latest version |
@@ -153,6 +154,13 @@ instructions.
 On Linux this is typically `~/.cache/env-starter/logs/`. On macOS it is `~/Library/Caches/env-starter/logs/`.
 
 Log files are created with `0600` permissions (owner read/write only). They are **not redacted**: if a command echoes tokens, passwords, or other secrets to stdout/stderr, those appear verbatim in the log file. Avoid running commands that print secrets, or rotate/delete log files after use.
+
+> [!WARNING]
+> **Known issue — logs are not redacted for AI agents either.** When an AI
+> agent reads logs (`env-starter logs`, or the upcoming MCP server), every
+> line it reads is sent to the agent's model provider — including any
+> password or token a command printed. This is a gap to fix (log redaction);
+> until then, don't let agents read the logs of commands that print secrets.
 
 **Daemon socket and lock** are also stored under the cache root:
 

@@ -32,6 +32,7 @@ var subcommands = []NameDesc{
 	{Name: "list", Description: "list configured environments"},
 	{Name: "ps", Description: "show running environments"},
 	{Name: "command", Description: "manage individual commands (list, restart)"},
+	{Name: "logs", Description: "print the latest log lines of a command"},
 	{Name: "allow", Description: "review and approve a config's run/setup/teardown commands"},
 	{Name: "shutdown", Description: "stop the daemon and all environments"},
 	{Name: "update", Description: "update env-starter to the latest release"},
@@ -48,6 +49,7 @@ var cmdFlags = map[string][]string{
 	"stop":       {},
 	"ps":         {"--json"},
 	"command":    {},
+	"logs":       {"--tail"},
 	"allow":      {"--config", "--config-overlay", "--yes", "--print", "--full"},
 	"shutdown":   {},
 	"update":     {},
@@ -67,6 +69,7 @@ var flagTakesValue = map[string]bool{
 	"--config":         true,
 	"--config-overlay": true,
 	"--timeout":        true,
+	"--tail":           true,
 }
 
 // Complete computes shell completion candidates for the typed words.
@@ -127,6 +130,11 @@ func Complete(words []string, envNames []NameDesc, cmdNames ...NameDesc) Result 
 		return Result{
 			Candidates: filterByPrefix(format(envNames), current),
 		}
+	}
+
+	// For logs: complete the command-name positional slot.
+	if sub == "logs" && isPositionalSlot(words) {
+		return Result{Candidates: filterByPrefix(format(cmdNames), current)}
 	}
 
 	// For command: complete the verb (list/restart), then — for restart —

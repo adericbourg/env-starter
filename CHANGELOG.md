@@ -7,6 +7,10 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `env-starter logs [--tail N] <command>` prints the latest lines of a
+  command's log buffer from the running daemon. Logs are not redacted: an AI
+  agent reading them sends any secret they contain to its model provider
+  (known issue, see `docs/usage.md`).
 - `--json` flag on `list`, `ps`, and `command list` for machine-readable
   output (scripts, AI agents). See `docs/usage.md`.
 - `env-starter allow` shows a unified diff of each config file changed since

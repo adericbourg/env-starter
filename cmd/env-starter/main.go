@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -99,6 +100,24 @@ func activeCommands(src stateSource) []cmdStatus {
 		}
 	}
 	return cmds
+}
+
+// commandLogSource is the subset of daemon.ClientController used by logs.
+type commandLogSource interface {
+	logSource
+	Environments() []engine.EnvInfo
+}
+
+// commandLogs returns the last tail log lines of command, or an error when no
+// configured environment references it.
+func commandLogs(src commandLogSource, command string, tail int) ([]string, error) {
+	for _, env := range src.Environments() {
+		if slices.Contains(src.WorkflowCommands(env.Name), command) {
+			lines := src.Logs(command)
+			return lines[max(0, len(lines)-tail):], nil
+		}
+	}
+	return nil, fmt.Errorf("unknown command %q", command)
 }
 
 // writeJSON writes v as one line of JSON.
@@ -358,6 +377,9 @@ func main() {
 			return
 		case "command":
 			runCommand(os.Args[2:])
+			return
+		case "logs":
+			runLogs(os.Args[2:])
 			return
 		case "shutdown":
 			runShutdown()
@@ -1003,6 +1025,34 @@ func dialExistingDaemon() *daemon.ClientController {
 	return client
 }
 
+// runLogs implements "env-starter logs <command>". It dials an existing daemon
+// and prints the latest lines of the command's in-memory log buffer.
+func runLogs(args []string) {
+	fs := flag.NewFlagSet("logs", flag.ExitOnError)
+	tail := fs.Int("tail", 200, "number of lines to print")
+	_ = fs.Parse(args)
+
+	if fs.NArg() != 1 || *tail < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: env-starter logs [--tail N] <command>  (N >= 1)")
+		os.Exit(2)
+	}
+
+	client := dialExistingDaemon()
+	if client == nil {
+		fmt.Fprintln(os.Stderr, "error: no daemon running")
+		os.Exit(1)
+	}
+
+	lines, err := commandLogs(client, fs.Arg(0), *tail)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+}
+
 // runCommand implements the "env-starter command <verb>" subcommand group,
 // dispatching to the list/restart sub-verbs.
 func runCommand(args []string) {
@@ -1165,6 +1215,7 @@ Commands:
   list       List configured environments
   ps         Show running environments
   command    Manage individual commands (list, restart)
+  logs       Print the latest log lines of a command
   allow      Review and approve a config's run/setup/teardown commands
   shutdown   Stop all environments and shut down the daemon
   update     Update env-starter to the latest version
@@ -1183,6 +1234,9 @@ command restart flags:
 
 list, ps, command list flags:
   --json                 Print as JSON
+
+logs flags:
+  --tail N               Number of lines to print (default: 200)
 
 allow flags:
   --yes                  Approve without prompting

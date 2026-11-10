@@ -91,7 +91,7 @@ func TestComplete_ofEmptyCurrentWord_returnsAllSubcommands(t *testing.T) {
 	if result.Directive != completion.DirectiveDefault {
 		t.Errorf("directive = %v, want DirectiveDefault", result.Directive)
 	}
-	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "command", "shutdown", "update", "help", "completion")
+	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "command", "logs", "shutdown", "update", "help", "completion")
 	notContains(t, result.Candidates, "__complete")
 	notContains(t, result.Candidates, "__daemon")
 }
@@ -291,9 +291,11 @@ func TestComplete_ofCommandWithVerbPrefix_filtersVerbs(t *testing.T) {
 func TestComplete_ofCommandRestartWithEmptyArg_returnsCommandNames(t *testing.T) {
 	// Given / When
 	result := completion.Complete([]string{"command", "restart", ""}, testEnvs, testCmds...)
+	logsResult := completion.Complete([]string{"logs", "--tail", "5", ""}, testEnvs, testCmds...)
 
 	// Then
 	exactValues(t, result.Candidates, "api", "db")
+	exactValues(t, logsResult.Candidates, "api", "db")
 }
 
 func TestComplete_ofCommandRestartWithNamePrefix_filtersCommandNames(t *testing.T) {
