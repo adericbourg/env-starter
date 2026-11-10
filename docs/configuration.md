@@ -41,6 +41,7 @@ intentional or not — requires a fresh review.
 env-starter allow                       # preview every run/setup/teardown/readiness.shell command, then prompt
 env-starter allow --print               # preview only, approves nothing
 env-starter allow --yes                 # approve without prompting (e.g. in scripts)
+env-starter allow --full                # list every command even when a diff is available
 env-starter allow --config-overlay FILE # review an overlay alongside the base config
 ```
 
@@ -48,6 +49,12 @@ The preview shows each command's [`source`](#source) as a browsable URL or path
 (e.g. `https://github.com/<repo>/tree/<branch>/<subdir>` for `github`, the exact
 URL for `url`, or the filesystem path for `local`), so you can go inspect the
 actual code behind a `run`/`setup`/`teardown` command before approving it.
+
+When a file changed since its last approval, the preview shows a unified diff
+of the file against the approved version instead of listing every command.
+Use `--full`, or answer `f` at the prompt, to see the full listing. Files that
+were never approved, or that were approved by a version of env-starter that
+did not keep a copy of the approved content, always get the full listing.
 
 An unapproved or changed config is refused at load time, with a message
 pointing back to `env-starter allow`. While a daemon is running, editing a

@@ -272,3 +272,124 @@ func TestCheck_whenStoreFileMissing_treatsAsNoApprovals(t *testing.T) {
 		t.Fatalf("Check: expected a *NotApprovedError for a first-ever run, got: %v", err)
 	}
 }
+
+// ── ApprovedContent ───────────────────────────────────────────────────────
+
+func approvedStatus(t *testing.T, path string) PathStatus {
+	t.Helper()
+	statuses, err := Status([]string{path})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	return statuses[0]
+}
+
+func TestApprovedContent_afterApprove_returnsApprovedBytes(t *testing.T) {
+	// Given a config approved once, then edited.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	path := writeTempFile(t, dir, "config.yaml", "approved\n")
+	if err := Approve([]string{path}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	writeTempFile(t, dir, "config.yaml", "edited\n")
+
+	// When
+	content, ok, err := ApprovedContent(approvedStatus(t, path))
+
+	// Then the approved version is returned, not the current one.
+	if err != nil || !ok {
+		t.Fatalf("ApprovedContent: ok=%v err=%v", ok, err)
+	}
+	if string(content) != "approved\n" {
+		t.Errorf("expected the approved content, got %q", content)
+	}
+}
+
+func TestApprovedContent_whenNoSnapshot_returnsNotOk(t *testing.T) {
+	// Given an approval recorded without a snapshot (store written before
+	// snapshots existed).
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	path := writeTempFile(t, dir, "config.yaml", "approved\n")
+	if err := Approve([]string{path}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	st := approvedStatus(t, path)
+	if err := os.RemoveAll(filepath.Dir(snapshotPathFor(t, st.ApprovedHash))); err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	_, ok, err := ApprovedContent(st)
+
+	// Then
+	if err != nil || ok {
+		t.Errorf("expected ok=false and no error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestApprovedContent_whenSnapshotTampered_returnsNotOk(t *testing.T) {
+	// Given a snapshot whose content no longer matches its approved hash.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	path := writeTempFile(t, dir, "config.yaml", "approved\n")
+	if err := Approve([]string{path}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	st := approvedStatus(t, path)
+	if err := os.WriteFile(snapshotPathFor(t, st.ApprovedHash), []byte("forged\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When
+	_, ok, err := ApprovedContent(st)
+
+	// Then
+	if err != nil || ok {
+		t.Errorf("expected ok=false and no error, got ok=%v err=%v", ok, err)
+	}
+}
+
+func TestApprove_whenReapproved_removesOrphanSnapshot(t *testing.T) {
+	// Given two files sharing the same approved content, one of them then
+	// edited and re-approved.
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	path := writeTempFile(t, dir, "config.yaml", "v1\n")
+	twin := writeTempFile(t, dir, "twin.yaml", "v1\n")
+	if err := Approve([]string{path, twin}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	v1 := snapshotPathFor(t, approvedStatus(t, path).ApprovedHash)
+	writeTempFile(t, dir, "config.yaml", "v2\n")
+	writeTempFile(t, dir, "twin.yaml", "v2\n")
+
+	// When the first one is re-approved, the v1 snapshot is still used by
+	// the twin.
+	if err := Approve([]string{path}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	// Then it is kept...
+	if _, err := os.Stat(v1); err != nil {
+		t.Errorf("expected the v1 snapshot to be kept while still referenced: %v", err)
+	}
+
+	// ...until the twin is re-approved too.
+	if err := Approve([]string{twin}); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if _, err := os.Stat(v1); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected the orphaned v1 snapshot to be removed, Stat returned: %v", err)
+	}
+}
+
+func snapshotPathFor(t *testing.T, hash string) string {
+	t.Helper()
+	p, err := snapshotPath(hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}

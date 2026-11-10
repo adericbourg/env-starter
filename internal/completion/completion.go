@@ -48,7 +48,7 @@ var cmdFlags = map[string][]string{
 	"stop":       {},
 	"ps":         {},
 	"command":    {},
-	"allow":      {"--config", "--config-overlay", "--yes", "--print"},
+	"allow":      {"--config", "--config-overlay", "--yes", "--print", "--full"},
 	"shutdown":   {},
 	"update":     {},
 	"help":       {},

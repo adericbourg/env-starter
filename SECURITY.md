@@ -113,6 +113,11 @@ env-starter allow --print    # preview only, writes no approval
 env-starter allow --yes      # approve without prompting (e.g. in scripts)
 ```
 
+To let a later review show only what changed, a copy of each approved file is
+kept next to the trust store (`trust-snapshots/`, owner-only, `0600`). A copy
+whose sha256 no longer matches the approved hash is ignored, and the review
+falls back to the full command listing.
+
 This defends against a config or overlay that was tampered with or slipped in
 without your knowledge — it does **not** make the fields themselves any
 safer to author. Only write (or approve) `run`/`setup`/`teardown` commands

@@ -14,6 +14,7 @@ import (
 
 	"github.com/adericbourg/env-starter/internal/config"
 	"github.com/adericbourg/env-starter/internal/linkscan"
+	"github.com/adericbourg/env-starter/internal/source"
 	"github.com/adericbourg/env-starter/internal/trust"
 )
 
@@ -526,7 +527,7 @@ func TestDoAllow_print_showsPreviewAndApprovesNothing(t *testing.T) {
 	var out bytes.Buffer
 
 	// When
-	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true)
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true, false)
 
 	// Then — the preview is shown, but nothing is approved or written.
 	if err != nil {
@@ -552,7 +553,7 @@ func TestDoAllow_yes_approvesWithoutPrompting(t *testing.T) {
 
 	// When: --yes is set, so stdin (empty reader — would block/fail if read) is
 	// never consulted.
-	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, false)
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, false, false)
 
 	// Then
 	if err != nil {
@@ -574,7 +575,7 @@ func TestDoAllow_promptYes_approves(t *testing.T) {
 	var out bytes.Buffer
 
 	// When
-	result, err := doAllow(&out, strings.NewReader("y\n"), cfgPath, "", false, false)
+	result, err := doAllow(&out, strings.NewReader("y\n"), cfgPath, "", false, false, false)
 
 	// Then
 	if err != nil {
@@ -596,7 +597,7 @@ func TestDoAllow_promptNo_declinesAndLeavesConfigUnapproved(t *testing.T) {
 	var out bytes.Buffer
 
 	// When
-	result, err := doAllow(&out, strings.NewReader("n\n"), cfgPath, "", false, false)
+	result, err := doAllow(&out, strings.NewReader("n\n"), cfgPath, "", false, false, false)
 
 	// Then
 	if err != nil {
@@ -622,7 +623,7 @@ func TestDoAllow_whenAlreadyApproved_skipsPromptAndSaysSo(t *testing.T) {
 	var out bytes.Buffer
 
 	// When: no prompt is needed — an empty stdin would fail/block if read.
-	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, false)
+	result, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, false, false)
 
 	// Then
 	if err != nil {
@@ -636,6 +637,108 @@ func TestDoAllow_whenAlreadyApproved_skipsPromptAndSaysSo(t *testing.T) {
 	}
 }
 
+// approveThenEdit approves allowTestConfig, then changes its run command, so
+// that the file needs a fresh review.
+func approveThenEdit(t *testing.T) string {
+	t.Helper()
+	isolateCacheDir(t)
+	dir := t.TempDir()
+	cfgPath := writeConfig(t, dir, "config.yaml", allowTestConfig)
+	approveConfig(t, cfgPath)
+	writeConfig(t, dir, "config.yaml", strings.Replace(allowTestConfig, "run: echo hello", "run: echo changed", 1))
+	return cfgPath
+}
+
+func TestDoAllow_print_whenChangedSinceApproval_showsDiffInsteadOfListing(t *testing.T) {
+	// Given
+	cfgPath := approveThenEdit(t)
+	var out bytes.Buffer
+
+	// When
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true, false)
+
+	// Then only what changed is shown, with a hint to see everything.
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "-      run: echo hello\n") || !strings.Contains(got, "+      run: echo changed\n") {
+		t.Errorf("expected a diff of the run command, got:\n%s", got)
+	}
+	if strings.Contains(got, "Commands that will be executed") {
+		t.Errorf("expected the full listing to be hidden, got:\n%s", got)
+	}
+	if !strings.Contains(got, "--full") {
+		t.Errorf("expected a hint about --full, got:\n%s", got)
+	}
+}
+
+func TestDoAllow_full_whenChangedSinceApproval_showsDiffAndListing(t *testing.T) {
+	// Given
+	cfgPath := approveThenEdit(t)
+	var out bytes.Buffer
+
+	// When
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true, true)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "+      run: echo changed\n") || !strings.Contains(got, "Commands that will be executed") {
+		t.Errorf("expected both the diff and the full listing, got:\n%s", got)
+	}
+}
+
+func TestDoAllow_promptFull_showsListingThenPromptsAgain(t *testing.T) {
+	// Given an operator who asks for the full listing, then approves.
+	cfgPath := approveThenEdit(t)
+	var out bytes.Buffer
+
+	// When
+	result, err := doAllow(&out, strings.NewReader("f\ny\n"), cfgPath, "", false, false, false)
+
+	// Then
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Commands that will be executed") {
+		t.Errorf("expected 'f' to print the full listing, got:\n%s", got)
+	}
+	if !result.approved {
+		t.Error("expected the 'y' answer after 'f' to approve the config")
+	}
+	if err := trust.Check([]string{cfgPath}); err != nil {
+		t.Errorf("expected the config to be approved, Check returned: %v", err)
+	}
+}
+
+func TestDoAllow_print_whenNoSnapshotOfApprovedVersion_showsListing(t *testing.T) {
+	// Given a config approved before snapshots existed.
+	cfgPath := approveThenEdit(t)
+	cacheDir, err := source.CacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(cacheDir, "trust-snapshots")); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+
+	// When
+	_, err = doAllow(&out, strings.NewReader(""), cfgPath, "", false, true, false)
+
+	// Then it falls back to the full listing.
+	if err != nil {
+		t.Fatalf("doAllow: unexpected error: %v", err)
+	}
+	if !strings.Contains(out.String(), "Commands that will be executed") {
+		t.Errorf("expected the full listing, got:\n%s", out.String())
+	}
+}
+
 func TestDoAllow_invalidConfig_returnsError(t *testing.T) {
 	// Given: a config file that fails to parse.
 	isolateCacheDir(t)
@@ -644,7 +747,7 @@ func TestDoAllow_invalidConfig_returnsError(t *testing.T) {
 	var out bytes.Buffer
 
 	// When
-	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, true)
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", true, true, false)
 
 	// Then
 	if err == nil {
@@ -775,7 +878,7 @@ func TestDoAllow_print_showsSourcePerCommand(t *testing.T) {
 	var out bytes.Buffer
 
 	// When
-	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true)
+	_, err := doAllow(&out, strings.NewReader(""), cfgPath, "", false, true, false)
 
 	// Then
 	if err != nil {

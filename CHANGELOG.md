@@ -7,6 +7,10 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `env-starter allow` shows a unified diff of each config file changed since
+  its last approval instead of the full command listing; `--full` (or
+  answering `f` at the prompt) brings the listing back. See
+  `docs/configuration.md`.
 - Environments can set `auto-start: true` to start automatically when the
   TUI launches. It applies only to the TUI (not `env-starter run`), and only
   when the environment isn't already running — reconnecting to a daemon that

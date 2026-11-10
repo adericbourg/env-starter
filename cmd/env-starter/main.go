@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 
 	"github.com/adericbourg/env-starter/internal/completion"
@@ -26,6 +27,8 @@ import (
 	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
 	"github.com/adericbourg/env-starter/internal/linkscan"
+	"github.com/adericbourg/env-starter/internal/termsafe"
+	"github.com/adericbourg/env-starter/internal/textdiff"
 	"github.com/adericbourg/env-starter/internal/trust"
 	"github.com/adericbourg/env-starter/internal/tui"
 	"github.com/adericbourg/env-starter/internal/update"
@@ -653,7 +656,7 @@ type allowResult struct {
 // yes is set) before recording approval in the trust store that
 // resolveConfig's loadFn checks on every load and hot-reload (see
 // internal/trust and SECURITY.md, "Config trust").
-func doAllow(w io.Writer, stdin io.Reader, configFile, configOverlay string, yes, printOnly bool) (allowResult, error) {
+func doAllow(w io.Writer, stdin io.Reader, configFile, configOverlay string, yes, printOnly, full bool) (allowResult, error) {
 	paths := configPaths(configFile, configOverlay)
 
 	cfg, err := loadMerged(paths[0], configOverlay)
@@ -666,7 +669,12 @@ func doAllow(w io.Writer, stdin io.Reader, configFile, configOverlay string, yes
 		return allowResult{}, err
 	}
 
-	printAllowPreview(w, cfg, statuses)
+	diffs, isDiffComplete, err := changeDiffs(statuses)
+	if err != nil {
+		return allowResult{}, err
+	}
+	showListing := full || !isDiffComplete
+	printAllowPreview(w, cfg, statuses, diffs, showListing)
 
 	if printOnly {
 		return allowResult{}, nil
@@ -685,11 +693,24 @@ func doAllow(w io.Writer, stdin io.Reader, configFile, configOverlay string, yes
 	}
 
 	if !yes {
-		_, _ = fmt.Fprint(w, "\nApprove these commands? [y/N] ")
-		line, _ := bufio.NewReader(stdin).ReadString('\n')
-		if answer := strings.ToLower(strings.TrimSpace(line)); answer != "y" && answer != "yes" {
-			_, _ = fmt.Fprintln(w, "Not approved.")
-			return allowResult{declined: true}, nil
+		reader := bufio.NewReader(stdin)
+		for {
+			if showListing {
+				_, _ = fmt.Fprint(w, "\nApprove these commands? [y/N] ")
+			} else {
+				_, _ = fmt.Fprint(w, "\nApprove these changes? [y/N/f(ull listing)] ")
+			}
+			line, _ := reader.ReadString('\n')
+			answer := strings.ToLower(strings.TrimSpace(line))
+			if !showListing && (answer == "f" || answer == "full") {
+				printCommandListing(w, cfg)
+				continue
+			}
+			if answer != "y" && answer != "yes" {
+				_, _ = fmt.Fprintln(w, "Not approved.")
+				return allowResult{declined: true}, nil
+			}
+			break
 		}
 	}
 
@@ -709,9 +730,10 @@ func runAllow(args []string) {
 	configOverlay := fs.String("config-overlay", "", "load FILE as an overlay on top of the base config")
 	yes := fs.Bool("yes", false, "approve without prompting")
 	printOnly := fs.Bool("print", false, "show the preview and exit without approving")
+	full := fs.Bool("full", false, "list every command, even when a diff since the last approval is available")
 	_ = fs.Parse(args)
 
-	result, err := doAllow(os.Stdout, os.Stdin, *configFile, *configOverlay, *yes, *printOnly)
+	result, err := doAllow(os.Stdout, os.Stdin, *configFile, *configOverlay, *yes, *printOnly, *full)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -721,10 +743,42 @@ func runAllow(args []string) {
 	}
 }
 
+// changeDiffs returns a unified diff, against its last approved content, of
+// each path that changed since it was approved. isComplete is true when
+// every path still to approve has such a diff — only then can the diffs
+// replace the full command listing in the review.
+func changeDiffs(statuses []trust.PathStatus) (diffs []string, isComplete bool, err error) {
+	pending := 0
+	for _, st := range statuses {
+		if st.Approved {
+			continue
+		}
+		pending++
+		approved, ok, err := trust.ApprovedContent(st)
+		if err != nil {
+			return nil, false, err
+		}
+		if !ok {
+			continue
+		}
+		current, err := os.ReadFile(st.Path)
+		if err != nil {
+			return nil, false, err
+		}
+		// An empty diff (e.g. only the trailing newline changed) would show
+		// nothing to review, so it does not count.
+		if d := textdiff.Unified(st.Path+" (approved)", st.Path, approved, current); d != "" {
+			diffs = append(diffs, d)
+		}
+	}
+	return diffs, pending > 0 && len(diffs) == pending, nil
+}
+
 // printAllowPreview writes a human-reviewable listing of each watched config
-// file's approval status followed by every shell command its commands would
+// file's approval status, the diff of each file changed since its approval,
+// then — when showListing is set — every shell command its commands would
 // execute, so the operator can make an informed approve/deny decision.
-func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathStatus) {
+func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathStatus, diffs []string, showListing bool) {
 	_, _ = fmt.Fprintln(w, "Config files:")
 	for _, st := range statuses {
 		status := "NEW"
@@ -737,6 +791,28 @@ func printAllowPreview(w io.Writer, cfg *config.Config, statuses []trust.PathSta
 		_, _ = fmt.Fprintf(w, "  [%s] %s\n      sha256:%s\n", status, st.Path, st.CurrentHash)
 	}
 
+	if len(diffs) > 0 {
+		_, _ = fmt.Fprintln(w, "\nChanges since last approval:")
+		for _, d := range diffs {
+			_, _ = fmt.Fprintln(w)
+			// Escape sequences (styling included) are stripped so a tampered
+			// file cannot hide or disguise lines from the reviewer.
+			for _, line := range strings.Split(strings.TrimSuffix(d, "\n"), "\n") {
+				_, _ = fmt.Fprintln(w, "  "+ansi.Strip(termsafe.Line(line)))
+			}
+		}
+	}
+
+	if showListing {
+		printCommandListing(w, cfg)
+	} else {
+		_, _ = fmt.Fprintln(w, "\n(run with --full, or answer 'f' below, to list every command)")
+	}
+}
+
+// printCommandListing writes every shell command cfg's commands would
+// execute, along with each command's source.
+func printCommandListing(w io.Writer, cfg *config.Config) {
 	_, _ = fmt.Fprintln(w, "\nCommands that will be executed as shell scripts:")
 	for _, cmd := range cfg.Commands {
 		_, _ = fmt.Fprintf(w, "\n  %s:\n", cmd.Name)
