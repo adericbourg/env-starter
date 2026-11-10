@@ -162,3 +162,24 @@ Command stdout/stderr is stored in log files under
 permissions (owner read/write only). **Logs are not redacted**: if a
 subprocess echoes secrets (tokens, passwords), those appear in the log file.
 Protect the cache directory accordingly.
+
+## AI agents (MCP server)
+
+`env-starter mcp` lets an AI agent act with **your user's privileges** on the
+daemon: list, start, stop, and restart environments and commands, read their
+logs, and shut the daemon down. Two boundaries hold:
+
+- **No approval from agents.** There is no MCP tool to approve a config. A
+  `start_environment` call on an unapproved or changed config is refused, and
+  the agent is told to ask you to run `env-starter allow`. Approval stays a
+  human decision.
+- **No environment values.** The env inspector (`resolveEnv`) is not exposed,
+  so agents cannot read `env` values, secrets included.
+
+**Known gap — logs reach the model provider.** The `logs` tool, and the
+failure logs attached to `start_environment`/`restart_command` results, send
+command output to the agent's model provider. That output is not redacted
+(see [Command log confidentiality](#command-log-confidentiality)), so a
+secret a command prints leaves your machine. Log redaction is a gap to fix;
+until then, don't expose env-starter to agents on stacks whose commands print
+secrets.

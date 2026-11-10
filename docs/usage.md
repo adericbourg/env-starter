@@ -63,6 +63,7 @@ The TUI launches with the list of environments on the left. Select one and press
 | `env-starter command list` | Show started commands and their state (needs a running daemon); `--json` prints `[{"name","state"}]` (`[]` when no daemon runs) |
 | `env-starter command restart <name>` | Restart a single command in place, waiting until it is healthy (exit 0), failed (exit 1), usage error (exit 2), or timed out (exit 3) — needs a running daemon |
 | `env-starter logs [--tail N] <command>` | Print the last `N` lines (default 200) of a command's in-memory log buffer — needs a running daemon; unknown command exits 2. Flags go before the command name. |
+| `env-starter mcp` | Serve env-starter to AI agents over [MCP](#ai-agents-mcp) on stdio; accepts `--config`/`--config-overlay` |
 | `env-starter allow` | Review a config's `run`/`setup`/`teardown`/`readiness.shell` commands — along with each command's `source` as a browsable URL/path — and approve it; when a file changed since its last approval, only the diff is shown; `--print` previews without approving, `--yes` approves without prompting, `--full` lists every command even when a diff is available |
 | `env-starter shutdown` | Stop all environments and shut down the daemon |
 | `env-starter update` | Update env-starter to the latest version |
@@ -137,6 +138,54 @@ Press `Esc` from the table to close the overlay entirely (`q`/`e` also close
 it when the table, not the search field, has focus — so those letters remain
 typeable in a search query).
 
+## AI agents (MCP)
+
+`env-starter mcp` runs an [MCP](https://modelcontextprotocol.io) server on
+stdio, so AI agents — including ones without a shell, such as Claude Desktop —
+can drive your environments. It talks to the same daemon as the TUI and CLI.
+
+| Tool | What it does |
+|------|--------------|
+| `list_environments` | Environments defined in the config (read-only) |
+| `status` | Running environments and their commands' states (read-only) |
+| `logs` | Latest log lines of a command — `tail` defaults to 200, capped at 1000 (read-only) |
+| `start_environment` | Starts an environment, spawning the daemon if needed, and waits until it is running or failed (`timeout_seconds`, default 300). A failed start returns the failed commands' latest 50 log lines. |
+| `stop_environment` | Stops an environment and waits until it is stopped |
+| `restart_command` | Restarts one command and waits until it is healthy again or failed |
+| `shutdown` | Stops every environment and the daemon |
+
+There is no tool to approve a config: on an unapproved or changed config,
+`start_environment` fails and tells the agent to ask you to run
+`env-starter allow`. See [SECURITY.md](../SECURITY.md#ai-agents-mcp-server).
+
+> [!WARNING]
+> Logs read by an agent are sent to its model provider, unredacted — see the
+> known issue under [Logs & cache](#logs--cache).
+
+Register it with Claude Code:
+
+```sh
+claude mcp add env-starter -- env-starter mcp
+```
+
+or in a client's JSON configuration (e.g. Claude Desktop's
+`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "env-starter": {
+      "command": "env-starter",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Add `"--config", "/path/to/config.yaml"` to `args` to use a non-default
+config. Like any client, the MCP server adopts an already-running daemon as
+is — see [Config identity](#background-daemon).
+
 ## Shell completion
 
 Tab completion for subcommands, flags, and environment names is available for
@@ -157,7 +206,7 @@ Log files are created with `0600` permissions (owner read/write only). They are 
 
 > [!WARNING]
 > **Known issue — logs are not redacted for AI agents either.** When an AI
-> agent reads logs (`env-starter logs`, or the upcoming MCP server), every
+> agent reads logs (`env-starter logs`, or the [MCP server](#ai-agents-mcp)), every
 > line it reads is sent to the agent's model provider — including any
 > password or token a command printed. This is a gap to fix (log redaction);
 > until then, don't let agents read the logs of commands that print secrets.

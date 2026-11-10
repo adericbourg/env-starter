@@ -102,6 +102,20 @@ func activeCommands(src stateSource) []cmdStatus {
 	return cmds
 }
 
+// envEntry is the --json output shape of list.
+type envEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func envEntries(cfg *config.Config) []envEntry {
+	entries := []envEntry{}
+	for _, env := range cfg.Environments {
+		entries = append(entries, envEntry{Name: env.Name, Description: env.Description})
+	}
+	return entries
+}
+
 // commandLogSource is the subset of daemon.ClientController used by logs.
 type commandLogSource interface {
 	logSource
@@ -381,6 +395,9 @@ func main() {
 		case "logs":
 			runLogs(os.Args[2:])
 			return
+		case "mcp":
+			runMCP(os.Args[2:])
+			return
 		case "shutdown":
 			runShutdown()
 			return
@@ -655,28 +672,41 @@ func runStop(args []string) {
 	defer stop()
 
 	startTime := time.Now()
-	for {
+	err = waitForEnvStopped(ctx, client, envName, func() {
+		fmt.Fprintf(os.Stderr, "\rstopping %s… %ds", envName, int(time.Since(startTime).Seconds()))
+	})
+	if errors.Is(err, context.Canceled) {
+		fmt.Fprintln(os.Stderr, "interrupted")
+		os.Exit(1)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stderr)
+	os.Exit(0)
+}
+
+// waitForEnvStopped blocks until env reaches EnvStopped, calling onProgress on
+// every state event. Like daemon.WaitForEnvSettled, it must be the sole
+// consumer of client.Events().
+func waitForEnvStopped(ctx context.Context, client *daemon.ClientController, env string, onProgress func()) error {
+	for client.EnvState(env) != engine.EnvStopped {
 		select {
 		case <-ctx.Done():
-			fmt.Fprintln(os.Stderr, "interrupted")
-			os.Exit(1)
-		case ev, ok := <-client.Events():
+			return ctx.Err()
+		case _, ok := <-client.Events():
 			if !ok {
 				// Daemon closed the stream — check final state.
-				if client.EnvState(envName) == engine.EnvStopped {
-					os.Exit(0)
+				if client.EnvState(env) == engine.EnvStopped {
+					return nil
 				}
-				fmt.Fprintf(os.Stderr, "event stream closed before %q stopped\n", envName)
-				os.Exit(1)
+				return fmt.Errorf("event stream closed before %q stopped", env)
 			}
-			_ = ev // state is reflected in the mirror; read it directly
-			fmt.Fprintf(os.Stderr, "\rstopping %s… %ds", envName, int(time.Since(startTime).Seconds()))
-			if client.EnvState(envName) == engine.EnvStopped {
-				fmt.Fprintln(os.Stderr)
-				os.Exit(0)
-			}
+			onProgress()
 		}
 	}
+	return nil
 }
 
 // runList implements the "env-starter list" subcommand. It loads the config
@@ -695,15 +725,7 @@ func runList(args []string) {
 	}
 
 	if *asJSON {
-		type envEntry struct {
-			Name        string `json:"name"`
-			Description string `json:"description"`
-		}
-		entries := []envEntry{}
-		for _, env := range cfg.Environments {
-			entries = append(entries, envEntry{Name: env.Name, Description: env.Description})
-		}
-		writeJSON(os.Stdout, entries)
+		writeJSON(os.Stdout, envEntries(cfg))
 		return
 	}
 
@@ -1216,6 +1238,7 @@ Commands:
   ps         Show running environments
   command    Manage individual commands (list, restart)
   logs       Print the latest log lines of a command
+  mcp        Serve env-starter to AI agents over MCP (stdio)
   allow      Review and approve a config's run/setup/teardown commands
   shutdown   Stop all environments and shut down the daemon
   update     Update env-starter to the latest version

@@ -91,7 +91,7 @@ func TestComplete_ofEmptyCurrentWord_returnsAllSubcommands(t *testing.T) {
 	if result.Directive != completion.DirectiveDefault {
 		t.Errorf("directive = %v, want DirectiveDefault", result.Directive)
 	}
-	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "command", "logs", "shutdown", "update", "help", "completion")
+	containsAll(t, result.Candidates, "run", "stop", "list", "ps", "command", "logs", "mcp", "shutdown", "update", "help", "completion")
 	notContains(t, result.Candidates, "__complete")
 	notContains(t, result.Candidates, "__daemon")
 }

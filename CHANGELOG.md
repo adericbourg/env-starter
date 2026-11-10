@@ -7,6 +7,9 @@ Releases follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `env-starter mcp` serves env-starter to AI agents over MCP (stdio):
+  list, status, logs, start, stop, restart, and shutdown tools. Agents can
+  never approve a config. See `docs/usage.md` (AI agents) and `SECURITY.md`.
 - `env-starter logs [--tail N] <command>` prints the latest lines of a
   command's log buffer from the running daemon. Logs are not redacted: an AI
   agent reading them sends any secret they contain to its model provider
