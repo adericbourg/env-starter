@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
+	"math"
 	"os"
 	"os/signal"
 	"slices"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/adericbourg/env-starter/internal/daemon"
 	"github.com/adericbourg/env-starter/internal/engine"
+	"github.com/adericbourg/env-starter/internal/redact"
 	"github.com/adericbourg/env-starter/internal/trust"
 )
 
@@ -128,7 +131,7 @@ func newMCPServer(s mcpServer) *mcp.Server {
 	}, s.status)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "logs",
-		Description: "Return the latest log lines of a command. Logs are not redacted: they may contain secrets the command printed.",
+		Description: "Return the latest log lines of a command. Configured env values and common secret formats are masked as ***, best effort.",
 		Annotations: readOnly,
 	}, s.logs)
 	mcp.AddTool(server, &mcp.Tool{
@@ -181,7 +184,7 @@ func (s mcpServer) logs(_ context.Context, _ *mcp.CallToolRequest, args logsArgs
 		return nil, logsResult{}, err
 	}
 	defer client.Detach()
-	lines, err := commandLogs(client, args.Command, min(tail, mcpMaxLogLines))
+	lines, err := s.agentLogs(client, args.Command, min(tail, mcpMaxLogLines))
 	return nil, logsResult{Lines: lines}, err
 }
 
@@ -217,7 +220,7 @@ func (s mcpServer) startEnvironment(ctx context.Context, _ *mcp.CallToolRequest,
 		result.FailedLogs = map[string][]string{}
 		for _, cmd := range client.WorkflowCommands(args.Env) {
 			if state := client.CmdState(cmd); state == engine.CmdError || state == engine.CmdTimeout {
-				result.FailedLogs[cmd], _ = commandLogs(client, cmd, mcpFailureLogLines)
+				result.FailedLogs[cmd], _ = s.agentLogs(client, cmd, mcpFailureLogLines)
 			}
 		}
 	}
@@ -261,7 +264,7 @@ func (s mcpServer) restartCommand(ctx context.Context, _ *mcp.CallToolRequest, a
 
 	result := cmdResult{Command: args.Command, State: client.CmdState(args.Command)}
 	if !healthy {
-		result.Logs, _ = commandLogs(client, args.Command, mcpFailureLogLines)
+		result.Logs, _ = s.agentLogs(client, args.Command, mcpFailureLogLines)
 	}
 	return nil, result, nil
 }
@@ -273,6 +276,40 @@ func (s mcpServer) shutdown(ctx context.Context, _ *mcp.CallToolRequest, _ noRes
 	}
 	client.Shutdown(ctx)
 	return nil, noResult{}, nil
+}
+
+// agentLogs returns the last tail log lines of command with secrets redacted,
+// since agents send them to their model provider. The whole buffer is redacted
+// before tailing so a private key block cut by the tail is still masked.
+func (s mcpServer) agentLogs(client commandLogSource, command string, tail int) ([]string, error) {
+	lines, err := commandLogs(client, command, math.MaxInt)
+	if err != nil {
+		return nil, err
+	}
+	secrets, err := s.envValues()
+	if err != nil {
+		return nil, err
+	}
+	lines = redact.Lines(lines, secrets)
+	return lines[max(0, len(lines)-tail):], nil
+}
+
+// envValues returns every env value set in the config (commands and
+// environments, overlay included). OS env values are left out: masking HOME
+// or USER would mangle the output.
+func (s mcpServer) envValues() ([]string, error) {
+	cfg, _, _, err := resolveConfig(s.configFile, s.configOverlay)
+	if err != nil {
+		return nil, err
+	}
+	var values []string
+	for _, cmd := range cfg.Commands {
+		values = slices.AppendSeq(values, maps.Values(cmd.Env))
+	}
+	for _, env := range cfg.Environments {
+		values = slices.AppendSeq(values, maps.Values(env.Env))
+	}
+	return values, nil
 }
 
 // dial connects to the running daemon; unlike start_environment, the other

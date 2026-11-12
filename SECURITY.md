@@ -150,10 +150,12 @@ the intended place for secrets such as API keys and tokens:
   command the next time it starts. This is equivalent to arbitrary code via
   `run`/`setup`/`teardown` and is covered by the same config-trust boundary
   above — only approve configs and overlays you trust.
-- Command output is **not redacted** (see
+- Command output is **not redacted** in log files, the TUI, or
+  `env-starter logs` (see
   [Command log confidentiality](#command-log-confidentiality) below): a
   process that echoes an env var containing a secret will have it appear in
-  its log.
+  its log. Only logs sent to AI agents over MCP are masked (see
+  [AI agents](#ai-agents-mcp-server)).
 
 ## Command log confidentiality
 
@@ -176,10 +178,19 @@ logs, and shut the daemon down. Two boundaries hold:
 - **No environment values.** The env inspector (`resolveEnv`) is not exposed,
   so agents cannot read `env` values, secrets included.
 
-**Known gap — logs reach the model provider.** The `logs` tool, and the
-failure logs attached to `start_environment`/`restart_command` results, send
-command output to the agent's model provider. That output is not redacted
-(see [Command log confidentiality](#command-log-confidentiality)), so a
-secret a command prints leaves your machine. Log redaction is a gap to fix;
-until then, don't expose env-starter to agents on stacks whose commands print
-secrets.
+**Logs reach the model provider, redacted best-effort.** The `logs` tool, and
+the failure logs attached to `start_environment`/`restart_command` results,
+send command output to the agent's model provider. Before that, env-starter
+replaces with `***`:
+
+- every `env` value set in the config (base and overlay) that is at least 8
+  characters long;
+- private key blocks (`-----BEGIN … PRIVATE KEY-----`);
+- common token formats: `Authorization`/`Bearer` headers, `password=`-style
+  assignments, URL credentials (`scheme://user:pass@`), and GitHub, OpenAI,
+  Anthropic, AWS, Slack, GitLab, and Google API key prefixes.
+
+This is best effort: a secret that isn't an `env` value and doesn't match a
+known format, a short value, or a transformed one (encoded, split across
+lines) still leaves your machine. An agent with a shell can also run
+`env-starter logs` or read the log files, which are not redacted.

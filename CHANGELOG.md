@@ -11,9 +11,13 @@ Releases follow [Semantic Versioning](https://semver.org/).
   list, status, logs, start, stop, restart, and shutdown tools. Agents can
   never approve a config. See `docs/usage.md` (AI agents) and `SECURITY.md`.
 - `env-starter logs [--tail N] <command>` prints the latest lines of a
-  command's log buffer from the running daemon. Logs are not redacted: an AI
-  agent reading them sends any secret they contain to its model provider
-  (known issue, see `docs/usage.md`).
+  command's log buffer from the running daemon. Its output is not redacted:
+  an AI agent running it through a shell sends any secret it contains to its
+  model provider.
+- Logs returned by the MCP server (`logs` tool, failure logs of
+  `start_environment`/`restart_command`) mask configured `env` values and
+  common secret formats (bearer tokens, `password=`, URL credentials, private
+  keys, well-known API key prefixes) as `***`, best effort. See `SECURITY.md`.
 - `--json` flag on `list`, `ps`, and `command list` for machine-readable
   output (scripts, AI agents). See `docs/usage.md`.
 - `env-starter allow` shows a unified diff of each config file changed since
