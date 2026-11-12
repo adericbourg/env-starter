@@ -18,7 +18,8 @@ import (
 	"github.com/adericbourg/env-starter/internal/tui"
 )
 
-// mcpTestConfig has one service that prints a few lines then stays up.
+// mcpTestConfig has one service that prints a few lines, including a secret
+// from its env, then stays up.
 const mcpTestConfig = `
 env-starter:
   commands:
@@ -26,7 +27,9 @@ env-starter:
       type: service
       source:
         local: %s
-      run: "for i in 1 2 3; do echo line$i; done; sleep 30"
+      env:
+        API_TOKEN: s3cr3t-value-123
+      run: "for i in 1 2 3; do echo line$i; done; echo using $API_TOKEN; sleep 30"
   environments:
     - name: demo
       description: test env
@@ -177,9 +180,9 @@ func TestMCPServer_lifecycle_startStatusLogsRestartStopShutdown(t *testing.T) {
 		t.Errorf("status = %+v, want demo running", status)
 	}
 
-	// When / Then: logs are tailed
+	// When / Then: logs are tailed, with env values redacted
 	out, isErr = callTool(t, session, "logs", map[string]any{"command": "ticker", "tail": 2})
-	if isErr || !strings.Contains(out, `"lines":["line2","line3"]`) {
+	if isErr || !strings.Contains(out, `"lines":["line3","using ***"]`) {
 		t.Errorf("logs = %s (isError=%v)", out, isErr)
 	}
 

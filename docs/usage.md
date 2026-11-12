@@ -159,8 +159,10 @@ There is no tool to approve a config: on an unapproved or changed config,
 `env-starter allow`. See [SECURITY.md](../SECURITY.md#ai-agents-mcp-server).
 
 > [!WARNING]
-> Logs read by an agent are sent to its model provider, unredacted — see the
-> known issue under [Logs & cache](#logs--cache).
+> Logs read by an agent are sent to its model provider. MCP results mask
+> configured `env` values and common secret formats as `***`, best effort —
+> see [SECURITY.md](../SECURITY.md#ai-agents-mcp-server). `env-starter logs`
+> and log files are not redacted.
 
 Register it with Claude Code:
 
